@@ -3387,16 +3387,18 @@ elif page == "FBA Transfers":
     elif not inv_data_amz_fba:
         st.info("No Amazon FBA inventory data found.")
     else:
-        # Compute Amazon-specific demand from daily_sku_sales (last 90 days average)
-        with get_db() as conn:
-            _amz_demand = pd.read_sql_query("""
-                SELECT sku, SUM(units_sold) / 3.0 as monthly_demand
-                FROM daily_sku_sales
-                WHERE source = 'amazon'
-                  AND sale_date >= date('now', '-90 days')
-                GROUP BY sku
-            """, conn)
-        _amz_demand_map = dict(zip(_amz_demand["sku"], _amz_demand["monthly_demand"])) if not _amz_demand.empty else {}
+        # Compute Amazon-specific demand from velocity (blended 7d/30d daily rate)
+        _amz_velocity = get_amazon_sku_velocity()
+        _amz_demand_map = {}
+        for _vsku, _vdata in _amz_velocity.items():
+            # Blended daily rate: 60% recent 7d + 40% 30d average (matches dtc_demand approach)
+            avg_7d = _vdata.get("avg_7d", 0)
+            avg_30d = _vdata.get("avg_30d", 0)
+            if avg_7d > 0 and avg_30d > 0:
+                blended = avg_7d * 0.6 + avg_30d * 0.4
+            else:
+                blended = _vdata.get("avg_daily", 0)
+            _amz_demand_map[_vsku] = blended * 30.44  # daily → monthly
 
         # Build transfer alerts for each FBA SKU
         transfer_lt_days = transfer_lt_weeks * 7
