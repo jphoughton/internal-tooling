@@ -746,7 +746,7 @@ def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=Fals
         )
 
     st.markdown(
-        f'<div style="text-align:right;padding:12px 0 0;white-space:nowrap;">'
+        f'<div style="text-align:right;padding:28px 0 0;white-space:nowrap;">'
         f'<div style="font-size:0.74rem;color:#64748b;font-weight:500;">{time_label}</div>'
         f'{rows_label}'
         f'</div>',
