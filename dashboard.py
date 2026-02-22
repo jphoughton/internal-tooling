@@ -1377,7 +1377,7 @@ if page == "Overview":
             for src in ["shopify", "amazon"]:
                 if src in daily_pivot.columns:
                     # Add 7-day moving average for smoother visualization
-                    ma_col = daily_pivot[src].rolling(7).mean()
+                    ma_col = daily_pivot[src].rolling(7, min_periods=1).mean()
                     fig_rev.add_trace(go.Scatter(
                         x=daily_pivot["sale_date"], y=ma_col,
                         mode="lines", name=f"{src.title()} (7d avg)",
@@ -1387,7 +1387,7 @@ if page == "Overview":
 
             # Total combined line
             daily_total = daily.groupby("sale_date")["revenue"].sum().reset_index()
-            daily_total["revenue_7d"] = daily_total["revenue"].rolling(7).mean()
+            daily_total["revenue_7d"] = daily_total["revenue"].rolling(7, min_periods=1).mean()
             fig_rev.add_trace(go.Scatter(
                 x=daily_total["sale_date"], y=daily_total["revenue_7d"],
                 mode="lines", name="Total (7d avg)",
