@@ -69,18 +69,20 @@ Inventory/
 
 These load automatically for anyone using Claude Code on this repo — no manual config needed:
 
-| Server | What it does | Auth needed |
-|--------|-------------|-------------|
-| **context7** | Real-time, version-specific library documentation. Prevents using outdated/deprecated methods. | None |
-| **sequential-thinking** | Structured problem-solving for complex architectural decisions. | None |
-| **playwright** | Browser automation — Claude can click, type, screenshot, and verify the app works. | None |
-| **github** | PR/issue management, CI/CD status, code review. | `GITHUB_TOKEN` env var |
+| Server                  | What it does                                                                                   | Auth needed            |
+| ----------------------- | ---------------------------------------------------------------------------------------------- | ---------------------- |
+| **context7**            | Real-time, version-specific library documentation. Prevents using outdated/deprecated methods. | None                   |
+| **sequential-thinking** | Structured problem-solving for complex architectural decisions.                                | None                   |
+| **playwright**          | Browser automation — Claude can click, type, screenshot, and verify the app works.             | None                   |
+| **github**              | PR/issue management, CI/CD status, code review.                                                | `GITHUB_TOKEN` env var |
+| **sqlite**              | Direct SQL queries against `inventory.db` — debug ETL, verify forecasts, inspect data.         | None                   |
 
 To add more MCPs: edit `.mcp.json`, commit, push. Every teammate gets them on next pull.
 
 ### Claude Code Permissions (.claude/settings.json)
 
 Pre-configured safe defaults committed to the repo:
+
 - **Allowed**: python, pip, streamlit, git read ops, git commit, npm run, prettier, eslint, playwright
 - **Denied**: reading .env files, `rm -rf`, `git push --force`
 
@@ -116,23 +118,24 @@ Manual Input ───────► Dashboard UI ─────────�
 
 ## Database Schema (SQLite)
 
-| Table | Purpose | Primary Key |
-|-------|---------|-------------|
-| `customers` | Customer records | `customer_id` |
-| `orders` | Shopify orders (Amazon skips this) | `order_id` |
-| `order_items` | Line items per order | `id` (auto), UNIQUE(order_id, sku) |
-| `sku_master` | Product catalog | `sku` |
-| `daily_sku_sales` | Aggregated daily sales | `(sale_date, sku, source)` |
-| `media_spend` | Monthly ad spend + ROAS | `(month, source)` |
-| `amazon_revenue_forecast` | Amazon revenue targets | `month` |
-| `planned_inbound` | User-entered POs | `(sku, month)` |
-| `seasonal_indices` | Monthly demand multipliers (1-12) | `month_num` |
-| `app_settings` | Key-value config store | `key` |
-| `sync_log` | ETL sync history | `id` (auto) |
+| Table                     | Purpose                            | Primary Key                        |
+| ------------------------- | ---------------------------------- | ---------------------------------- |
+| `customers`               | Customer records                   | `customer_id`                      |
+| `orders`                  | Shopify orders (Amazon skips this) | `order_id`                         |
+| `order_items`             | Line items per order               | `id` (auto), UNIQUE(order_id, sku) |
+| `sku_master`              | Product catalog                    | `sku`                              |
+| `daily_sku_sales`         | Aggregated daily sales             | `(sale_date, sku, source)`         |
+| `media_spend`             | Monthly ad spend + ROAS            | `(month, source)`                  |
+| `amazon_revenue_forecast` | Amazon revenue targets             | `month`                            |
+| `planned_inbound`         | User-entered POs                   | `(sku, month)`                     |
+| `seasonal_indices`        | Monthly demand multipliers (1-12)  | `month_num`                        |
+| `app_settings`            | Key-value config store             | `key`                              |
+| `sync_log`                | ETL sync history                   | `id` (auto)                        |
 
 ## Critical Constants
 
 ### FORECAST_SKUS (17 core Hydrant products)
+
 ```python
 FORECAST_SKUS = {
     "ENBP-BP0030-LEB0", "HYBP-BP0030-CHLB0", "HYBP-BP0030-GFB0",
@@ -145,17 +148,21 @@ FORECAST_SKUS = {
 ```
 
 ### Reorder Defaults (analytics/reorder.py)
+
 - `LEAD_TIME_WEEKS` = 12 (84 days)
 - `MOQ_UNITS` = 5,000
 - `SAFETY_STOCK_WEEKS` = 2
 
 ### Seasonal Indices (hydration product seasonality)
+
 Jan: 0.95, Feb: 0.92, Mar: 0.98, Apr: 1.02, May: 1.05, Jun: 1.10, Jul: 1.12, Aug: 1.08, Sep: 1.02, Oct: 0.98, Nov: 0.92, Dec: 0.88
 
 ### Triple Whale Correction
+
 `_TW_ADJ = 0.5` — Triple Whale overstates attribution by ~2x; all TW-sourced data is halved.
 
 ### Reorder Urgency Tiers
+
 - `OVERDUE` — Reorder date has passed
 - `ORDER NOW` — < 7 days until reorder
 - `ORDER SOON` — < 21 days
@@ -166,7 +173,9 @@ Jan: 0.95, Feb: 0.92, Mar: 0.98, Apr: 1.02, May: 1.05, Jun: 1.10, Jul: 1.12, Aug
 ## Key Algorithms
 
 ### Waterfall Demand Split (waterfall.py)
+
 Splits total demand into repeat (retention curve) + new customer components:
+
 ```
 For each forecast month:
   new_customers = (media_spend × ROAS) / new_customer_AOV
@@ -175,13 +184,16 @@ For each forecast month:
 ```
 
 ### Retention Curve (waterfall.py → get_average_retention_curve)
+
 - Recency-weighted: Last 12 cohorts = 60%, next 12 = 30%, rest = 10%
 - Auto-detects contaminated cohorts (M1 retention > 40%)
 - Decay rate 0.98, terminal floor 0.5%
 - Extrapolates 60 months beyond observed data
 
 ### Reorder Schedule (reorder.py)
+
 Day-by-day forward simulation:
+
 1. Start with current 3PL + FBA stock
 2. Deduct daily demand (from monthly forecast spread evenly)
 3. Add planned inbound arrivals
@@ -189,6 +201,7 @@ Day-by-day forward simulation:
 5. Order qty = ceil(cover_demand / MOQ) × MOQ
 
 ### Prophet Forecasting (forecast.py)
+
 - Weekly seasonality: always on
 - Yearly seasonality: on if > 180 days history
 - Fallback to moving average if < 60 days history
@@ -204,6 +217,7 @@ Day-by-day forward simulation:
 6. **Settings** — API credentials, media spend, seasonal indices, planned inbound, Google Sheets sync
 
 ### UI Patterns
+
 - `st.segmented_control` for channel filters (NOT st.button — buttons don't maintain state across reruns)
 - `_gradient_perf_style()` for DoD/WoW/MoM — smooth 5-tier color gradient (deep green → amber → deep red)
 - Slim single-line notification banner at top for urgent reorder alerts
@@ -243,22 +257,23 @@ Auto-sync: If last sync > 24h ago, dashboard triggers sync on page load.
 
 Commits follow **Conventional Commits** (enforced by commitlint + husky):
 
-| Type | When to use | Example |
-|------|-------------|---------|
-| `feat` | New feature or capability | `feat(forecast): add seasonal demand multipliers` |
-| `fix` | Bug fix | `fix(reorder): respect planned inbound in stockout calc` |
-| `refactor` | Code restructuring, no new feature or fix | `refactor: extract API helper functions` |
-| `docs` | Documentation only | `docs: update CLAUDE.md with new schema` |
-| `style` | Formatting, no logic change | `style: fix indentation in dashboard` |
-| `test` | Adding or updating tests | `test(retention): add cohort contamination test` |
-| `perf` | Performance improvement | `perf(waterfall): cache retention curve for 5min` |
-| `build` | Build system or dependency changes | `build: add klaviyo-api to requirements` |
-| `ci` | CI/CD config changes | `ci: add staging deploy workflow` |
-| `chore` | Maintenance, no production code change | `chore: clean up unused imports` |
-| `revert` | Reverting a previous commit | `revert: undo cart redesign` |
-| `wip` | Work in progress (feature branches only) | `wip: checkout flow partial implementation` |
+| Type       | When to use                               | Example                                                  |
+| ---------- | ----------------------------------------- | -------------------------------------------------------- |
+| `feat`     | New feature or capability                 | `feat(forecast): add seasonal demand multipliers`        |
+| `fix`      | Bug fix                                   | `fix(reorder): respect planned inbound in stockout calc` |
+| `refactor` | Code restructuring, no new feature or fix | `refactor: extract API helper functions`                 |
+| `docs`     | Documentation only                        | `docs: update CLAUDE.md with new schema`                 |
+| `style`    | Formatting, no logic change               | `style: fix indentation in dashboard`                    |
+| `test`     | Adding or updating tests                  | `test(retention): add cohort contamination test`         |
+| `perf`     | Performance improvement                   | `perf(waterfall): cache retention curve for 5min`        |
+| `build`    | Build system or dependency changes        | `build: add klaviyo-api to requirements`                 |
+| `ci`       | CI/CD config changes                      | `ci: add staging deploy workflow`                        |
+| `chore`    | Maintenance, no production code change    | `chore: clean up unused imports`                         |
+| `revert`   | Reverting a previous commit               | `revert: undo cart redesign`                             |
+| `wip`      | Work in progress (feature branches only)  | `wip: checkout flow partial implementation`              |
 
 ### Scopes (what part of the app)
+
 ```
 feat(forecast): ...   # Prophet / waterfall / demand
 feat(reorder): ...    # Reorder alerts / runway
@@ -271,6 +286,7 @@ feat(overview): ...   # Overview page
 ```
 
 ### Branch Workflow
+
 ```
 main (production)
   └── develop (integration)
@@ -296,12 +312,15 @@ main (production)
 ## Git Autopilot — Setup & How It Works
 
 ### One-Time Setup
+
 Run once in the project root to install all hooks, tooling, MCPs, and permissions:
+
 ```bash
 bash setup-git-autopilot.sh
 ```
 
 **Requires Node.js** (for husky, commitlint, lint-staged). Installs these dev dependencies:
+
 - **husky** — Git hooks manager (pre-commit, commit-msg, pre-push)
 - **@commitlint/cli + config-conventional** — Rejects non-conventional commit messages
 - **lint-staged** — Auto-lints only staged files before commit
@@ -309,22 +328,23 @@ bash setup-git-autopilot.sh
 
 ### Config Files Created by Setup
 
-| File | Purpose |
-|------|---------|
-| `.mcp.json` | MCP servers — auto-loaded for all Claude Code users |
-| `.claude/settings.json` | Claude Code permissions (allow/deny rules) |
-| `commitlint.config.js` | Allowed commit types + rules (max 100 char subject) |
-| `.lintstagedrc.json` | Which file types get linted/formatted on commit |
-| `.prettierrc.json` | Formatting rules (single quotes, trailing commas, 100 char width) |
-| `.husky/pre-commit` | Runs `npx lint-staged` |
-| `.husky/commit-msg` | Runs `npx commitlint --edit` |
-| `.husky/pre-push` | Runs `npm test` if test script exists |
-| `.vscode/settings.json` | Auto-format on save, git branch protection, editor defaults |
-| `.vscode/extensions.json` | Recommended extensions (auto-prompted on project open) |
-| `.editorconfig` | Universal whitespace rules (works in any editor) |
-| `.env.example` | Onboarding template — shows new devs what tokens they need |
+| File                      | Purpose                                                           |
+| ------------------------- | ----------------------------------------------------------------- |
+| `.mcp.json`               | MCP servers — auto-loaded for all Claude Code users               |
+| `.claude/settings.json`   | Claude Code permissions (allow/deny rules)                        |
+| `commitlint.config.js`    | Allowed commit types + rules (max 100 char subject)               |
+| `.lintstagedrc.json`      | Which file types get linted/formatted on commit                   |
+| `.prettierrc.json`        | Formatting rules (single quotes, trailing commas, 100 char width) |
+| `.husky/pre-commit`       | Runs `npx lint-staged`                                            |
+| `.husky/commit-msg`       | Runs `npx commitlint --edit`                                      |
+| `.husky/pre-push`         | Runs `npm test` if test script exists                             |
+| `.vscode/settings.json`   | Auto-format on save, git branch protection, editor defaults       |
+| `.vscode/extensions.json` | Recommended extensions (auto-prompted on project open)            |
+| `.editorconfig`           | Universal whitespace rules (works in any editor)                  |
+| `.env.example`            | Onboarding template — shows new devs what tokens they need        |
 
 ### New Dev Onboarding (after cloning)
+
 1. `npm install` — hooks auto-install via husky
 2. `cp .env.example .env` — fill in `GITHUB_TOKEN` and API credentials
 3. Open in VS Code — accept extension recommendations
@@ -332,20 +352,22 @@ bash setup-git-autopilot.sh
 
 ### What Happens Automatically After Setup
 
-| When you... | What happens automatically |
-|-------------|---------------------------|
-| **Save a file** | Prettier formats it, ESLint fixes issues |
-| **Stage & commit** | lint-staged re-checks staged files |
-| **Write a commit msg** | commitlint validates the format |
-| **Push to remote** | Tests run first (if they exist) |
-| **Open the project** | VS Code prompts recommended extensions |
+| When you...            | What happens automatically               |
+| ---------------------- | ---------------------------------------- |
+| **Save a file**        | Prettier formats it, ESLint fixes issues |
+| **Stage & commit**     | lint-staged re-checks staged files       |
+| **Write a commit msg** | commitlint validates the format          |
+| **Push to remote**     | Tests run first (if they exist)          |
+| **Open the project**   | VS Code prompts recommended extensions   |
 
 ### VS Code Shortcuts
+
 - **Conventional Commits extension**: Click the checkmark icon in Source Control panel for commit GUI
 - **GitLens**: Hover over any line to see who changed it and when
 - **Git Graph**: Click "Git Graph" in bottom status bar for visual branch history
 
 ### Git Aliases (added by setup)
+
 ```bash
 git lg          # Pretty one-line log with graph
 git last        # Show last commit details
@@ -356,6 +378,7 @@ git amend       # Add to last commit without changing message
 ```
 
 ### Emergency Hook Skip
+
 ```bash
 git commit -m "fix: emergency hotfix" --no-verify
 ```
