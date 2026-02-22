@@ -223,7 +223,7 @@ def rebuild_daily_sales(conn):
             COUNT(DISTINCT o.order_id) as order_count
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.order_id
-        WHERE o.status = 'completed'
+        WHERE o.status = 'completed' AND o.source = 'shopify'
         GROUP BY DATE(o.order_date), oi.sku, o.source
     """)
 
