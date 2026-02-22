@@ -18,8 +18,10 @@ env/
 *.db-wal
 data/
 
-# IDE
-.vscode/
+# IDE (keep .vscode/settings.json and extensions.json tracked)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo
