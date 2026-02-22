@@ -18,7 +18,15 @@ fi
 echo "Installing dependencies..."
 pip install -r requirements.txt --break-system-packages -q 2>/dev/null || pip install -r requirements.txt -q
 
-# Initialize DB
+# Restore from seed if no local DB exists
+if [ ! -f data/inventory.db ] && [ -f data/seed.sql.gz ]; then
+    echo "No local database found. Restoring from seed data..."
+    mkdir -p data
+    gunzip -c data/seed.sql.gz | sqlite3 data/inventory.db
+    echo "Seed data restored ($(sqlite3 data/inventory.db 'SELECT COUNT(*) FROM orders') orders)"
+fi
+
+# Initialize DB (creates tables if missing)
 echo "Initializing database..."
 python -c "from db import init_db; init_db()"
 

@@ -16,7 +16,8 @@ env/
 *.db
 *.db-shm
 *.db-wal
-data/
+data/*
+!data/seed.sql.gz
 
 # IDE (keep .vscode/settings.json and extensions.json tracked)
 .vscode/*

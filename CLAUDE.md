@@ -52,8 +52,9 @@ Inventory/
 ├── .streamlit/
 │   └── config.toml        # Streamlit theme config
 │
-├── data/                  # SQLite database (gitignored)
-│   └── inventory.db
+├── data/
+│   ├── inventory.db       # SQLite database (gitignored, local only)
+│   └── seed.sql.gz        # Real data seed (Git LFS, auto-restored on first run)
 │
 ├── .env                   # API credentials (gitignored)
 │

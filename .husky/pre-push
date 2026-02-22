@@ -3,3 +3,6 @@ if npm run test --if-present 2>/dev/null; then
 else
   echo "No test script found, skipping"
 fi
+
+# Git LFS pre-push
+command -v git-lfs >/dev/null 2>&1 && git lfs pre-push "$@"
