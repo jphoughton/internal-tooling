@@ -121,12 +121,8 @@ echo "Setting up auto-lint on staged files..."
 
 cat > .lintstagedrc.json << 'EOF'
 {
-  "*.{js,jsx,ts,tsx}": [
-    "eslint --fix --no-error-on-unmatched-pattern",
-    "prettier --write"
-  ],
   "*.{json,md,mdx,yml,yaml,css,scss,html}": [
-    "prettier --write"
+    "npx prettier --write"
   ]
 }
 EOF

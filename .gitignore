@@ -46,3 +46,5 @@ node_modules/
 *.setup_done
 .setup_done
 excel_contents.txt
+.env.local
+.env*.local
