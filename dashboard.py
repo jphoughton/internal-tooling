@@ -2608,8 +2608,11 @@ elif page == "Amazon Inventory":
             st.caption("Showing Amazon sales data as a reference while live FBA inventory is unavailable.")
             _amz_fb_display = _amz_fb.rename(columns={"sku": "SKU", "units_30d": "Units (30d)",
                                                        "revenue_30d": "Revenue (30d)", "daily_velocity": "Daily Avg"})
-            _amz_fb_display["Revenue (30d)"] = _amz_fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}")
-            st.dataframe(_amz_fb_display, use_container_width=True, hide_index=True)
+            for _fc in ["Units (30d)", "Daily Avg"]:
+                if _fc in _amz_fb_display.columns:
+                    _amz_fb_display[_fc] = _amz_fb_display[_fc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
+            _amz_fb_display["Revenue (30d)"] = _amz_fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
+            _render_df_as_html_global(_amz_fb_display, max_height=min(len(_amz_fb_display) * 35 + 38, 700))
     else:
         from etl.amazon_inventory import get_inventory as get_amz_inventory
 
