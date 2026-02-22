@@ -18,6 +18,7 @@ from db import (
     get_planned_inbound, get_planned_inbound_dict, upsert_planned_inbound,
     get_seasonal_indices, upsert_seasonal_index,
     get_setting, set_setting,
+    get_last_sync_timestamp, get_new_rows_since_yesterday,
 )
 from analytics.retention import (
     get_customer_cohort_data,
@@ -711,6 +712,48 @@ def _render_df_as_html_global(df, max_height=None):
     )
 
 
+def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=False):
+    """Render a compact data-freshness indicator (right-aligned)."""
+    if is_live:
+        time_label = '<span style="color:#22c55e;font-weight:600;">&#9679; Live</span>'
+    elif last_refreshed_str:
+        try:
+            last_dt = datetime.strptime(last_refreshed_str[:19], '%Y-%m-%d %H:%M:%S')
+            delta = datetime.utcnow() - last_dt
+            secs = delta.total_seconds()
+            if secs < 3600:
+                ago = f"{max(1, int(secs // 60))}m ago"
+            elif secs < 86400:
+                ago = f"{int(secs // 3600)}h ago"
+            else:
+                ago = f"{delta.days}d ago"
+            time_label = f'Updated {ago}'
+        except (ValueError, TypeError):
+            time_label = f'Updated {last_refreshed_str}'
+    else:
+        time_label = '<span style="color:#f59e0b;">No sync data</span>'
+
+    rows_label = ''
+    if new_rows is not None and new_rows > 0:
+        rows_label = (
+            f'<div style="font-size:0.68rem;color:#22c55e;margin-top:2px;">'
+            f'+{new_rows:,} new rows today</div>'
+        )
+    elif new_rows is not None and new_rows == 0 and not is_live:
+        rows_label = (
+            '<div style="font-size:0.68rem;color:#94a3b8;margin-top:2px;">'
+            'No new rows today</div>'
+        )
+
+    st.markdown(
+        f'<div style="text-align:right;padding:8px 0 0;">'
+        f'<div style="font-size:0.74rem;color:#64748b;font-weight:500;">{time_label}</div>'
+        f'{rows_label}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # --- Sidebar ---
 st.sidebar.markdown(
     '<div style="display:flex;align-items:center;gap:10px;padding:4px 0 0;">'
@@ -1209,7 +1252,14 @@ if _all_urgent:
 # PAGE: OVERVIEW
 # ================================================================
 if page == "Overview":
-    st.title("Overview")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Overview")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
 
     # Show last sync status (compact)
     with get_db() as conn:
@@ -1410,7 +1460,14 @@ if page == "Overview":
 # PAGE: RETENTION
 # ================================================================
 elif page == "Retention":
-    st.title("Retention")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Retention")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
 
     col1, col2 = st.columns(2)
     skus = load_sku_list()
@@ -1576,7 +1633,14 @@ elif page == "Retention":
 # PAGE: DEMAND FORECAST
 # ================================================================
 elif page == "Demand Forecast":
-    st.title("Demand Forecast")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Demand Forecast")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
     st.caption("Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.")
 
     # Seasonality status
@@ -2058,7 +2122,14 @@ elif page == "Demand Forecast":
 # PAGE: PROJECTED INVENTORY
 # ================================================================
 elif page == "Projected Inventory":
-    st.title("Projected Inventory")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Projected Inventory")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
     st.caption("Combines current inventory across all channels (3PL + Amazon FBA) with the full DTC demand forecast (Shopify + Amazon) to project inventory levels per SKU per month.")
 
     # --- Fetch live inventory from all sources ---
@@ -2421,7 +2492,11 @@ elif page == "Projected Inventory":
 # PAGE: 3PL INVENTORY
 # ================================================================
 elif page == "3PL Inventory":
-    st.title("3PL Inventory")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("3PL Inventory")
+    with _badge_col:
+        _render_freshness_badge(is_live=True)
     st.caption("Live stock from Packiyo.")
 
     if not config.PACKIYO_API_TOKEN:
@@ -2582,7 +2657,11 @@ elif page == "3PL Inventory":
 # PAGE: AMAZON INVENTORY
 # ================================================================
 elif page == "Amazon Inventory":
-    st.title("Amazon Inventory")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Amazon Inventory")
+    with _badge_col:
+        _render_freshness_badge(is_live=True)
     st.caption("Live FBA stock from Seller Central.")
 
     has_amazon_creds = all(getattr(config, k, "") for k in [
@@ -2748,7 +2827,14 @@ elif page == "Amazon Inventory":
 # PAGE: REORDER ALERTS
 # ================================================================
 elif page == "Reorder Alerts":
-    st.title("Reorder Alerts")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Reorder Alerts")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
     st.caption("Forecast-driven reorder timing based on live 3PL + FBA inventory.")
 
     from analytics.reorder import build_reorder_plan, build_inventory_runway_chart, LEAD_TIME_WEEKS, MOQ_UNITS, SAFETY_STOCK_WEEKS
@@ -3266,7 +3352,14 @@ elif page == "Reorder Alerts":
 # PAGE: MARKETING (Klaviyo + Google Sheet analytics)
 # ================================================================
 elif page == "Marketing":
-    st.title("Marketing")
+    _title_col, _badge_col = st.columns([8, 2])
+    with _title_col:
+        st.title("Marketing")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
 
     with get_db() as conn:
         _mkt_klaviyo_key = get_setting(conn, "klaviyo_api_key", "")
