@@ -266,6 +266,17 @@ def get_new_rows_since_yesterday(conn, sources):
     return row['total']
 
 
+def get_synced_sources(conn, sources):
+    """Return list of source names that have at least one successful sync."""
+    placeholders = ','.join('?' for _ in sources)
+    rows = conn.execute(
+        f"SELECT DISTINCT source FROM sync_log "
+        f"WHERE source IN ({placeholders}) AND status = 'success'",
+        sources
+    ).fetchall()
+    return [r['source'] for r in rows]
+
+
 def upsert_media_spend(conn, month, spend, roas, source="all"):
     conn.execute("""
         INSERT INTO media_spend (month, spend, new_customer_roas, source)

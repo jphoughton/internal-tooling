@@ -18,7 +18,7 @@ from db import (
     get_planned_inbound, get_planned_inbound_dict, upsert_planned_inbound,
     get_seasonal_indices, upsert_seasonal_index,
     get_setting, set_setting,
-    get_last_sync_timestamp, get_new_rows_since_yesterday,
+    get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.retention import (
     get_customer_cohort_data,
@@ -112,7 +112,7 @@ def _load_seasonal_json():
     return _json_s.dumps(indices, sort_keys=True)
 
 
-def _smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default_preset=None):
+def _smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default_preset='MTD'):
     """Reusable date filter with quick presets (MTD, YTD, Last 7d, etc.).
 
     Args:
@@ -120,8 +120,7 @@ def _smart_date_filter(data_min, data_max, key_prefix, show_presets=True, defaul
         data_max: latest date available (datetime.date)
         key_prefix: unique key prefix for Streamlit widgets
         show_presets: whether to show preset buttons
-        default_preset: optional preset name to use as default (e.g. "MTD", "Last 30 Days")
-                       If None, defaults to All Time.
+        default_preset: preset name to use as default (defaults to "MTD")
 
     Returns:
         (start_date, end_date) as datetime.date objects
@@ -131,22 +130,15 @@ def _smart_date_filter(data_min, data_max, key_prefix, show_presets=True, defaul
 
     # Build preset options
     presets = {
-        "MTD": (_d(today.year, today.month, 1), today),
-        "Last 7 Days": (today - _td(days=6), today),
-        "Last 30 Days": (today - _td(days=29), today),
-        "Last 90 Days": (today - _td(days=89), today),
-        "YTD": (_d(today.year, 1, 1), today),
-        "All Time": (data_min, data_max),
+        'MTD': (_d(today.year, today.month, 1), today),
+        'Last 7 Days': (today - _td(days=6), today),
+        'Last 30 Days': (today - _td(days=29), today),
+        'Last 90 Days': (today - _td(days=89), today),
+        'YTD': (_d(today.year, 1, 1), today),
+        'All Time': (data_min, data_max),
     }
 
-    if show_presets:
-        preset_cols = st.columns(len(presets))
-        for i, (label, (ps, pe)) in enumerate(presets.items()):
-            if preset_cols[i].button(label, key=f"{key_prefix}_preset_{label}", use_container_width=True):
-                st.session_state[f"{key_prefix}_start"] = max(ps, data_min)
-                st.session_state[f"{key_prefix}_end"] = min(pe, data_max)
-
-    # Determine defaults — use requested preset or All Time
+    # Determine defaults — use requested preset (MTD unless overridden)
     if default_preset and default_preset in presets:
         _def_start, _def_end = presets[default_preset]
         _def_start = max(_def_start, data_min)
@@ -154,22 +146,53 @@ def _smart_date_filter(data_min, data_max, key_prefix, show_presets=True, defaul
     else:
         _def_start, _def_end = data_min, data_max
 
-    default_start = st.session_state.get(f"{key_prefix}_start", _def_start)
-    default_end = st.session_state.get(f"{key_prefix}_end", _def_end)
+    # Seed session state on first render so date_input widgets pick up the preset
+    if f'{key_prefix}_start' not in st.session_state:
+        st.session_state[f'{key_prefix}_start'] = _def_start
+    if f'{key_prefix}_end' not in st.session_state:
+        st.session_state[f'{key_prefix}_end'] = _def_end
+
+    default_start = st.session_state[f'{key_prefix}_start']
+    default_end = st.session_state[f'{key_prefix}_end']
 
     # Clamp to valid range
     default_start = max(default_start, data_min)
     default_end = min(default_end, data_max)
 
+    if show_presets:
+        # Detect which preset matches current date range
+        active_preset = None
+        for label, (ps, pe) in presets.items():
+            clamped_s = max(ps, data_min)
+            clamped_e = min(pe, data_max)
+            if default_start == clamped_s and default_end == clamped_e:
+                active_preset = label
+                break
+
+        preset_cols = st.columns(len(presets))
+        for i, (label, (ps, pe)) in enumerate(presets.items()):
+            is_active = label == active_preset
+            if is_active:
+                btn_type = 'primary'
+            else:
+                btn_type = 'secondary'
+            if preset_cols[i].button(
+                label, key=f'{key_prefix}_preset_{label}',
+                use_container_width=True, type=btn_type,
+            ):
+                st.session_state[f'{key_prefix}_start'] = max(ps, data_min)
+                st.session_state[f'{key_prefix}_end'] = min(pe, data_max)
+                st.rerun()
+
     dc1, dc2, dc_spacer = st.columns([1, 1, 4])
     with dc1:
-        start = st.date_input("From", value=default_start, min_value=data_min,
-                               max_value=data_max, key=f"{key_prefix}_start",
-                               label_visibility="collapsed")
+        start = st.date_input('From', value=default_start, min_value=data_min,
+                               max_value=data_max, key=f'{key_prefix}_start',
+                               label_visibility='collapsed')
     with dc2:
-        end = st.date_input("To", value=default_end, min_value=data_min,
-                             max_value=data_max, key=f"{key_prefix}_end",
-                             label_visibility="collapsed")
+        end = st.date_input('To', value=default_end, min_value=data_min,
+                             max_value=data_max, key=f'{key_prefix}_end',
+                             label_visibility='collapsed')
     return start, end
 
 
@@ -712,10 +735,23 @@ def _render_df_as_html_global(df, max_height=None):
     )
 
 
-def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=False):
-    """Render a compact data-freshness indicator (right-aligned)."""
-    if is_live:
-        time_label = '<span style="color:#22c55e;font-weight:600;">&#9679; Live</span>'
+def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=False,
+                            source=None, is_fallback=False):
+    """Render a compact data-freshness indicator (right-aligned).
+
+    Args:
+        last_refreshed_str: UTC timestamp string from sync_log or datetime.utcnow().
+        new_rows: Number of rows fetched / new today.
+        is_live: True when data was just fetched from a live API.
+        source: Data source label (e.g. 'Packiyo', 'Shopify + Amazon').
+        is_fallback: True when showing cached/fallback data instead of live.
+    """
+    if is_fallback:
+        dot_color = '#f59e0b'
+        time_label = f'<span style="color:{dot_color};font-weight:600;">&#9679; Fallback</span>'
+    elif is_live:
+        dot_color = '#22c55e'
+        time_label = f'<span style="color:{dot_color};font-weight:600;">&#9679; Live</span>'
     elif last_refreshed_str:
         try:
             last_dt = datetime.strptime(last_refreshed_str[:19], '%Y-%m-%d %H:%M:%S')
@@ -733,21 +769,30 @@ def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=Fals
     else:
         time_label = '<span style="color:#f59e0b;">No sync data</span>'
 
+    source_label = ''
+    if source:
+        source_label = (
+            f'<div style="font-size:0.68rem;color:#94a3b8;margin-top:1px;">'
+            f'Source: {source}</div>'
+        )
+
     rows_label = ''
     if new_rows is not None and new_rows > 0:
+        rows_text = f'{new_rows:,} rows' if is_live else f'+{new_rows:,} rows today'
         rows_label = (
-            f'<div style="font-size:0.68rem;color:#22c55e;margin-top:2px;">'
-            f'+{new_rows:,} new rows today</div>'
+            f'<div style="font-size:0.68rem;color:#22c55e;margin-top:1px;">'
+            f'{rows_text}</div>'
         )
     elif new_rows is not None and new_rows == 0 and not is_live:
         rows_label = (
-            '<div style="font-size:0.68rem;color:#94a3b8;margin-top:2px;">'
+            '<div style="font-size:0.68rem;color:#94a3b8;margin-top:1px;">'
             'No new rows today</div>'
         )
 
     st.markdown(
         f'<div style="text-align:right;padding:28px 0 0;white-space:nowrap;">'
         f'<div style="font-size:0.74rem;color:#64748b;font-weight:500;">{time_label}</div>'
+        f'{source_label}'
         f'{rows_label}'
         f'</div>',
         unsafe_allow_html=True,
@@ -768,13 +813,14 @@ st.sidebar.caption("Command Center")
 _NAV_ICONS = {
     "Overview": "📊", "Marketing": "📈", "Retention": "🔄",
     "Demand Forecast": "🔮", "Projected Inventory": "📦",
-    "Reorder Alerts": "🚨", "3PL Inventory": "🏭", "Amazon Inventory": "🛒",
+    "Reorder Alerts": "🚨", "FBA Transfers": "🚚",
+    "3PL Inventory": "🏭", "Amazon Inventory": "🛒",
     "Financials": "💰", "Settings": "⚙️",
 }
 
 _NAV_GROUPS = [
     ("Analytics", ["Overview", "Marketing", "Retention"]),
-    ("Inventory", ["Demand Forecast", "Projected Inventory", "Reorder Alerts", "3PL Inventory", "Amazon Inventory"]),
+    ("Inventory", ["Demand Forecast", "Projected Inventory", "Reorder Alerts", "FBA Transfers", "3PL Inventory", "Amazon Inventory"]),
     ("Finance & Config", ["Financials", "Settings"]),
 ]
 
@@ -1259,7 +1305,9 @@ if page == "Overview":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
             _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
 
     # Show last sync status (compact)
     with get_db() as conn:
@@ -1467,7 +1515,9 @@ elif page == "Retention":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify'])
             _new = get_new_rows_since_yesterday(conn, ['shopify'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
 
     col1, col2 = st.columns(2)
     skus = load_sku_list()
@@ -1640,7 +1690,9 @@ elif page == "Demand Forecast":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
             _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
     st.caption("Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.")
 
     # Seasonality status
@@ -2129,7 +2181,9 @@ elif page == "Projected Inventory":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
             _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
     st.caption("Combines current inventory across all channels (3PL + Amazon FBA) with the full DTC demand forecast (Shopify + Amazon) to project inventory levels per SKU per month.")
 
     # --- Fetch live inventory from all sources ---
@@ -2495,11 +2549,10 @@ elif page == "3PL Inventory":
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("3PL Inventory")
-    with _badge_col:
-        _render_freshness_badge(is_live=True)
-    st.caption("Live stock from Packiyo.")
-
     if not config.PACKIYO_API_TOKEN:
+        with _badge_col:
+            _render_freshness_badge(is_fallback=True, source='Packiyo (no token)')
+        st.caption("Showing cached sales velocity — Packiyo API token not configured.")
         st.info("Live 3PL inventory requires a Packiyo API token. Add it in **Settings** or set the `PACKIYO_API_TOKEN` environment variable.")
 
         # Fallback: show recent sales velocity from database
@@ -2532,6 +2585,18 @@ elif page == "3PL Inventory":
             except Exception as e:
                 inv = None
                 st.error(f"Failed to fetch inventory: {e}")
+
+        with _badge_col:
+            if inv:
+                _render_freshness_badge(
+                    is_live=True,
+                    source='Packiyo API',
+                    last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                    new_rows=len(inv),
+                )
+            else:
+                _render_freshness_badge(is_fallback=True, source='Packiyo API (error)')
+        st.caption("Live stock from Packiyo.")
 
         if inv:
             inv_df = pd.DataFrame(inv)
@@ -2660,15 +2725,15 @@ elif page == "Amazon Inventory":
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Amazon Inventory")
-    with _badge_col:
-        _render_freshness_badge(is_live=True)
-    st.caption("Live FBA stock from Seller Central.")
 
     has_amazon_creds = all(getattr(config, k, "") for k in [
         "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
     ])
 
     if not has_amazon_creds:
+        with _badge_col:
+            _render_freshness_badge(is_fallback=True, source='Amazon SP-API (no creds)')
+        st.caption("Showing cached sales velocity — Amazon SP-API credentials not configured.")
         st.info("Live Amazon inventory requires SP-API credentials. Add them in **Settings** or set the `AMAZON_REFRESH_TOKEN`, `AMAZON_LWA_CLIENT_ID`, and `AMAZON_LWA_CLIENT_SECRET` environment variables.")
 
         # Fallback: show recent Amazon sales velocity from database
@@ -2701,6 +2766,18 @@ elif page == "Amazon Inventory":
             except Exception as e:
                 amz_inv = None
                 st.error(f"Failed to fetch Amazon inventory: {e}")
+
+        with _badge_col:
+            if amz_inv:
+                _render_freshness_badge(
+                    is_live=True,
+                    source='Amazon SP-API',
+                    last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                    new_rows=len(amz_inv),
+                )
+            else:
+                _render_freshness_badge(is_fallback=True, source='Amazon SP-API (error)')
+        st.caption("Live FBA stock from Seller Central.")
 
         if amz_inv:
             amz_df = pd.DataFrame(amz_inv)
@@ -2834,26 +2911,22 @@ elif page == "Reorder Alerts":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
             _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
     st.caption("Forecast-driven reorder timing based on live 3PL + FBA inventory.")
 
     from analytics.reorder import build_reorder_plan, build_inventory_runway_chart, LEAD_TIME_WEEKS, MOQ_UNITS, SAFETY_STOCK_WEEKS
 
     # --- Settings ---
     with st.expander("Settings", expanded=False):
-        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        col_s1, col_s2, col_s3 = st.columns(3)
         with col_s1:
             lt_weeks = st.number_input("Lead Time (weeks)", min_value=1, max_value=52, value=LEAD_TIME_WEEKS, key="ro_lt")
         with col_s2:
             moq = st.number_input("MOQ per SKU (units)", min_value=100, max_value=100000, value=MOQ_UNITS, step=500, key="ro_moq")
         with col_s3:
             safety_wk = st.number_input("Safety Buffer (weeks)", min_value=0, max_value=12, value=SAFETY_STOCK_WEEKS, key="ro_safety")
-        with col_s4:
-            transfer_lt_weeks = st.number_input(
-                "DTC→FBA Transfer (weeks)", min_value=1, max_value=12, value=4,
-                key="ro_transfer_lt",
-                help="How many weeks it takes for inventory to ship from your 3PL to Amazon FBA.",
-            )
 
     # --- Get SKU forecast from waterfall ---
     has_forecast = False
@@ -3248,15 +3321,61 @@ elif page == "Reorder Alerts":
                 mime="text/csv",
             )
 
-    # --- Amazon FBA Transfer Alerts ---
-    if has_amz_inv and has_forecast and not reorder_df.empty:
-        st.divider()
-        st.subheader("DTC → Amazon FBA Transfers")
-        st.caption(
-            f"When to ship inventory from your 3PL (Packiyo) to Amazon FBA. "
-            f"Transfer lead time: **{transfer_lt_weeks} weeks**."
+
+
+# ================================================================
+# PAGE: FBA TRANSFERS
+# ================================================================
+elif page == "FBA Transfers":
+    _title_col, _badge_col = st.columns([7, 3])
+    with _title_col:
+        st.title("FBA Transfers")
+    with _badge_col:
+        with get_db() as conn:
+            _ts = get_last_sync_timestamp(conn, ['amazon'])
+            _new = get_new_rows_since_yesterday(conn, ['amazon'])
+            _srcs = get_synced_sources(conn, ['amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+    st.caption("When to ship inventory from your 3PL (Packiyo) to Amazon FBA.")
+
+    # --- Settings ---
+    with st.expander("Settings", expanded=False):
+        transfer_lt_weeks = st.number_input(
+            "DTC→FBA Transfer Lead Time (weeks)", min_value=1, max_value=12, value=4,
+            key="fba_transfer_lt",
+            help="How many weeks it takes for inventory to ship from your 3PL to Amazon FBA.",
         )
 
+    # --- Fetch inventory from both sources ---
+    inv_data_3pl_fba = []
+    inv_data_amz_fba = []
+    has_amz_inv_fba = False
+
+    with st.spinner("Fetching live inventory..."):
+        if config.PACKIYO_API_TOKEN:
+            try:
+                from etl.packiyo_client import get_inventory as get_3pl_inventory
+                inv_data_3pl_fba = get_3pl_inventory()
+            except Exception as e:
+                st.warning(f"Could not fetch 3PL inventory: {e}")
+
+        has_amazon_creds_fba = all(getattr(config, k, "") for k in [
+            "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
+        ])
+        if has_amazon_creds_fba:
+            try:
+                from etl.amazon_inventory import get_inventory as get_fba_inventory
+                inv_data_amz_fba = get_fba_inventory()
+                has_amz_inv_fba = True
+            except Exception as e:
+                st.warning(f"Could not fetch Amazon FBA inventory: {e}")
+
+    if not has_amz_inv_fba:
+        st.info("No Amazon FBA credentials configured. Connect Amazon in **Settings** to see transfer alerts.")
+    elif not inv_data_amz_fba:
+        st.info("No Amazon FBA inventory data found.")
+    else:
         # Compute Amazon-specific demand from daily_sku_sales (last 90 days average)
         with get_db() as conn:
             _amz_demand = pd.read_sql_query("""
@@ -3273,7 +3392,7 @@ elif page == "Reorder Alerts":
         today_t = datetime.utcnow().date()
         transfer_rows = []
 
-        for item in inv_data_amz:
+        for item in inv_data_amz_fba:
             sku = item["sku"]
             if sku not in FORECAST_SKUS:
                 continue
@@ -3290,7 +3409,7 @@ elif page == "Reorder Alerts":
             days_until_transfer = (transfer_by - today_t).days if transfer_by else 999
 
             # 3PL stock available for transfer
-            _3pl_item = next((i for i in inv_data_3pl if i["sku"] == sku), None)
+            _3pl_item = next((i for i in inv_data_3pl_fba if i["sku"] == sku), None)
             _3pl_avail = _3pl_item.get("quantity_available", 0) if _3pl_item else 0
 
             # Transfer quantity: 2 months of Amazon demand, rounded to 100
@@ -3328,7 +3447,7 @@ elif page == "Reorder Alerts":
             # KPI summary
             t_urgent = transfer_df[transfer_df["Urgency"].isin(["OVERDUE", "TRANSFER NOW"])]
             t_c1, t_c2, t_c3 = st.columns(3)
-            t_c1.metric("🔴 Urgent Transfers", len(t_urgent))
+            t_c1.metric("Urgent Transfers", len(t_urgent))
             t_c2.metric("Total FBA SKUs", len(transfer_df))
             t_c3.metric("Transfer Lead Time", f"{transfer_lt_weeks} weeks")
 
@@ -3359,7 +3478,9 @@ elif page == "Marketing":
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
             _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new)
+            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+        _render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
 
     with get_db() as conn:
         _mkt_klaviyo_key = get_setting(conn, "klaviyo_api_key", "")
