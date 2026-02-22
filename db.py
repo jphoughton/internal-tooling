@@ -243,6 +243,29 @@ def log_sync(conn, source, sync_date, records_fetched, status="success", error_m
     """, (source, sync_date, records_fetched, status, error_message))
 
 
+def get_last_sync_timestamp(conn, sources):
+    """Return created_at of the most recent successful sync across given sources."""
+    placeholders = ','.join('?' for _ in sources)
+    row = conn.execute(
+        f"SELECT MAX(created_at) as last_ts FROM sync_log "
+        f"WHERE source IN ({placeholders}) AND status = 'success'",
+        sources
+    ).fetchone()
+    return row['last_ts'] if row and row['last_ts'] else None
+
+
+def get_new_rows_since_yesterday(conn, sources):
+    """Return total records_fetched for today's syncs across given sources."""
+    placeholders = ','.join('?' for _ in sources)
+    row = conn.execute(
+        f"SELECT COALESCE(SUM(records_fetched), 0) as total "
+        f"FROM sync_log WHERE source IN ({placeholders}) "
+        f"AND sync_date = date('now') AND status = 'success'",
+        sources
+    ).fetchone()
+    return row['total']
+
+
 def upsert_media_spend(conn, month, spend, roas, source="all"):
     conn.execute("""
         INSERT INTO media_spend (month, spend, new_customer_roas, source)
