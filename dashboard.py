@@ -12,7 +12,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from db import (
-    get_db, init_db, rebuild_daily_sales,
+    get_db, init_db, rebuild_daily_sales, read_sql,
     get_media_spend, upsert_media_spend,
     get_amazon_revenue_forecast, upsert_amazon_revenue_forecast,
     get_planned_inbound, get_planned_inbound_dict, upsert_planned_inbound,
@@ -1045,13 +1045,13 @@ def load_overview_stats(date_start=None, date_end=None):
         total_skus = conn.execute("SELECT COUNT(*) FROM sku_master WHERE is_active = 1").fetchone()[0]
 
         # Source split — use daily_sku_sales for consistent revenue across channels
-        source_split = pd.read_sql_query(
+        source_split = read_sql(
             f"SELECT source, SUM(order_count) as orders, SUM(revenue) as revenue FROM daily_sku_sales WHERE 1=1 {date_clause} GROUP BY source",
             conn, params=params_d,
         )
 
         # Top SKUs
-        top_skus = pd.read_sql_query(f"""
+        top_skus = read_sql(f"""
             SELECT oi.sku, sm.product_name, sm.category,
                    SUM(oi.quantity) as total_units,
                    SUM(oi.total_price) as total_revenue
@@ -1065,7 +1065,7 @@ def load_overview_stats(date_start=None, date_end=None):
         """, conn, params=params_d)
 
         # Daily trend by source (for stacked revenue chart)
-        daily_trend = pd.read_sql_query(f"""
+        daily_trend = read_sql(f"""
             SELECT sale_date, source,
                    SUM(units_sold) as units, SUM(revenue) as revenue
             FROM daily_sku_sales
@@ -1196,7 +1196,7 @@ def _compute_global_alerts():
         # FBA transfer alerts
         if _amz_inv_items:
             with get_db() as conn:
-                _amz_dem = pd.read_sql_query("""
+                _amz_dem = read_sql("""
                     SELECT sku, SUM(units_sold) / 3.0 as monthly_demand
                     FROM daily_sku_sales
                     WHERE source = 'amazon' AND sale_date >= date('now', '-90 days')
@@ -2557,7 +2557,7 @@ elif page == "3PL Inventory":
 
         # Fallback: show recent sales velocity from database
         with get_db() as conn:
-            _fb_df = pd.read_sql_query("""
+            _fb_df = read_sql("""
                 SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
                        ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
                 FROM daily_sku_sales
@@ -2738,7 +2738,7 @@ elif page == "Amazon Inventory":
 
         # Fallback: show recent Amazon sales velocity from database
         with get_db() as conn:
-            _amz_fb = pd.read_sql_query("""
+            _amz_fb = read_sql("""
                 SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
                        ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
                 FROM daily_sku_sales
@@ -3365,7 +3365,7 @@ elif page == "FBA Transfers":
 
         # Fallback: show Amazon sales velocity from database
         with get_db() as conn:
-            _fb_amz = pd.read_sql_query("""
+            _fb_amz = read_sql("""
                 SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
                        ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
                 FROM daily_sku_sales
@@ -3609,14 +3609,17 @@ elif page == "Marketing":
 
     with get_db() as conn:
         try:
-            _mkt_cols = [d[1] for d in conn.execute("PRAGMA table_info(google_sheet_data)").fetchall()]
+            _mkt_cols = [d["column_name"] for d in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'google_sheet_data'"
+            ).fetchall()]
             _has_gs_data = "date" in _mkt_cols
         except Exception:
             _has_gs_data = False
 
     if _has_gs_data:
         with get_db() as conn:
-            mkt_df = pd.read_sql_query("SELECT * FROM google_sheet_data ORDER BY id", conn)
+            mkt_df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
 
         if not mkt_df.empty:
             mkt_df["_date"] = pd.to_datetime(mkt_df["date"], format="mixed", dayfirst=False)
@@ -4407,7 +4410,7 @@ elif page == "Marketing":
             # We use the full (unfiltered by date range) dataset for these tabs
             # Reload the full data to avoid date-filter distortion
             with get_db() as _perf_conn:
-                _perf_df = pd.read_sql_query("SELECT * FROM google_sheet_data ORDER BY id", _perf_conn)
+                _perf_df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", _perf_conn)
             _perf_df["_date"] = pd.to_datetime(_perf_df["date"], format="mixed", dayfirst=False)
             _perf_df = _perf_df.sort_values("_date")
             # Apply same Triple Whale 0.5x adjustment
@@ -4429,7 +4432,7 @@ elif page == "Marketing":
             _amz_daily = pd.DataFrame()
             try:
                 with get_db() as _amz_perf_conn:
-                    _amz_daily = pd.read_sql_query(
+                    _amz_daily = read_sql(
                         "SELECT sale_date, SUM(revenue) as _amz_revenue, 0 as _amz_spend "
                         "FROM daily_sku_sales WHERE source = 'amazon' "
                         "GROUP BY sale_date ORDER BY sale_date",
@@ -4777,7 +4780,7 @@ elif page == "Financials":
     else:
         with get_db() as conn:
             # Load all data — we'll filter intelligently
-            fin_all = pd.read_sql_query("SELECT * FROM bank_transactions ORDER BY date", conn)
+            fin_all = read_sql("SELECT * FROM bank_transactions ORDER BY date", conn)
 
         fin_all["_date"] = pd.to_datetime(fin_all["date"], format="mixed", dayfirst=False)
         fin_all = fin_all.sort_values("_date")

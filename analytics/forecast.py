@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from prophet import Prophet
 import logging
-from db import get_db
+from db import get_db, read_sql
 from config import FORECAST_HORIZON_DAYS, MIN_HISTORY_DAYS, LEAD_TIME_DAYS, SAFETY_STOCK_MULTIPLIER
 
 # Suppress Prophet's verbose logging
@@ -19,15 +19,15 @@ def get_sku_daily_sales(sku=None):
     """Get daily sales time series, optionally filtered by SKU."""
     with get_db() as conn:
         if sku:
-            df = pd.read_sql_query("""
+            df = read_sql("""
                 SELECT sale_date as ds, SUM(units_sold) as y
                 FROM daily_sku_sales
-                WHERE sku = ?
+                WHERE sku = %s
                 GROUP BY sale_date
                 ORDER BY sale_date
             """, conn, params=[sku])
         else:
-            df = pd.read_sql_query("""
+            df = read_sql("""
                 SELECT sale_date as ds, sku, SUM(units_sold) as y
                 FROM daily_sku_sales
                 GROUP BY sale_date, sku

@@ -188,14 +188,16 @@ def get_sku_sales_rank(lookback_days=90):
             return val
 
     from db import get_db
+    from datetime import datetime, timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
     with get_db() as conn:
         rows = conn.execute("""
             SELECT sku, SUM(units_sold) as total
             FROM daily_sku_sales
-            WHERE sale_date >= date('now', ? || ' days')
+            WHERE sale_date >= %s
             GROUP BY sku
             ORDER BY total DESC
-        """, (f"-{lookback_days}",)).fetchall()
+        """, (cutoff,)).fetchall()
 
     rank = {r["sku"]: idx for idx, r in enumerate(rows)}
     _rank_cache[cache_key] = (rank, now)

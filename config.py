@@ -84,23 +84,19 @@ def _load_credentials_from_db():
     """Overlay credential values from the persistent DB onto os.environ.
 
     This ensures credentials survive Railway container redeploys since the
-    SQLite DB lives on the persistent /data volume.
+    PostgreSQL DB persists independently of the app container.
     """
     try:
-        import sqlite3
-        db_path = str(DB_PATH)
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT key, value FROM app_settings WHERE key IN ({})".format(
-                ",".join("?" for _ in CREDENTIAL_KEYS)
-            ),
-            list(CREDENTIAL_KEYS.keys()),
-        ).fetchall()
-        conn.close()
-        for row in rows:
-            if row["value"]:  # only override if DB has a non-empty value
-                os.environ[row["key"]] = row["value"]
+        from db import get_db
+        with get_db() as conn:
+            placeholders = ','.join('%s' for _ in CREDENTIAL_KEYS)
+            rows = conn.execute(
+                f"SELECT key, value FROM app_settings WHERE key IN ({placeholders})",
+                list(CREDENTIAL_KEYS.keys()),
+            ).fetchall()
+            for row in rows:
+                if row["value"]:  # only override if DB has a non-empty value
+                    os.environ[row["key"]] = row["value"]
     except Exception:
         pass  # DB may not exist yet on first run
 
@@ -109,32 +105,20 @@ def save_credentials(values: dict):
     """Persist credentials to both the DB (durable) and .env (local convenience)."""
     # --- Write to DB (primary, persistent on Railway) ---
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        for k, v in values.items():
-            conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-                "updated_at = CURRENT_TIMESTAMP",
-                (k, v),
-            )
-        # Also persist USE_MOCK_DATA flag
-        has_amazon = any(values.get(k) for k in [
-            "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-        ])
-        has_shopify = any(values.get(k) for k in [
-            "SHOPIFY_ACCESS_TOKEN", "SHOPIFY_CLIENT_ID",
-        ])
-        has_packiyo = bool(values.get("PACKIYO_API_TOKEN"))
-        mock = "false" if (has_amazon or has_shopify or has_packiyo) else "true"
-        conn.execute(
-            "INSERT INTO app_settings (key, value) VALUES ('USE_MOCK_DATA', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-            "updated_at = CURRENT_TIMESTAMP",
-            (mock,),
-        )
-        conn.commit()
-        conn.close()
+        from db import get_db, set_setting
+        with get_db() as conn:
+            for k, v in values.items():
+                set_setting(conn, k, v)
+            # Also persist USE_MOCK_DATA flag
+            has_amazon = any(values.get(k) for k in [
+                "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
+            ])
+            has_shopify = any(values.get(k) for k in [
+                "SHOPIFY_ACCESS_TOKEN", "SHOPIFY_CLIENT_ID",
+            ])
+            has_packiyo = bool(values.get("PACKIYO_API_TOKEN"))
+            mock = "false" if (has_amazon or has_shopify or has_packiyo) else "true"
+            set_setting(conn, "USE_MOCK_DATA", mock)
     except Exception:
         pass
 

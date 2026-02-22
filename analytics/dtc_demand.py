@@ -730,6 +730,7 @@ def build_amazon_forecast(horizon_months=12, growth_rate=0.0):
 def get_shopify_sku_sales_by_customer_type(lookback_months=3):
     """Legacy: Break down Shopify SKU sales into new vs repeat."""
     with get_db() as conn:
+        cutoff = (datetime.utcnow() - relativedelta(months=lookback_months)).strftime('%Y-%m-%d')
         rows = conn.execute("""
             SELECT
                 oi.sku,
@@ -746,10 +747,10 @@ def get_shopify_sku_sales_by_customer_type(lookback_months=3):
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE o.source = 'shopify'
-              AND o.order_date >= date('now', ? || ' months')
+              AND o.order_date >= ?
             GROUP BY oi.sku
             ORDER BY total_units DESC
-        """, (f"-{lookback_months}",)).fetchall()
+        """, (cutoff,)).fetchall()
 
     if not rows:
         return pd.DataFrame()

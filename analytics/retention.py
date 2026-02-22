@@ -4,7 +4,7 @@ Retention analytics:
 2. SKU lifecycle (sales decay/growth) curves
 """
 import pandas as pd
-from db import get_db
+from db import get_db, read_sql
 
 
 def get_customer_cohort_data(sku_filter=None, source_filter=None):
@@ -36,7 +36,7 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
             query += " AND o.source = ?"
             params.append(source_filter)
 
-        df = pd.read_sql_query(query, conn, params=params)
+        df = read_sql(query, conn, params=params)
 
     if df.empty:
         return pd.DataFrame()
@@ -90,7 +90,7 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
 def get_cohort_sizes():
     """Get the size of each monthly cohort."""
     with get_db() as conn:
-        df = pd.read_sql_query("""
+        df = read_sql("""
             SELECT
                 strftime('%Y-%m', first_order_date) as cohort,
                 COUNT(*) as cohort_size
@@ -130,7 +130,7 @@ def get_sku_lifecycle_data(sku=None, normalize=True):
 
         query += " GROUP BY ds.sku, ds.sale_date, sm.first_sale_date ORDER BY ds.sku, ds.sale_date"
 
-        df = pd.read_sql_query(query, conn, params=params)
+        df = read_sql(query, conn, params=params)
 
     if df.empty:
         return pd.DataFrame()
