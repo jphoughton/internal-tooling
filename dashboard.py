@@ -746,7 +746,7 @@ def _render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=Fals
         )
 
     st.markdown(
-        f'<div style="text-align:right;padding:8px 0 0;">'
+        f'<div style="text-align:right;padding:12px 0 0;white-space:nowrap;">'
         f'<div style="font-size:0.74rem;color:#64748b;font-weight:500;">{time_label}</div>'
         f'{rows_label}'
         f'</div>',
@@ -1252,7 +1252,7 @@ if _all_urgent:
 # PAGE: OVERVIEW
 # ================================================================
 if page == "Overview":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Overview")
     with _badge_col:
@@ -1460,7 +1460,7 @@ if page == "Overview":
 # PAGE: RETENTION
 # ================================================================
 elif page == "Retention":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Retention")
     with _badge_col:
@@ -1633,7 +1633,7 @@ elif page == "Retention":
 # PAGE: DEMAND FORECAST
 # ================================================================
 elif page == "Demand Forecast":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Demand Forecast")
     with _badge_col:
@@ -2122,7 +2122,7 @@ elif page == "Demand Forecast":
 # PAGE: PROJECTED INVENTORY
 # ================================================================
 elif page == "Projected Inventory":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Projected Inventory")
     with _badge_col:
@@ -2492,7 +2492,7 @@ elif page == "Projected Inventory":
 # PAGE: 3PL INVENTORY
 # ================================================================
 elif page == "3PL Inventory":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("3PL Inventory")
     with _badge_col:
@@ -2657,7 +2657,7 @@ elif page == "3PL Inventory":
 # PAGE: AMAZON INVENTORY
 # ================================================================
 elif page == "Amazon Inventory":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Amazon Inventory")
     with _badge_col:
@@ -2827,7 +2827,7 @@ elif page == "Amazon Inventory":
 # PAGE: REORDER ALERTS
 # ================================================================
 elif page == "Reorder Alerts":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Reorder Alerts")
     with _badge_col:
@@ -3352,7 +3352,7 @@ elif page == "Reorder Alerts":
 # PAGE: MARKETING (Klaviyo + Google Sheet analytics)
 # ================================================================
 elif page == "Marketing":
-    _title_col, _badge_col = st.columns([8, 2])
+    _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title("Marketing")
     with _badge_col:
