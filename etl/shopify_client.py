@@ -231,7 +231,13 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None):
                     product_name = f"{product_name} - {variant_title}"
 
                 quantity = int(item.get("quantity", 1))
-                unit_price = float(item.get("price", 0))
+                gross_price = float(item.get("price", 0))
+                line_discount = sum(
+                    float(d.get("amount", 0))
+                    for d in item.get("discount_allocations", [])
+                )
+                net_total = (quantity * gross_price) - line_discount
+                unit_price = net_total / quantity if quantity else gross_price
 
                 upsert_order_item(conn, order_id, sku, product_name, quantity, unit_price)
                 upsert_sku(conn, sku, product_name, None, order_date, "shopify")
