@@ -13,7 +13,7 @@ Multi-channel e-commerce analytics dashboard for **Hydrant** (DTC hydration mix 
 - **Charts**: Plotly 5.18+
 - **APIs**: Amazon SP-API, Shopify Admin API, Packiyo REST API, Google Sheets (public CSV)
 - **Scheduling**: `schedule` library (daemon mode)
-- **Hosting**: Local (runs on localhost:8501)
+- **Hosting**: Railway (Docker + supervisord) and local (localhost:8501)
 
 ## Architecture
 
@@ -398,6 +398,8 @@ git commit -m "fix: emergency hotfix" --no-verify
 - The `_gradient_perf_style()` pattern should be used for any new DoD/WoW/MoM displays
 - Amazon data never goes through the `orders` table — only `daily_sku_sales`
 - Test with mock data first (`USE_MOCK_DATA=true`) before touching live APIs
+- **After any deploy or UI change**: Use Playwright MCP to load the deployed URL (or localhost), screenshot each page, and verify data is actually rendering. Never assume a deploy worked — always verify visually.
+- Pages must never show completely empty — always provide a database fallback (e.g. sales velocity) when live API credentials are missing
 
 ## Current State
 
