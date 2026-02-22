@@ -4861,11 +4861,45 @@ elif page == "Settings":
 
     st.divider()
 
+    # --- Packiyo 3PL ---
+    st.subheader("Packiyo 3PL")
+    packiyo_vals = {}
+    packiyo_vals["PACKIYO_API_TOKEN"] = st.text_input(
+        "API Token",
+        value=getattr(config, "PACKIYO_API_TOKEN", ""),
+        type="password",
+        key="settings_PACKIYO_API_TOKEN",
+        help="Bearer token from Packiyo (e.g. 256|jKuI...)",
+    )
+    packiyo_vals["PACKIYO_API_URL"] = st.text_input(
+        "API URL",
+        value=getattr(config, "PACKIYO_API_URL", "https://aveshops.packiyo.com/api/v1"),
+        key="settings_PACKIYO_API_URL",
+        help="Packiyo API base URL",
+    )
+    packiyo_vals["PACKIYO_CUSTOMER_ID"] = st.text_input(
+        "Customer ID",
+        value=getattr(config, "PACKIYO_CUSTOMER_ID", "12"),
+        key="settings_PACKIYO_CUSTOMER_ID",
+        help="Your Packiyo customer ID",
+    )
+
+    if getattr(config, "PACKIYO_API_TOKEN", ""):
+        if st.button("Test Packiyo Connection"):
+            from etl.packiyo_client import test_connection as test_packiyo
+            ok, msg = test_packiyo()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+
+    st.divider()
+
     # --- Save ---
     col_save, col_oauth = st.columns(2)
     with col_save:
         if st.button("Save Credentials", type="primary"):
-            all_vals = {**amazon_vals, **shopify_vals}
+            all_vals = {**amazon_vals, **shopify_vals, **packiyo_vals}
             save_env(all_vals)
             st.success("Credentials saved!")
             st.rerun()
@@ -4886,7 +4920,7 @@ elif page == "Settings":
     # --- Status ---
     st.divider()
     st.subheader("Connection Status")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         has_amazon = all(getattr(config, k, "") for k in [
             "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
@@ -4910,6 +4944,11 @@ elif page == "Settings":
                 st.warning("Shopify: Credentials saved, click **Authorize Shopify** to connect")
             else:
                 st.warning("Shopify Admin API: Not configured")
+    with col3:
+        if getattr(config, "PACKIYO_API_TOKEN", ""):
+            st.success("Packiyo 3PL: Configured")
+        else:
+            st.warning("Packiyo 3PL: Not configured")
 
     if config.USE_MOCK_DATA:
         st.info("Currently using **mock data**. Add API credentials above to switch to live data.")
