@@ -2,6 +2,7 @@
 Streamlit Dashboard for Inventory Demand Forecasting.
 Pages: Overview, Retention, Forecast, Reorder Alerts
 """
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -177,6 +178,27 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# --- Password protection (Railway / production) ---
+def _check_password():
+    """Returns True if the user has entered the correct password."""
+    password = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not password:
+        return True  # No password set = no gate (local dev)
+    if st.session_state.get("authenticated"):
+        return True
+    st.title("Hydrant Command Center")
+    entered = st.text_input("Password", type="password", key="pw_input")
+    if st.button("Login", key="pw_login"):
+        if entered == password:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
+
+if not _check_password():
+    st.stop()
 
 # ── Global CSS — Hydrant Brand ────────────────────────────────
 # Brand colors: Navy #0F3557, Sky Blue #7ECCE5, Orange #F58B3D,

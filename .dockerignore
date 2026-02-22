@@ -1,0 +1,17 @@
+.git
+.env
+.env.local
+.env*.local
+venv/
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.claude/
+.husky/
+.vscode/
+*.log

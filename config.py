@@ -12,7 +12,13 @@ load_dotenv(override=True)
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / "inventory.db"
+# Allow override for Railway volume mount (e.g., DATABASE_PATH=/data/inventory.db)
+_db_override = os.getenv("DATABASE_PATH")
+if _db_override:
+    DB_PATH = Path(_db_override)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+else:
+    DB_PATH = DATA_DIR / "inventory.db"
 
 # --- Amazon SP-API ---
 AMAZON_REFRESH_TOKEN = os.getenv("AMAZON_REFRESH_TOKEN", "")
