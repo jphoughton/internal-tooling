@@ -55,8 +55,34 @@ Inventory/
 ├── data/                  # SQLite database (gitignored)
 │   └── inventory.db
 │
-└── .env                   # API credentials (gitignored)
+├── .env                   # API credentials (gitignored)
+│
+├── .mcp.json              # MCP servers (committed — auto-loads for all Claude Code users)
+├── .claude/
+│   └── settings.json      # Claude Code permissions (committed — shared with team)
+│
+├── setup-git-autopilot.sh # One-time setup script (hooks, linting, MCPs, permissions)
+└── .env.example           # Onboarding template for env vars
 ```
+
+## MCP Servers (auto-configured via .mcp.json)
+
+These load automatically for anyone using Claude Code on this repo — no manual config needed:
+
+| Server | What it does | Auth needed |
+|--------|-------------|-------------|
+| **context7** | Real-time, version-specific library documentation. Prevents using outdated/deprecated methods. | None |
+| **sequential-thinking** | Structured problem-solving for complex architectural decisions. | None |
+| **playwright** | Browser automation — Claude can click, type, screenshot, and verify the app works. | None |
+| **github** | PR/issue management, CI/CD status, code review. | `GITHUB_TOKEN` env var |
+
+To add more MCPs: edit `.mcp.json`, commit, push. Every teammate gets them on next pull.
+
+### Claude Code Permissions (.claude/settings.json)
+
+Pre-configured safe defaults committed to the repo:
+- **Allowed**: python, pip, streamlit, git read ops, git commit, npm run, prettier, eslint, playwright
+- **Denied**: reading .env files, `rm -rf`, `git push --force`
 
 ## Data Flow
 
@@ -267,18 +293,44 @@ main (production)
 - **lint-staged** runs on every commit
 - **EditorConfig** ensures consistent whitespace across editors
 
-## Git Aliases (local to this repo)
+## Git Autopilot — Setup & How It Works
 
+### One-Time Setup
+Run once in the project root to install all hooks, tooling, MCPs, and permissions:
 ```bash
-git lg          # Pretty one-line log with graph
-git last        # Show last commit details
-git st          # Short status
-git branches    # All branches sorted by recent
-git undo        # Undo last commit (keep changes)
-git amend       # Add to last commit without changing message
+bash setup-git-autopilot.sh
 ```
 
-## Git Autopilot — How It Works
+**Requires Node.js** (for husky, commitlint, lint-staged). Installs these dev dependencies:
+- **husky** — Git hooks manager (pre-commit, commit-msg, pre-push)
+- **@commitlint/cli + config-conventional** — Rejects non-conventional commit messages
+- **lint-staged** — Auto-lints only staged files before commit
+- **prettier** — Code auto-formatter (JSON, MD, YAML, CSS, JS/TS)
+
+### Config Files Created by Setup
+
+| File | Purpose |
+|------|---------|
+| `.mcp.json` | MCP servers — auto-loaded for all Claude Code users |
+| `.claude/settings.json` | Claude Code permissions (allow/deny rules) |
+| `commitlint.config.js` | Allowed commit types + rules (max 100 char subject) |
+| `.lintstagedrc.json` | Which file types get linted/formatted on commit |
+| `.prettierrc.json` | Formatting rules (single quotes, trailing commas, 100 char width) |
+| `.husky/pre-commit` | Runs `npx lint-staged` |
+| `.husky/commit-msg` | Runs `npx commitlint --edit` |
+| `.husky/pre-push` | Runs `npm test` if test script exists |
+| `.vscode/settings.json` | Auto-format on save, git branch protection, editor defaults |
+| `.vscode/extensions.json` | Recommended extensions (auto-prompted on project open) |
+| `.editorconfig` | Universal whitespace rules (works in any editor) |
+| `.env.example` | Onboarding template — shows new devs what tokens they need |
+
+### New Dev Onboarding (after cloning)
+1. `npm install` — hooks auto-install via husky
+2. `cp .env.example .env` — fill in `GITHUB_TOKEN` and API credentials
+3. Open in VS Code — accept extension recommendations
+4. That's it. MCP servers, formatting, linting, commit enforcement all activate automatically.
+
+### What Happens Automatically After Setup
 
 | When you... | What happens automatically |
 |-------------|---------------------------|
@@ -292,6 +344,16 @@ git amend       # Add to last commit without changing message
 - **Conventional Commits extension**: Click the checkmark icon in Source Control panel for commit GUI
 - **GitLens**: Hover over any line to see who changed it and when
 - **Git Graph**: Click "Git Graph" in bottom status bar for visual branch history
+
+### Git Aliases (added by setup)
+```bash
+git lg          # Pretty one-line log with graph
+git last        # Show last commit details
+git st          # Short status
+git branches    # All branches sorted by recent
+git undo        # Undo last commit (keep changes)
+git amend       # Add to last commit without changing message
+```
 
 ### Emergency Hook Skip
 ```bash
