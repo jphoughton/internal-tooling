@@ -2425,7 +2425,26 @@ elif page == "3PL Inventory":
     st.caption("Live stock from Packiyo.")
 
     if not config.PACKIYO_API_TOKEN:
-        st.warning("No Packiyo API token configured. Go to **Settings** to add your credentials.")
+        st.info("Live 3PL inventory requires a Packiyo API token. Add it in **Settings** or set the `PACKIYO_API_TOKEN` environment variable.")
+
+        # Fallback: show recent sales velocity from database
+        with get_db() as conn:
+            _fb_df = pd.read_sql_query("""
+                SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
+                       ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
+                FROM daily_sku_sales
+                WHERE sale_date >= date('now', '-30 days') AND source = 'shopify'
+                GROUP BY sku ORDER BY units_30d DESC
+            """, conn)
+        if not _fb_df.empty:
+            _fb_df = sort_df_by_best_seller(_fb_df, sku_col="sku")
+            _fb_df.insert(1, "Flavor", _fb_df["sku"].apply(lambda s: get_flavor(s, "")))
+            st.subheader("Recent DTC Sales Velocity (last 30 days)")
+            st.caption("Showing Shopify sales data as a reference while live 3PL inventory is unavailable.")
+            _fb_display = _fb_df.rename(columns={"sku": "SKU", "units_30d": "Units (30d)",
+                                                  "revenue_30d": "Revenue (30d)", "daily_velocity": "Daily Avg"})
+            _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_fb_display, use_container_width=True, hide_index=True)
     else:
         from etl.packiyo_client import get_inventory
 
@@ -2568,7 +2587,26 @@ elif page == "Amazon Inventory":
     ])
 
     if not has_amazon_creds:
-        st.warning("No Amazon SP-API credentials configured. Go to **Settings** to add your Refresh Token, LWA Client ID, and LWA Client Secret.")
+        st.info("Live Amazon inventory requires SP-API credentials. Add them in **Settings** or set the `AMAZON_REFRESH_TOKEN`, `AMAZON_LWA_CLIENT_ID`, and `AMAZON_LWA_CLIENT_SECRET` environment variables.")
+
+        # Fallback: show recent Amazon sales velocity from database
+        with get_db() as conn:
+            _amz_fb = pd.read_sql_query("""
+                SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
+                       ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
+                FROM daily_sku_sales
+                WHERE sale_date >= date('now', '-30 days') AND source = 'amazon'
+                GROUP BY sku ORDER BY units_30d DESC
+            """, conn)
+        if not _amz_fb.empty:
+            _amz_fb = sort_df_by_best_seller(_amz_fb, sku_col="sku")
+            _amz_fb.insert(1, "Flavor", _amz_fb["sku"].apply(lambda s: get_flavor(s, "")))
+            st.subheader("Recent Amazon Sales Velocity (last 30 days)")
+            st.caption("Showing Amazon sales data as a reference while live FBA inventory is unavailable.")
+            _amz_fb_display = _amz_fb.rename(columns={"sku": "SKU", "units_30d": "Units (30d)",
+                                                       "revenue_30d": "Revenue (30d)", "daily_velocity": "Daily Avg"})
+            _amz_fb_display["Revenue (30d)"] = _amz_fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_amz_fb_display, use_container_width=True, hide_index=True)
     else:
         from etl.amazon_inventory import get_inventory as get_amz_inventory
 
