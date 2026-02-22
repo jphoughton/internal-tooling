@@ -1,1 +1,0 @@
-data/seed.sql.gz filter=lfs diff=lfs merge=lfs -text
