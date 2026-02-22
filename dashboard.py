@@ -2443,8 +2443,11 @@ elif page == "3PL Inventory":
             st.caption("Showing Shopify sales data as a reference while live 3PL inventory is unavailable.")
             _fb_display = _fb_df.rename(columns={"sku": "SKU", "units_30d": "Units (30d)",
                                                   "revenue_30d": "Revenue (30d)", "daily_velocity": "Daily Avg"})
-            _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}")
-            st.dataframe(_fb_display, use_container_width=True, hide_index=True)
+            for _fc in ["Units (30d)", "Daily Avg"]:
+                if _fc in _fb_display.columns:
+                    _fb_display[_fc] = _fb_display[_fc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
+            _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
+            _render_df_as_html_global(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700))
     else:
         from etl.packiyo_client import get_inventory
 
