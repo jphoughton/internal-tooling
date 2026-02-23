@@ -313,6 +313,16 @@ def init_db():
     """Create all tables and indexes if they don't exist."""
     print("  init_db: connecting...", flush=True)
     with get_db() as conn:
+        # Kill stale connections from crashed deploys that may hold locks
+        print("  init_db: terminating stale connections...", flush=True)
+        conn.execute("""
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE pid <> pg_backend_pid()
+              AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+              AND query_start < NOW() - INTERVAL '60 seconds'
+        """)
+
         for i, stmt in enumerate(_SCHEMA_SQL):
             label = stmt.strip()[:60].replace('\n', ' ')
             print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
