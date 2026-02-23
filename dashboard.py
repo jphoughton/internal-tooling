@@ -152,7 +152,7 @@ if configured_sources:
 else:
     st.sidebar.caption("\u2699\uFE0F No sources \u2014 go to Settings")
 
-# --- Auto-sync: run daily sync if last sync was > 24 hours ago ---
+# --- Auto-sync: trigger if no successful sync since 5 AM PST today ---
 if configured_sources:
     try:
         with get_db() as conn:
@@ -166,8 +166,13 @@ if configured_sources:
     if _last_ts:
         try:
             from datetime import datetime as _dt_auto
-            _last_dt = _dt_auto.strptime(_last_ts[:19], "%Y-%m-%d %H:%M:%S")
-            _needs_auto_sync = (_dt_auto.utcnow() - _last_dt).total_seconds() > 86400  # 24h
+            from zoneinfo import ZoneInfo as _ZI
+            from config import SYNC_HOUR as _SH, SYNC_TIMEZONE as _STZ
+            _pst = _ZI(_STZ)
+            _now_pst = _dt_auto.now(_pst)
+            _today_sync_cutoff = _now_pst.replace(hour=_SH, minute=0, second=0, microsecond=0)
+            _last_dt = _dt_auto.strptime(_last_ts[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=_ZI('UTC'))
+            _needs_auto_sync = _now_pst >= _today_sync_cutoff and _last_dt < _today_sync_cutoff
         except (ValueError, TypeError):
             _needs_auto_sync = True
     else:
@@ -175,7 +180,7 @@ if configured_sources:
 
     if _needs_auto_sync and "auto_sync_done" not in st.session_state:
         st.session_state["auto_sync_done"] = True
-        st.sidebar.info("\u23F3 Auto-syncing (last sync > 24h ago)...")
+        st.sidebar.info("\u23F3 Auto-syncing (no sync since 5 AM today)...")
         try:
             from etl.sync import run_daily_sync as _auto_sync
             _auto_results = _auto_sync(full_refresh=False)

@@ -14,7 +14,8 @@ import sys
 import schedule
 import time
 from datetime import datetime
-from config import SYNC_HOUR, SYNC_MINUTE
+from zoneinfo import ZoneInfo
+from config import SYNC_HOUR, SYNC_MINUTE, SYNC_TIMEZONE
 from etl.sync import run_daily_sync, run_parallel_backfill
 
 
@@ -34,11 +35,11 @@ def daily_job():
 
 
 def run_daemon():
-    """Run scheduler in daemon mode — keeps running and triggers daily."""
+    """Run scheduler in daemon mode — keeps running and triggers daily at 5 AM PST."""
     sync_time = f"{SYNC_HOUR:02d}:{SYNC_MINUTE:02d}"
-    schedule.every().day.at(sync_time).do(daily_job)
+    schedule.every().day.at(sync_time, SYNC_TIMEZONE).do(daily_job)
 
-    print(f"Scheduler started. Daily sync scheduled at {sync_time}.")
+    print(f"Scheduler started. Daily sync scheduled at {sync_time} {SYNC_TIMEZONE}.")
     print(f"Press Ctrl+C to stop.\n")
 
     while True:

@@ -49,8 +49,9 @@ LEAD_TIME_DAYS = int(os.getenv("LEAD_TIME_DAYS", "14"))  # Default reorder lead 
 SAFETY_STOCK_MULTIPLIER = float(os.getenv("SAFETY_STOCK_MULTIPLIER", "1.5"))
 
 # --- Scheduler ---
-SYNC_HOUR = int(os.getenv("SYNC_HOUR", "6"))  # Daily sync at 6 AM
+SYNC_HOUR = int(os.getenv("SYNC_HOUR", "5"))  # Daily sync at 5 AM PST
 SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
+SYNC_TIMEZONE = os.getenv("SYNC_TIMEZONE", "America/Los_Angeles")  # PST/PDT
 
 
 # --- All configurable keys for the Settings UI ---
