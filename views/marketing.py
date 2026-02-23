@@ -12,6 +12,7 @@ from db import (
     update_klaviyo_campaign_metrics, update_klaviyo_flow_metrics,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
+from analytics.retention import get_new_repeat_summary
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 from utils.constants import FORECAST_SKUS
@@ -1010,6 +1011,36 @@ def render(ctx):
             nc4.metric("NC CPA", f"${nc_cpa_avg:,.0f}", help="Total ad spend / new customer orders")
             nc5.metric("NC ROAS", f"{nc_roas:.2f}x", help="New customer revenue / ad spend")
 
+            # DB Ground Truth — per-channel new/repeat from order history
+            _db_nr_all = get_new_repeat_summary(str(mkt_start), str(mkt_end))
+            _db_nr_dtc = get_new_repeat_summary(str(mkt_start), str(mkt_end), 'shopify')
+            _db_nr_amz = get_new_repeat_summary(str(mkt_start), str(mkt_end), 'amazon')
+
+            if _db_nr_all['new_customers'] > 0 or _db_nr_all['repeat_customers'] > 0:
+                st.caption("**DB Ground Truth** (from Shopify + Amazon order history)")
+                _db_ch_ru, _db_ch_dtc, _db_ch_amz = st.columns(3)
+                with _db_ch_ru:
+                    st.markdown("**Roll Up**")
+                    _dbru1, _dbru2, _dbru3 = st.columns(3)
+                    _dbru1.metric("New Cust", f"{_db_nr_all['new_customers']:,}")
+                    _dbru2.metric("NC Rev", f"${_db_nr_all['new_revenue']:,.0f}")
+                    _db_nc_pct_all = _db_nr_all['new_revenue'] / (_db_nr_all['new_revenue'] + _db_nr_all['repeat_revenue']) * 100 if (_db_nr_all['new_revenue'] + _db_nr_all['repeat_revenue']) > 0 else 0
+                    _dbru3.metric("NC % Rev", f"{_db_nc_pct_all:.0f}%")
+                with _db_ch_dtc:
+                    st.markdown("**DTC (Shopify)**")
+                    _dbdtc1, _dbdtc2, _dbdtc3 = st.columns(3)
+                    _dbdtc1.metric("New Cust", f"{_db_nr_dtc['new_customers']:,}")
+                    _dbdtc2.metric("NC Rev", f"${_db_nr_dtc['new_revenue']:,.0f}")
+                    _db_nc_pct_dtc = _db_nr_dtc['new_revenue'] / (_db_nr_dtc['new_revenue'] + _db_nr_dtc['repeat_revenue']) * 100 if (_db_nr_dtc['new_revenue'] + _db_nr_dtc['repeat_revenue']) > 0 else 0
+                    _dbdtc3.metric("NC % Rev", f"{_db_nc_pct_dtc:.0f}%")
+                with _db_ch_amz:
+                    st.markdown("**Amazon**")
+                    _dbamz1, _dbamz2, _dbamz3 = st.columns(3)
+                    _dbamz1.metric("New Cust", f"{_db_nr_amz['new_customers']:,}")
+                    _dbamz2.metric("NC Rev", f"${_db_nr_amz['new_revenue']:,.0f}")
+                    _db_nc_pct_amz = _db_nr_amz['new_revenue'] / (_db_nr_amz['new_revenue'] + _db_nr_amz['repeat_revenue']) * 100 if (_db_nr_amz['new_revenue'] + _db_nr_amz['repeat_revenue']) > 0 else 0
+                    _dbamz3.metric("NC % Rev", f"{_db_nc_pct_amz:.0f}%")
+
             st.divider()
 
             # NC Revenue & Spend over time
@@ -1077,6 +1108,29 @@ def render(ctx):
             rc2.metric("Repeat Revenue", f"${ret_rev:,.0f}")
             rc3.metric("Repeat AOV", f"${ret_aov:,.0f}")
             rc4.metric("% of Total Revenue", f"{ret_pct:.0f}%")
+
+            # DB Ground Truth — Repeat Revenue per channel
+            if _db_nr_all['repeat_customers'] > 0:
+                st.caption("**DB Ground Truth** (from Shopify + Amazon order history)")
+                _dbr_ru, _dbr_dtc, _dbr_amz = st.columns(3)
+                with _dbr_ru:
+                    st.markdown("**Roll Up**")
+                    _dr1, _dr2, _dr3 = st.columns(3)
+                    _dr1.metric("Repeat Orders", f"{_db_nr_all['repeat_orders']:,}")
+                    _dr2.metric("Repeat Rev", f"${_db_nr_all['repeat_revenue']:,.0f}")
+                    _dr3.metric("Repeat AOV", f"${_db_nr_all['repeat_aov']:,.0f}")
+                with _dbr_dtc:
+                    st.markdown("**DTC (Shopify)**")
+                    _drd1, _drd2, _drd3 = st.columns(3)
+                    _drd1.metric("Repeat Orders", f"{_db_nr_dtc['repeat_orders']:,}")
+                    _drd2.metric("Repeat Rev", f"${_db_nr_dtc['repeat_revenue']:,.0f}")
+                    _drd3.metric("Repeat AOV", f"${_db_nr_dtc['repeat_aov']:,.0f}")
+                with _dbr_amz:
+                    st.markdown("**Amazon**")
+                    _dra1, _dra2, _dra3 = st.columns(3)
+                    _dra1.metric("Repeat Orders", f"{_db_nr_amz['repeat_orders']:,}")
+                    _dra2.metric("Repeat Rev", f"${_db_nr_amz['repeat_revenue']:,.0f}")
+                    _dra3.metric("Repeat AOV", f"${_db_nr_amz['repeat_aov']:,.0f}")
 
             # Repeat revenue over time
             fig_ret = go.Figure()

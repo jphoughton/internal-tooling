@@ -10,6 +10,7 @@ from db import (
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor
+from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 import config
 
@@ -153,6 +154,37 @@ def render(ctx):
 
     st.markdown('')  # spacing
 
+    # -- New vs Repeat Customer Breakdown --
+    nr_all = get_new_repeat_summary(str(ov_start), str(ov_end))
+    nr_dtc = get_new_repeat_summary(str(ov_start), str(ov_end), 'shopify')
+    nr_amz = get_new_repeat_summary(str(ov_start), str(ov_end), 'amazon')
+
+    # Roll-up KPIs
+    _nr1, _nr2, _nr3, _nr4 = st.columns(4)
+    _nr1.metric('New Customers', f"{nr_all['new_customers']:,}")
+    _nr2.metric('Repeat Customers', f"{nr_all['repeat_customers']:,}")
+    _nr3.metric('New Customer Revenue', f"${nr_all['new_revenue']:,.0f}")
+    _nr4.metric('Repeat Customer Revenue', f"${nr_all['repeat_revenue']:,.0f}")
+
+    # Per-channel breakdown
+    _ch_dtc, _ch_amz = st.columns(2)
+    with _ch_dtc:
+        st.caption('**DTC (Shopify)**')
+        _d1, _d2, _d3 = st.columns(3)
+        _d1.metric('New', f"{nr_dtc['new_customers']:,}", f"${nr_dtc['new_revenue']:,.0f} rev")
+        _d2.metric('Repeat', f"{nr_dtc['repeat_customers']:,}", f"${nr_dtc['repeat_revenue']:,.0f} rev")
+        _dtc_nc_pct = nr_dtc['new_revenue'] / (nr_dtc['new_revenue'] + nr_dtc['repeat_revenue']) * 100 if (nr_dtc['new_revenue'] + nr_dtc['repeat_revenue']) > 0 else 0
+        _d3.metric('NC % of Rev', f"{_dtc_nc_pct:.0f}%", f"AOV ${nr_dtc['new_aov']:,.0f} / ${nr_dtc['repeat_aov']:,.0f}")
+    with _ch_amz:
+        st.caption('**Amazon**')
+        _a1, _a2, _a3 = st.columns(3)
+        _a1.metric('New', f"{nr_amz['new_customers']:,}", f"${nr_amz['new_revenue']:,.0f} rev")
+        _a2.metric('Repeat', f"{nr_amz['repeat_customers']:,}", f"${nr_amz['repeat_revenue']:,.0f} rev")
+        _amz_nc_pct = nr_amz['new_revenue'] / (nr_amz['new_revenue'] + nr_amz['repeat_revenue']) * 100 if (nr_amz['new_revenue'] + nr_amz['repeat_revenue']) > 0 else 0
+        _a3.metric('NC % of Rev', f"{_amz_nc_pct:.0f}%", f"AOV ${nr_amz['new_aov']:,.0f} / ${nr_amz['repeat_aov']:,.0f}")
+
+    st.markdown('')  # spacing
+
     # -- Revenue chart + source split --
     col_left, col_right = st.columns([3, 1])
 
@@ -213,6 +245,62 @@ def render(ctx):
             fig.update_traces(textposition='inside', textinfo='percent+label',
                               textfont_size=11)
             st.plotly_chart(fig, use_container_width=True)
+
+    # -- New vs Repeat Revenue Trend --
+    nr_col_left, nr_col_right = st.columns([3, 1])
+
+    with nr_col_left:
+        st.subheader('New vs Repeat Revenue')
+        nr_daily = get_new_repeat_daily_revenue(str(ov_start), str(ov_end))
+        if not nr_daily.empty:
+            nr_daily['order_date'] = pd.to_datetime(nr_daily['order_date'])
+            nr_daily['new_7d'] = nr_daily['new_revenue'].rolling(7, min_periods=1).mean()
+            nr_daily['repeat_7d'] = nr_daily['repeat_revenue'].rolling(7, min_periods=1).mean()
+
+            fig_nr = go.Figure()
+            fig_nr.add_trace(go.Scatter(
+                x=nr_daily['order_date'], y=nr_daily['repeat_7d'],
+                mode='lines', name='Repeat (7d avg)',
+                line=dict(color='#0F3557', width=2),
+                stackgroup='one',
+            ))
+            fig_nr.add_trace(go.Scatter(
+                x=nr_daily['order_date'], y=nr_daily['new_7d'],
+                mode='lines', name='New (7d avg)',
+                line=dict(color='#3B82F6', width=2),
+                stackgroup='one',
+            ))
+            fig_nr.update_layout(
+                yaxis_title='Revenue',
+                height=380,
+                margin=dict(l=0, r=0, t=10, b=0),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                yaxis=dict(gridcolor='#E8EDF3'),
+                xaxis=dict(gridcolor='#E8EDF3'),
+            )
+            st.plotly_chart(fig_nr, use_container_width=True)
+
+    with nr_col_right:
+        st.subheader('New vs Repeat')
+        _nr_total = nr_all['new_revenue'] + nr_all['repeat_revenue']
+        if _nr_total > 0:
+            nr_pie_data = pd.DataFrame({
+                'Segment': ['New', 'Repeat'],
+                'Revenue': [nr_all['new_revenue'], nr_all['repeat_revenue']],
+            })
+            fig_nr_pie = px.pie(nr_pie_data, values='Revenue', names='Segment',
+                                color_discrete_sequence=['#3B82F6', '#0F3557'],
+                                hole=0.55)
+            fig_nr_pie.update_layout(
+                height=380, margin=dict(l=10, r=10, t=10, b=10),
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                showlegend=True,
+                legend=dict(orientation='h', yanchor='top', y=-0.05),
+            )
+            fig_nr_pie.update_traces(textposition='inside', textinfo='percent+label',
+                                     textfont_size=11)
+            st.plotly_chart(fig_nr_pie, use_container_width=True)
 
     # -- Top SKUs --
     st.subheader('Top SKUs')
