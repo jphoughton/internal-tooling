@@ -33,9 +33,10 @@ def _get_pool():
                 'Set it in .env or Railway service variables.'
             )
         _pool = psycopg2.pool.SimpleConnectionPool(
-            minconn=2,
+            minconn=1,
             maxconn=10,
             dsn=DATABASE_URL,
+            connect_timeout=10,
         )
     return _pool
 
