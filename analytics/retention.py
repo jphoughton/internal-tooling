@@ -79,17 +79,22 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
     return matrix
 
 
-def get_cohort_sizes():
+def get_cohort_sizes(source_filter=None):
     """Get the size of each monthly cohort."""
     with get_db() as conn:
-        df = read_sql("""
+        query = """
             SELECT
                 strftime('%Y-%m', first_order_date) as cohort,
                 COUNT(*) as cohort_size
             FROM customers
-            GROUP BY strftime('%Y-%m', first_order_date)
-            ORDER BY cohort
-        """, conn)
+            WHERE 1=1
+        """
+        params = []
+        if source_filter:
+            query += " AND source = ?"
+            params.append(source_filter)
+        query += " GROUP BY strftime('%Y-%m', first_order_date) ORDER BY cohort"
+        df = read_sql(query, conn, params=params)
     return df
 
 
@@ -284,6 +289,88 @@ def get_cohort_summary(sku_filter=None, source_filter=None):
         result['ncpa'] = np.nan
 
     return result[['cohort', 'customers', 'ncpa', 'aov', 'first_order_pct']]
+
+
+@st.cache_data(ttl=300)
+def get_repeat_rate_summary(source_filter=None):
+    """Compute per-cohort repeat purchase metrics.
+
+    Groups customers by first-purchase month, counts how many placed 2+
+    distinct orders.  Revenue is derived from order_items.total_price
+    (not orders.total_amount) to handle multi-line-item Amazon orders.
+
+    Returns DataFrame: cohort, total_customers, repeat_customers,
+                       repeat_rate, first_order_revenue, repeat_revenue.
+    """
+    with get_db() as conn:
+        # --- customer-level order counts ---
+        cust_query = """
+            SELECT
+                sub.cohort,
+                COUNT(*)                                          AS total_customers,
+                SUM(CASE WHEN sub.order_count >= 2 THEN 1 ELSE 0 END) AS repeat_customers
+            FROM (
+                SELECT
+                    c.customer_id,
+                    strftime('%Y-%m', c.first_order_date) AS cohort,
+                    COUNT(DISTINCT o.order_id)            AS order_count
+                FROM customers c
+                JOIN orders o ON c.customer_id = o.customer_id
+                WHERE 1=1
+        """
+        params = []
+        if source_filter:
+            cust_query += " AND c.source = ?"
+            params.append(source_filter)
+        cust_query += """
+                GROUP BY c.customer_id, cohort
+            ) sub
+            GROUP BY sub.cohort
+            ORDER BY sub.cohort
+        """
+        cust_df = read_sql(cust_query, conn, params=params)
+
+        # --- revenue split: first-order vs repeat ---
+        rev_query = """
+            SELECT
+                strftime('%Y-%m', c.first_order_date) AS cohort,
+                SUM(CASE WHEN strftime('%Y-%m', o.order_date)
+                              = strftime('%Y-%m', c.first_order_date)
+                         THEN oi.total_price ELSE 0 END) AS first_order_revenue,
+                SUM(CASE WHEN strftime('%Y-%m', o.order_date)
+                              != strftime('%Y-%m', c.first_order_date)
+                         THEN oi.total_price ELSE 0 END) AS repeat_revenue
+            FROM orders o
+            JOIN customers c    ON o.customer_id = c.customer_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
+            WHERE 1=1
+        """
+        rev_params = []
+        if source_filter:
+            rev_query += " AND o.source = ?"
+            rev_params.append(source_filter)
+        rev_query += " GROUP BY cohort ORDER BY cohort"
+        rev_df = read_sql(rev_query, conn, params=rev_params)
+
+    if cust_df.empty:
+        return pd.DataFrame(columns=[
+            'cohort', 'total_customers', 'repeat_customers',
+            'repeat_rate', 'first_order_revenue', 'repeat_revenue',
+        ])
+
+    result = cust_df.copy()
+    result['repeat_rate'] = result['repeat_customers'] / result['total_customers']
+
+    if not rev_df.empty:
+        rev_map_first = dict(zip(rev_df['cohort'], rev_df['first_order_revenue']))
+        rev_map_repeat = dict(zip(rev_df['cohort'], rev_df['repeat_revenue']))
+        result['first_order_revenue'] = result['cohort'].map(rev_map_first).fillna(0)
+        result['repeat_revenue'] = result['cohort'].map(rev_map_repeat).fillna(0)
+    else:
+        result['first_order_revenue'] = 0
+        result['repeat_revenue'] = 0
+
+    return result
 
 
 def get_sku_lifecycle_data(sku=None, normalize=True):
