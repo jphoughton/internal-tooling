@@ -480,7 +480,7 @@ def get_media_spend(conn, source="all"):
         "SELECT month, spend, new_customer_roas FROM media_spend WHERE source = %s ORDER BY month",
         (source,)
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [{"month": r["month"], "spend": float(r["spend"] or 0), "new_customer_roas": float(r["new_customer_roas"] or 0)} for r in rows]
 
 
 def upsert_amazon_revenue_forecast(conn, month, revenue):
@@ -497,7 +497,7 @@ def get_amazon_revenue_forecast(conn):
     rows = conn.execute(
         "SELECT month, revenue FROM amazon_revenue_forecast ORDER BY month"
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [{"month": r["month"], "revenue": float(r["revenue"] or 0)} for r in rows]
 
 
 def upsert_planned_inbound(conn, sku, month, units):
@@ -515,7 +515,7 @@ def get_planned_inbound(conn):
     rows = conn.execute(
         "SELECT sku, month, units FROM planned_inbound ORDER BY sku, month"
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [{"sku": r["sku"], "month": r["month"], "units": int(r["units"] or 0)} for r in rows]
 
 
 def get_planned_inbound_dict(conn):
@@ -525,7 +525,7 @@ def get_planned_inbound_dict(conn):
     ).fetchall()
     result = {}
     for r in rows:
-        result.setdefault(r["sku"], {})[r["month"]] = r["units"]
+        result.setdefault(r["sku"], {})[r["month"]] = int(r["units"] or 0)
     return result
 
 
@@ -537,7 +537,7 @@ def get_seasonal_indices(conn):
     rows = conn.execute(
         "SELECT month_num, index_value FROM seasonal_indices ORDER BY month_num"
     ).fetchall()
-    return {r["month_num"]: r["index_value"] for r in rows}
+    return {int(r["month_num"]): float(r["index_value"] or 1.0) for r in rows}
 
 
 def upsert_seasonal_index(conn, month_num, value):

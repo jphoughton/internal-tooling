@@ -1864,6 +1864,12 @@ elif page == "Demand Forecast":
                 display[pct_col_name] = display[pct_col_name].astype(object)
             display = pd.concat([rev_df, display], ignore_index=True)
 
+        # Format pct column inline so HTML renderer shows "12.2%"
+        if pct_col_name in display.columns:
+            display[pct_col_name] = display[pct_col_name].apply(
+                lambda v: f"{v:.1f}%" if isinstance(v, (int, float)) and v > 0 else (str(v) if v else "")
+            )
+
         display = display.rename(columns=short_labels)
 
         # When there's a revenue row, values are mixed (strings for row 0, numbers for rest)
