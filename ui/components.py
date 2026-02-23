@@ -232,9 +232,12 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
     default_start = st.session_state[f'{key_prefix}_start']
     default_end = st.session_state[f'{key_prefix}_end']
 
-    # Clamp to valid range
+    # Clamp to valid range (must also update session state so date_input
+    # widgets don't receive a default outside the min/max bounds)
     default_start = max(default_start, data_min)
     default_end = min(default_end, data_max)
+    st.session_state[f'{key_prefix}_start'] = default_start
+    st.session_state[f'{key_prefix}_end'] = default_end
 
     if show_presets:
         # Detect which preset matches current date range
