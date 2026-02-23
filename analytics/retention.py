@@ -4,6 +4,7 @@ Retention analytics:
 2. SKU lifecycle (sales decay/growth) curves
 3. Triple Whale-style cohort matrices (revenue, customers, LTV)
 """
+import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -570,3 +571,151 @@ def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
         """, conn, params=params)
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# Data-freshness detection + DOW-adjusted projection
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=300)
+def get_last_order_date(source_filter=None):
+    """Return the most recent order_date in the DB for a given channel."""
+    clause = ""
+    params = []
+    if source_filter:
+        clause = " WHERE source = ?"
+        params.append(source_filter)
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT MAX(order_date) AS last_date FROM orders{clause}", params
+        ).fetchone()
+    val = row['last_date'] if row else None
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return datetime.date.fromisoformat(val)
+    if isinstance(val, datetime.datetime):
+        return val.date()
+    return val
+
+
+@st.cache_data(ttl=300)
+def _get_dow_daily_new_customers(start_date, end_date, source_filter=None):
+    """Return a DataFrame with first_order_date and new_customer count per day,
+    plus dow (0=Mon … 6=Sun) for building DOW indices."""
+    source_clause = ""
+    params = [start_date, end_date]
+    if source_filter:
+        source_clause = " AND source = ?"
+        params.append(source_filter)
+    with get_db() as conn:
+        df = read_sql(f"""
+            SELECT first_order_date, COUNT(*) AS new_customers
+            FROM customers
+            WHERE first_order_date BETWEEN ? AND ?
+            {source_clause}
+            GROUP BY first_order_date
+            ORDER BY first_order_date
+        """, conn, params=params)
+    if df.empty:
+        return df
+    df['first_order_date'] = pd.to_datetime(df['first_order_date'])
+    df['dow'] = df['first_order_date'].dt.dayofweek  # 0=Mon
+    return df
+
+
+def _project_missing_days(actuals_df, last_data_date, projection_end, nc_aov):
+    """Use DOW-adjusted trailing average to project new customers + revenue
+    for each missing day between last_data_date+1 and projection_end.
+
+    Returns (projected_customers, projected_revenue, gap_days, method).
+    Returns (0, 0, 0, None) when no projection is needed.
+    """
+    if last_data_date is None or projection_end <= last_data_date:
+        return 0, 0.0, 0, None
+
+    gap_days = (projection_end - last_data_date).days
+    if gap_days > 14:
+        return 0, 0.0, gap_days, 'stale'
+
+    if actuals_df.empty or len(actuals_df) < 3:
+        return 0, 0.0, gap_days, 'insufficient'
+
+    overall_avg = actuals_df['new_customers'].mean()
+
+    # Build DOW indices with shrinkage toward mean
+    SHRINKAGE = 0.6 if len(actuals_df) >= 7 else 0.4
+    dow_avg = actuals_df.groupby('dow')['new_customers'].mean()
+    dow_indices = {}
+    for d in range(7):
+        if d in dow_avg.index:
+            blended = SHRINKAGE * dow_avg[d] + (1 - SHRINKAGE) * overall_avg
+            dow_indices[d] = blended / overall_avg if overall_avg > 0 else 1.0
+        else:
+            dow_indices[d] = 1.0
+
+    # Project each missing day
+    projected_nc = 0.0
+    for offset in range(1, gap_days + 1):
+        day = last_data_date + datetime.timedelta(days=offset)
+        dow = day.weekday()
+        projected_nc += overall_avg * dow_indices.get(dow, 1.0)
+
+    projected_nc = round(projected_nc)
+    projected_rev = round(projected_nc * nc_aov, 2) if nc_aov > 0 else 0.0
+    return projected_nc, projected_rev, gap_days, 'dow_adjusted'
+
+
+@st.cache_data(ttl=300)
+def get_projected_new_repeat_summary(start_date, end_date, source_filter=None):
+    """Like get_new_repeat_summary but adds projected values when data is stale.
+
+    Returns the same 8-key dict plus:
+        projected_new_customers, projected_new_revenue,
+        total_new_customers, total_new_revenue,
+        gap_days, projection_method, last_data_date
+    """
+    actuals = get_new_repeat_summary(start_date, end_date, source_filter)
+
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    end_dt = datetime.date.fromisoformat(end_date) if isinstance(end_date, str) else end_date
+
+    # Only project up to yesterday or end_date, whichever is earlier
+    projection_end = min(yesterday, end_dt)
+
+    last_date = get_last_order_date(source_filter)
+
+    # Get daily actuals for DOW model
+    daily_df = _get_dow_daily_new_customers(start_date, end_date, source_filter)
+
+    nc_aov = actuals['new_aov'] if actuals['new_aov'] > 0 else 0
+
+    proj_nc, proj_rev, gap, method = _project_missing_days(
+        daily_df, last_date, projection_end, nc_aov
+    )
+
+    # Also project repeat customers using same approach but with repeat ratio
+    total_actual_cust = actuals['new_customers'] + actuals['repeat_customers']
+    if total_actual_cust > 0 and actuals['repeat_customers'] > 0:
+        repeat_ratio = actuals['repeat_customers'] / total_actual_cust
+        # Rough estimate: if we project X new, proportionally project repeat
+        proj_repeat_nc = round(proj_nc * repeat_ratio / (1 - repeat_ratio)) if repeat_ratio < 1 else 0
+        proj_repeat_rev = round(proj_repeat_nc * actuals['repeat_aov'], 2) if actuals['repeat_aov'] > 0 else 0.0
+    else:
+        proj_repeat_nc = 0
+        proj_repeat_rev = 0.0
+
+    return {
+        **actuals,
+        'projected_new_customers': proj_nc,
+        'projected_new_revenue': proj_rev,
+        'projected_repeat_customers': proj_repeat_nc,
+        'projected_repeat_revenue': proj_repeat_rev,
+        'total_new_customers': actuals['new_customers'] + proj_nc,
+        'total_new_revenue': round(actuals['new_revenue'] + proj_rev, 2),
+        'total_repeat_customers': actuals['repeat_customers'] + proj_repeat_nc,
+        'total_repeat_revenue': round(actuals['repeat_revenue'] + proj_repeat_rev, 2),
+        'gap_days': gap,
+        'projection_method': method,
+        'last_data_date': str(last_date) if last_date else None,
+    }
