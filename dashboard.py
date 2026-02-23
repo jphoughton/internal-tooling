@@ -1705,10 +1705,12 @@ elif page == "Demand Forecast":
 
     # --- Media Spend Input (Shopify) ---
     with st.expander("Media Spend Plan", expanded=False):
-        st.caption("Enter your monthly DTC ad budget and expected new customer ROAS. This drives the Shopify new customer forecast.")
+        st.caption("Enter your monthly DTC ad budget, expected new customer ROAS, and Amazon ad budget. DTC spend drives the Shopify new customer forecast. Amazon spend sets the Marketing page pacing goal.")
 
         with get_db() as conn:
             existing_spend = get_media_spend(conn, source="All Sources")
+            existing_amz_spend = get_media_spend(conn, source="Amazon")
+        amz_spend_lookup = {r["month"]: r["spend"] for r in existing_amz_spend}
 
         if existing_spend:
             spend_df = pd.DataFrame(existing_spend)
@@ -1732,14 +1734,16 @@ elif page == "Demand Forecast":
         spend_df["new_customer_roas"] = pd.to_numeric(spend_df["new_customer_roas"], errors="coerce").fillna(0.7)
 
         # Header row
-        _hdr_m, _hdr_s, _hdr_r = st.columns([1, 1.5, 1.5])
+        _hdr_m, _hdr_s, _hdr_r, _hdr_a = st.columns([1, 1.2, 1.2, 1.2])
         _hdr_m.markdown("**Month**")
-        _hdr_s.markdown("**Ad Spend ($)**")
+        _hdr_s.markdown("**DTC Ad Spend ($)**")
         _hdr_r.markdown("**New Cust. ROAS**")
+        _hdr_a.markdown("**Amazon Ad Spend ($)**")
 
         _spend_edits = []
+        _amz_spend_edits = []
         for idx, row in spend_df.iterrows():
-            _cm, _cs, _cr = st.columns([1, 1.5, 1.5])
+            _cm, _cs, _cr, _ca = st.columns([1, 1.2, 1.2, 1.2])
             with _cm:
                 st.markdown(f"`{row['month']}`")
             with _cs:
@@ -1752,7 +1756,14 @@ elif page == "Demand Forecast":
                     "roas", value=float(row["new_customer_roas"]), min_value=0.1, step=0.1,
                     format="%.1f", key=f"roas_{idx}", label_visibility="collapsed",
                 )
+            with _ca:
+                _av = st.number_input(
+                    "amz_spend", value=float(amz_spend_lookup.get(row["month"], 0.0)),
+                    min_value=0.0, step=500.0, format="%.0f",
+                    key=f"amz_spend_{idx}", label_visibility="collapsed",
+                )
             _spend_edits.append({"month": row["month"], "spend": _sv, "new_customer_roas": _rv})
+            _amz_spend_edits.append({"month": row["month"], "spend": _av})
 
         edited_spend = pd.DataFrame(_spend_edits)
 
@@ -1760,6 +1771,8 @@ elif page == "Demand Forecast":
             with get_db() as conn:
                 for _, row in edited_spend.iterrows():
                     upsert_media_spend(conn, row["month"], row["spend"], row["new_customer_roas"], source="All Sources")
+                for amz_row in _amz_spend_edits:
+                    upsert_media_spend(conn, amz_row["month"], amz_row["spend"], 0.0, source="Amazon")
             _cached_waterfall.clear()
             _cached_sku_forecast.clear()
             st.rerun()
@@ -3699,10 +3712,12 @@ elif page == "Marketing":
             # ============================================================
             _mkt_summary = None
             _mkt_revenue = {}
+            _mkt_amz_media = []
             try:
                 _seasonal_json_mkt = _load_seasonal_json()
                 with get_db() as _goals_conn:
                     _mkt_media = get_media_spend(_goals_conn, source="All Sources")
+                    _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
                     _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
                 import json as _json_mkt
                 _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), None, 12, _seasonal_json_mkt)
@@ -4058,6 +4073,11 @@ elif page == "Marketing":
                 if _spend_plan:
                     _goal_spend = float(_spend_plan[0].get("spend", 0))
 
+                _goal_amz_spend = 0
+                _amz_spend_plan = [m for m in _mkt_amz_media if m.get("month") == _cur_month]
+                if _amz_spend_plan:
+                    _goal_amz_spend = float(_amz_spend_plan[0].get("spend", 0))
+
                 # ============================================================
                 # CHANNEL FILTER — toggle between All / Roll Up / DTC / Amazon
                 # ============================================================
@@ -4089,8 +4109,9 @@ elif page == "Marketing":
                                 help="Total Spend / Total New Customers")
 
                     _rollup_rows = []
-                    if _goal_spend > 0:
-                        _rollup_rows.append(_build_pace_row("Total Spend", _cm_total_spend, _goal_spend,
+                    _goal_total_spend = _goal_spend + _goal_amz_spend
+                    if _goal_total_spend > 0:
+                        _rollup_rows.append(_build_pace_row("Total Spend", _cm_total_spend, _goal_total_spend,
                                                             _l7d_total_spend, _yd_total_spend, is_spend=True))
                     _rollup_rows.extend([
                         _build_pace_row("Total Revenue", _total_actual_rev, _goal_total_rev,
@@ -4148,9 +4169,10 @@ elif page == "Marketing":
                     amz_k4.metric("CPA", f"${_amz_cpa:,.0f}")
 
                     _amz_rows = []
-                    _amz_rows.append(
-                        _build_pace_row("Spend", _cm_amz_spend, 0, _l7d_amz_spend, _yd_amz_spend, is_spend=True),
-                    )
+                    if _goal_amz_spend > 0:
+                        _amz_rows.append(
+                            _build_pace_row("Spend", _cm_amz_spend, _goal_amz_spend, _l7d_amz_spend, _yd_amz_spend, is_spend=True),
+                        )
                     _amz_rows.append(
                         _build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev),
                     )
