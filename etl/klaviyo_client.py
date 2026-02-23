@@ -133,7 +133,7 @@ def fetch_lists(api_key):
 # Reporting API (raw HTTP — SDK Pydantic DTOs are brittle)
 # ---------------------------------------------------------------------------
 _KLAVIYO_API = "https://a.klaviyo.com/api"
-_REVISION = "2024-10-15"
+_REVISION = "2025-01-15"
 
 _ENGAGEMENT_STATS = [
     "recipients", "delivered", "opens_unique", "clicks_unique",
@@ -175,7 +175,19 @@ def fetch_placed_order_metric_id(api_key):
         return None
 
 
-def fetch_campaign_metrics(api_key, conversion_metric_id):
+def _build_report_body(report_type, stats, conversion_metric_id):
+    """Build the JSON:API body for a Klaviyo reporting endpoint."""
+    attrs = {
+        "statistics": stats,
+        "timeframe": {"key": "last_12_months"},
+        "filter": "equals(send_channel,'email')",
+    }
+    if conversion_metric_id:
+        attrs["conversion_metric_id"] = conversion_metric_id
+    return {"data": {"type": report_type, "attributes": attrs}}
+
+
+def fetch_campaign_metrics(api_key, conversion_metric_id=None):
     """Fetch performance metrics for all email campaigns.
 
     Uses POST /api/campaign-values-reports (1 API call for all campaigns).
@@ -186,17 +198,7 @@ def fetch_campaign_metrics(api_key, conversion_metric_id):
     if conversion_metric_id:
         stats += _REVENUE_STATS
 
-    body = {
-        "data": {
-            "type": "campaign-values-report",
-            "attributes": {
-                "statistics": stats,
-                "timeframe": {"key": "last_12_months"},
-                "conversion_metric_id": conversion_metric_id or "dummy",
-                "filter": "equals(send_channel,'email')",
-            },
-        }
-    }
+    body = _build_report_body("campaign-values-report", stats, conversion_metric_id)
 
     resp = _requests.post(
         f"{_KLAVIYO_API}/campaign-values-reports",
@@ -204,7 +206,9 @@ def fetch_campaign_metrics(api_key, conversion_metric_id):
         json=body,
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        logger.error(f"Campaign metrics API error {resp.status_code}: {resp.text[:500]}")
+        resp.raise_for_status()
     data = resp.json()
 
     results = {}
@@ -217,7 +221,7 @@ def fetch_campaign_metrics(api_key, conversion_metric_id):
     return results
 
 
-def fetch_flow_metrics(api_key, conversion_metric_id):
+def fetch_flow_metrics(api_key, conversion_metric_id=None):
     """Fetch performance metrics for all flows.
 
     Uses POST /api/flow-values-reports (1 API call for all flows).
@@ -228,17 +232,7 @@ def fetch_flow_metrics(api_key, conversion_metric_id):
     if conversion_metric_id:
         stats += _REVENUE_STATS
 
-    body = {
-        "data": {
-            "type": "flow-values-report",
-            "attributes": {
-                "statistics": stats,
-                "timeframe": {"key": "last_12_months"},
-                "conversion_metric_id": conversion_metric_id or "dummy",
-                "filter": "equals(send_channel,'email')",
-            },
-        }
-    }
+    body = _build_report_body("flow-values-report", stats, conversion_metric_id)
 
     resp = _requests.post(
         f"{_KLAVIYO_API}/flow-values-reports",
@@ -246,7 +240,9 @@ def fetch_flow_metrics(api_key, conversion_metric_id):
         json=body,
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        logger.error(f"Flow metrics API error {resp.status_code}: {resp.text[:500]}")
+        resp.raise_for_status()
     data = resp.json()
 
     results = {}
