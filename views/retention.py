@@ -62,9 +62,12 @@ def render(ctx):
         # Date range filter — scoped to this page only
         all_cohorts = sorted(matrix.index.tolist())
         earliest = datetime.strptime(all_cohorts[0], '%Y-%m').date()
-        latest = datetime.strptime(all_cohorts[-1], '%Y-%m').date()
+        # Use last day of latest cohort month so current month isn't clipped
+        _latest_first = datetime.strptime(all_cohorts[-1], '%Y-%m').date()
+        import calendar
+        latest = _latest_first.replace(day=calendar.monthrange(_latest_first.year, _latest_first.month)[1])
 
-        start_date, end_date = smart_date_filter(earliest, latest, 'ret')
+        start_date, end_date = smart_date_filter(earliest, latest, 'ret', default_preset='All Time')
 
         # Filter matrix to selected date range
         start_str = start_date.strftime('%Y-%m')
@@ -88,7 +91,10 @@ def render(ctx):
                 aspect='auto',
                 zmin=0, zmax=1,
             )
-            fig.update_layout(height=max(300, len(matrix) * 40))
+            fig.update_layout(
+                height=max(300, len(matrix) * 40),
+                yaxis=dict(type='category'),
+            )
             st.plotly_chart(fig, use_container_width=True)
 
             # Average retention curve — computed from the date-filtered matrix
