@@ -4474,17 +4474,28 @@ elif page == "Marketing":
             _perf_df["_orders"] = _perf_df.get("_orders_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
             _perf_df["_units"] = _perf_df.get("_units_sold_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
 
-            # Amazon daily data from daily_sku_sales
+            # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup
             _amz_daily = pd.DataFrame()
             try:
                 with get_db() as _amz_perf_conn:
-                    _amz_daily = read_sql(
-                        "SELECT sale_date, SUM(revenue) as _amz_revenue, 0 as _amz_spend "
+                    _amz_rev_daily = read_sql(
+                        "SELECT sale_date, SUM(revenue) as _amz_revenue "
                         "FROM daily_sku_sales WHERE source = 'amazon' "
                         "GROUP BY sale_date ORDER BY sale_date",
                         _amz_perf_conn,
                     )
-                if not _amz_daily.empty:
+                    _amz_spend_daily = read_sql(
+                        "SELECT date as sale_date, spend as _amz_spend "
+                        "FROM amazon_daily_rollup ORDER BY date",
+                        _amz_perf_conn,
+                    )
+                if not _amz_rev_daily.empty:
+                    _amz_daily = _amz_rev_daily
+                    if not _amz_spend_daily.empty:
+                        _amz_daily = _amz_daily.merge(_amz_spend_daily, on="sale_date", how="left")
+                    if "_amz_spend" not in _amz_daily.columns:
+                        _amz_daily["_amz_spend"] = 0
+                    _amz_daily["_amz_spend"] = _amz_daily["_amz_spend"].fillna(0)
                     _amz_daily["_date"] = pd.to_datetime(_amz_daily["sale_date"])
             except Exception:
                 pass
