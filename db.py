@@ -337,6 +337,37 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_order_items_sku ON order_items(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_sku ON daily_sku_sales(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sku_sales(sale_date)",
+
+    # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS delivered INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS opens_unique INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS clicks_unique INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS open_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS click_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS click_to_open_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS unsubscribes INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS unsubscribe_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS bounce_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS revenue REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS revenue_per_recipient REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS average_order_value REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS conversion_rate REAL DEFAULT 0",
+
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS delivered INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS opens_unique INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS clicks_unique INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS open_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS click_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS click_to_open_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS unsubscribes INTEGER DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS unsubscribe_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS bounce_rate REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS revenue REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS revenue_per_recipient REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS average_order_value REAL DEFAULT 0",
+    "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS conversion_rate REAL DEFAULT 0",
 ]
 
 
@@ -661,7 +692,11 @@ def upsert_klaviyo_list(conn, lst):
 
 def get_klaviyo_campaigns(conn):
     rows = conn.execute(
-        "SELECT id, name, status, send_time, created_at, updated_at "
+        "SELECT id, name, status, send_time, created_at, updated_at, "
+        "recipients, delivered, opens_unique, clicks_unique, "
+        "open_rate, click_rate, click_to_open_rate, "
+        "unsubscribes, unsubscribe_rate, bounce_rate, "
+        "revenue, revenue_per_recipient, average_order_value, conversion_rate "
         "FROM klaviyo_campaigns ORDER BY send_time DESC NULLS LAST"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -669,7 +704,11 @@ def get_klaviyo_campaigns(conn):
 
 def get_klaviyo_flows(conn):
     rows = conn.execute(
-        "SELECT id, name, status, trigger_type, created, updated "
+        "SELECT id, name, status, trigger_type, created, updated, "
+        "recipients, delivered, opens_unique, clicks_unique, "
+        "open_rate, click_rate, click_to_open_rate, "
+        "unsubscribes, unsubscribe_rate, bounce_rate, "
+        "revenue, revenue_per_recipient, average_order_value, conversion_rate "
         "FROM klaviyo_flows ORDER BY name"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -681,6 +720,30 @@ def get_klaviyo_lists(conn):
         "FROM klaviyo_lists ORDER BY name"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+_METRIC_COLS = [
+    "recipients", "delivered", "opens_unique", "clicks_unique",
+    "open_rate", "click_rate", "click_to_open_rate",
+    "unsubscribes", "unsubscribe_rate", "bounce_rate",
+    "revenue", "revenue_per_recipient", "average_order_value", "conversion_rate",
+]
+
+
+def update_klaviyo_campaign_metrics(conn, campaign_id, metrics):
+    set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
+    conn.execute(
+        f"UPDATE klaviyo_campaigns SET {set_clause} WHERE id = %s",
+        tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (campaign_id,),
+    )
+
+
+def update_klaviyo_flow_metrics(conn, flow_id, metrics):
+    set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
+    conn.execute(
+        f"UPDATE klaviyo_flows SET {set_clause} WHERE id = %s",
+        tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (flow_id,),
+    )
 
 
 # ---------------------------------------------------------------------------

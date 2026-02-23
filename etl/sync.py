@@ -191,14 +191,21 @@ def _sync_shopify(full_refresh, on_status=None, step_idx=0, total_steps=1):
 
 
 def _sync_klaviyo(api_key):
-    """Pull Klaviyo campaigns, flows, and lists into the DB."""
-    from etl.klaviyo_client import fetch_campaigns, fetch_flows, fetch_lists
-    from db import upsert_klaviyo_campaign, upsert_klaviyo_flow, upsert_klaviyo_list
+    """Pull Klaviyo campaigns, flows, lists, and performance metrics into the DB."""
+    from etl.klaviyo_client import (
+        fetch_campaigns, fetch_flows, fetch_lists,
+        fetch_placed_order_metric_id, fetch_campaign_metrics, fetch_flow_metrics,
+    )
+    from db import (
+        upsert_klaviyo_campaign, upsert_klaviyo_flow, upsert_klaviyo_list,
+        update_klaviyo_campaign_metrics, update_klaviyo_flow_metrics,
+        get_setting, set_setting,
+    )
 
+    # --- Metadata ---
     campaigns = fetch_campaigns(api_key)
     flows = fetch_flows(api_key)
     lists = fetch_lists(api_key)
-    total = len(campaigns) + len(flows) + len(lists)
 
     with get_db() as conn:
         for c in campaigns:
@@ -207,9 +214,38 @@ def _sync_klaviyo(api_key):
             upsert_klaviyo_flow(conn, f)
         for l in lists:
             upsert_klaviyo_list(conn, l)
+
+    print(f"Klaviyo metadata: {len(campaigns)} campaigns, {len(flows)} flows, {len(lists)} lists")
+
+    # --- Performance metrics ---
+    with get_db() as conn:
+        conversion_metric_id = get_setting(conn, "klaviyo_conversion_metric_id")
+
+    if not conversion_metric_id:
+        conversion_metric_id = fetch_placed_order_metric_id(api_key)
+        if conversion_metric_id:
+            with get_db() as conn:
+                set_setting(conn, "klaviyo_conversion_metric_id", conversion_metric_id)
+            print(f"Auto-detected Placed Order metric: {conversion_metric_id}")
+
+    try:
+        campaign_metrics = fetch_campaign_metrics(api_key, conversion_metric_id)
+        flow_metrics = fetch_flow_metrics(api_key, conversion_metric_id)
+
+        with get_db() as conn:
+            for cid, metrics in campaign_metrics.items():
+                update_klaviyo_campaign_metrics(conn, cid, metrics)
+            for fid, metrics in flow_metrics.items():
+                update_klaviyo_flow_metrics(conn, fid, metrics)
+
+        print(f"Klaviyo metrics: {len(campaign_metrics)} campaigns, {len(flow_metrics)} flows")
+    except Exception as e:
+        print(f"Klaviyo metrics fetch failed (metadata still saved): {e}")
+
+    total = len(campaigns) + len(flows) + len(lists)
+    with get_db() as conn:
         log_sync(conn, "klaviyo", datetime.utcnow().strftime("%Y-%m-%d"), total)
 
-    print(f"Klaviyo sync: {len(campaigns)} campaigns, {len(flows)} flows, {len(lists)} lists")
     return total
 
 

@@ -1,5 +1,5 @@
 """
-Klaviyo API integration — fetches campaign and flow performance metrics.
+Klaviyo API integration — fetches campaign/flow metadata and performance metrics.
 
 Uses the official klaviyo-api SDK.
 
@@ -7,6 +7,7 @@ Docs: https://developers.klaviyo.com/en/reference/api-overview
 Auth: Private API key via header  Authorization: Klaviyo-API-Key {key}
 """
 import logging
+import requests as _requests
 from klaviyo_api import KlaviyoAPI
 
 logger = logging.getLogger(__name__)
@@ -126,3 +127,133 @@ def fetch_lists(api_key):
     except Exception as e:
         logger.error(f"Failed to fetch Klaviyo lists: {e}")
         raise
+
+
+# ---------------------------------------------------------------------------
+# Reporting API (raw HTTP — SDK Pydantic DTOs are brittle)
+# ---------------------------------------------------------------------------
+_KLAVIYO_API = "https://a.klaviyo.com/api"
+_REVISION = "2024-10-15"
+
+_ENGAGEMENT_STATS = [
+    "recipients", "delivered", "opens_unique", "clicks_unique",
+    "open_rate", "click_rate", "click_to_open_rate",
+    "unsubscribes", "unsubscribe_rate", "bounce_rate",
+]
+_REVENUE_STATS = [
+    "revenue", "revenue_per_recipient", "average_order_value", "conversion_rate",
+]
+
+
+def _klaviyo_headers(api_key):
+    return {
+        "Authorization": f"Klaviyo-API-Key {api_key}",
+        "revision": _REVISION,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def fetch_placed_order_metric_id(api_key):
+    """Auto-discover the Klaviyo 'Placed Order' metric ID.
+
+    Returns metric ID string, or None if not found.
+    """
+    try:
+        client = get_client(api_key)
+        resp = client.Metrics.get_metrics(
+            filter="equals(name,'Placed Order')",
+        )
+        if resp and hasattr(resp, "data") and resp.data:
+            metric_id = resp.data[0].id
+            logger.info(f"Found Placed Order metric: {metric_id}")
+            return metric_id
+        logger.warning("Placed Order metric not found in Klaviyo")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch Placed Order metric: {e}")
+        return None
+
+
+def fetch_campaign_metrics(api_key, conversion_metric_id):
+    """Fetch performance metrics for all email campaigns.
+
+    Uses POST /api/campaign-values-reports (1 API call for all campaigns).
+
+    Returns dict mapping campaign_id -> {metric_name: value, ...}
+    """
+    stats = list(_ENGAGEMENT_STATS)
+    if conversion_metric_id:
+        stats += _REVENUE_STATS
+
+    body = {
+        "data": {
+            "type": "campaign-values-report",
+            "attributes": {
+                "statistics": stats,
+                "timeframe": {"key": "last_12_months"},
+                "conversion_metric_id": conversion_metric_id or "dummy",
+                "filter": "equals(send_channel,'email')",
+            },
+        }
+    }
+
+    resp = _requests.post(
+        f"{_KLAVIYO_API}/campaign-values-reports",
+        headers=_klaviyo_headers(api_key),
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    results = {}
+    for item in data.get("data", {}).get("attributes", {}).get("results", []):
+        campaign_id = item.get("groupings", {}).get("campaign_id")
+        if campaign_id:
+            results[campaign_id] = item.get("statistics", {})
+
+    logger.info(f"Fetched metrics for {len(results)} campaigns")
+    return results
+
+
+def fetch_flow_metrics(api_key, conversion_metric_id):
+    """Fetch performance metrics for all flows.
+
+    Uses POST /api/flow-values-reports (1 API call for all flows).
+
+    Returns dict mapping flow_id -> {metric_name: value, ...}
+    """
+    stats = list(_ENGAGEMENT_STATS)
+    if conversion_metric_id:
+        stats += _REVENUE_STATS
+
+    body = {
+        "data": {
+            "type": "flow-values-report",
+            "attributes": {
+                "statistics": stats,
+                "timeframe": {"key": "last_12_months"},
+                "conversion_metric_id": conversion_metric_id or "dummy",
+                "filter": "equals(send_channel,'email')",
+            },
+        }
+    }
+
+    resp = _requests.post(
+        f"{_KLAVIYO_API}/flow-values-reports",
+        headers=_klaviyo_headers(api_key),
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    results = {}
+    for item in data.get("data", {}).get("attributes", {}).get("results", []):
+        flow_id = item.get("groupings", {}).get("flow_id")
+        if flow_id:
+            results[flow_id] = item.get("statistics", {})
+
+    logger.info(f"Fetched metrics for {len(results)} flows")
+    return results

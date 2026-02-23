@@ -473,7 +473,27 @@ def render(ctx):
         st.success("Klaviyo API key saved.")
 
     if _klaviyo_key:
-        st.info("Klaviyo connected. Campaign data sync coming soon.")
+        with get_db() as conn:
+            _kl_last_sync = conn.execute(
+                "SELECT created_at FROM sync_log WHERE source = 'klaviyo' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            _kl_metric_id = get_setting(conn, "klaviyo_conversion_metric_id", "")
+        if _kl_last_sync:
+            st.success(f"Klaviyo connected. Last sync: {_kl_last_sync['created_at']}")
+        else:
+            st.info("Klaviyo connected. Data will sync on next scheduled run, or refresh from the Marketing page.")
+        st.text_input(
+            "Conversion Metric ID (Placed Order)",
+            value=_kl_metric_id,
+            key="klaviyo_metric_id",
+            help="Required for revenue metrics. Auto-detected on first sync, or paste from Klaviyo.",
+        )
+        if st.button("Save Metric ID", key="save_klaviyo_metric"):
+            with get_db() as conn:
+                set_setting(conn, "klaviyo_conversion_metric_id",
+                            st.session_state.get("klaviyo_metric_id", ""))
+            st.success("Conversion metric ID saved.")
     else:
         st.caption("Enter your API key above to enable Klaviyo integration.")
 
