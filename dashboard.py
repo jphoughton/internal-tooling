@@ -2808,6 +2808,7 @@ elif page == "Amazon Inventory":
             display_amz.columns = ["SKU", "ASIN", "Product", "Fulfillable",
                                    "Reserved", "Inbound Shipped", "Inbound Receiving",
                                    "Unfulfillable", "Total"]
+            display_amz = display_amz.drop(columns=["Product"])
             display_amz.insert(1, "Flavor", [
                 get_flavor(row["sku"], row["product_name"]) for _, row in amz_df[["sku", "product_name"]].iterrows()
             ])
