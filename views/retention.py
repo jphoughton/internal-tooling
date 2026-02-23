@@ -1,6 +1,7 @@
 """Retention page."""
 import json as _json
 import streamlit as st
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -92,18 +93,34 @@ def render(ctx):
             max_val = display_matrix.max().max() if not display_matrix.empty else 1.0
             zmax = min(max_val * 1.3, 1.0) if max_val > 0 else 1.0
 
-            fig = px.imshow(
-                display_matrix.values,
-                labels=dict(x='Months Since First Purchase', y='Cohort', color='Retention %'),
+            # Build custom hovertext: show retention % for elapsed months, nothing for future
+            z_vals = display_matrix.values.copy().astype(float)
+            hover_text = []
+            for i, cohort_label in enumerate(display_matrix.index):
+                row_text = []
+                for j, col in enumerate(display_matrix.columns):
+                    val = z_vals[i, j]
+                    if np.isnan(val):
+                        row_text.append('')
+                    else:
+                        row_text.append(f'{val:.1%}')
+                hover_text.append(row_text)
+
+            fig = go.Figure(data=go.Heatmap(
+                z=z_vals,
                 x=[str(c) for c in display_matrix.columns],
                 y=display_matrix.index.tolist(),
-                color_continuous_scale='Blues',
-                aspect='auto',
+                colorscale='Blues',
                 zmin=0, zmax=zmax,
-            )
+                colorbar=dict(title='Retention %'),
+                hovertext=hover_text,
+                hovertemplate='Cohort: %{y}<br>Month %{x}: %{hovertext}<extra></extra>',
+                xgap=1, ygap=1,
+            ))
             fig.update_layout(
                 height=max(300, len(display_matrix) * 40),
-                yaxis=dict(type='category'),
+                yaxis=dict(type='category', autorange='reversed'),
+                plot_bgcolor='#F0F0F0',
             )
             st.plotly_chart(fig, use_container_width=True)
 

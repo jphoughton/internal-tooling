@@ -70,17 +70,6 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
         values="retention_rate",
     )
 
-    # Only fill 0 for months that HAVE elapsed for each cohort
-    # (a cohort created 6 months ago with no month-3 purchases = 0%,
-    #  but month-10 should remain NaN since it hasn't happened yet)
-    now_period = pd.Timestamp.utcnow().to_period("M")
-    for cohort_label in matrix.index:
-        cohort_period = pd.Period(str(cohort_label), freq="M")
-        max_elapsed = (now_period - cohort_period).n
-        for col in matrix.columns:
-            if int(col) <= max_elapsed and pd.isna(matrix.loc[cohort_label, col]):
-                matrix.loc[cohort_label, col] = 0.0
-
     # Convert period index to strings for display
     matrix.index = matrix.index.astype(str)
 
