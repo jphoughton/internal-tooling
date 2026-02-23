@@ -322,12 +322,31 @@ def render(ctx):
                 'and add planned inbound each month. Negative (red) = projected stockout. Low stock (yellow) = under 500 units.'
             )
 
+            # Add Days of Supply column (total stock / daily demand rate)
+            _dos_map = {}
+            for _, _r in pi_rollup.iterrows():
+                _fc_3mo = sum(_r.get(m, 0) or 0 for m in month_cols[:3])
+                if _fc_3mo > 0:
+                    _dos_map[_r['SKU']] = _fc_3mo / 91.32
+            for i, _row in proj_df.iterrows():
+                _daily = _dos_map.get(_row['SKU'], 0)
+                proj_df.at[i, 'DoS'] = round(_row['Total Stock'] / _daily) if _daily > 0 else None
+
             # Format for display
             disp_proj = proj_df.copy()
             disp_proj = disp_proj.rename(columns=month_labels)
             disp_month_labels = [month_labels[m] for m in month_cols]
 
-            # Color function: red for negative, yellow for low
+            # Format DoS as "Xd"
+            disp_proj['DoS'] = disp_proj['DoS'].apply(
+                lambda x: f'{int(x)}d' if pd.notna(x) else '\u2014'
+            )
+
+            # Reorder: put DoS right after Total Stock
+            _col_order = ['SKU', 'Flavor', '3PL', 'FBA', 'In Transit', 'Total Stock', 'DoS'] + disp_month_labels
+            disp_proj = disp_proj[[c for c in _col_order if c in disp_proj.columns]]
+
+            # Color function: red for negative, yellow for low stock
             def _color_inv(val):
                 if isinstance(val, (int, float)):
                     if val < 0:
@@ -336,13 +355,46 @@ def render(ctx):
                         return 'background-color: #fef3c7; color: #92400e'
                 return ''
 
-            inv_fmt = {label: '{:,.0f}' for label in disp_month_labels}
-            inv_fmt['3PL'] = '{:,.0f}'
-            inv_fmt['FBA'] = '{:,.0f}'
-            inv_fmt['In Transit'] = '{:,.0f}'
-            inv_fmt['Total Stock'] = '{:,.0f}'
+            # Color function for DoS strings
+            def _color_dos(val):
+                if isinstance(val, str) and val.endswith('d'):
+                    try:
+                        days = int(val[:-1])
+                        if days < 30:
+                            return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
+                        elif days < 60:
+                            return 'background-color: #fef3c7; color: #92400e'
+                    except ValueError:
+                        pass
+                return ''
 
-            render_html_table(disp_proj, max_height=min(len(disp_proj) * 35 + 38, 700))
+            # Apply number formatting before coloring
+            _num_cols = ['3PL', 'FBA', 'In Transit', 'Total Stock'] + disp_month_labels
+            for _nc in _num_cols:
+                if _nc in disp_proj.columns:
+                    disp_proj[_nc] = disp_proj[_nc].apply(lambda x: f'{x:,.0f}' if isinstance(x, (int, float)) else x)
+
+            # Combined style function
+            _inv_style_cols = _num_cols + ['DoS']
+
+            def _color_cell(val):
+                # Parse formatted number strings back
+                if isinstance(val, str):
+                    if val.endswith('d'):
+                        return _color_dos(val)
+                    cleaned = val.replace(',', '').strip()
+                    try:
+                        return _color_inv(float(cleaned))
+                    except ValueError:
+                        return ''
+                return _color_inv(val)
+
+            render_html_table(
+                disp_proj,
+                max_height=min(len(disp_proj) * 35 + 38, 700),
+                style_fn=_color_cell,
+                style_cols=_inv_style_cols,
+            )
 
             # --- Stockout Alerts ---
             if stockout_skus:

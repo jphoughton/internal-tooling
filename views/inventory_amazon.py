@@ -105,6 +105,35 @@ def render(ctx):
 
             amz_df = sort_df_by_best_seller(amz_df, sku_col="sku")
 
+            # --- Pre-fetch forecast for DoS + comparison table ---
+            _amz_fc_map = {}  # {sku: forecast_3mo}
+            _amz_fc_ok = False
+            _amz_sku_fc_core = pd.DataFrame()
+            try:
+                import json as _json_amz
+                with get_db() as conn:
+                    existing_spend_amz = get_media_spend(conn, source="All Sources")
+                if existing_spend_amz:
+                    media_plan_amz = existing_spend_amz
+                else:
+                    media_plan_amz = [{"month": (datetime.utcnow() + relativedelta(months=i)).strftime("%Y-%m"),
+                                       "spend": 0, "new_customer_roas": 0.7} for i in range(3)]
+                media_json_amz = _json_amz.dumps(media_plan_amz, sort_keys=True)
+                amz_source = "amazon" if "amazon" in active_sources else None
+                wf_amz = _cached_waterfall(media_json_amz, amz_source, 3, _load_seasonal_json())
+                if not wf_amz.empty:
+                    _amz_fc_raw = _cached_sku_forecast(wf_amz.to_json(), amz_source)
+                    if not _amz_fc_raw.empty:
+                        _amz_sku_fc_core = _amz_fc_raw[_amz_fc_raw["SKU"].isin(FORECAST_SKUS)].copy()
+                        if "Variant" in _amz_sku_fc_core.columns:
+                            _amz_sku_fc_core = _amz_sku_fc_core.drop(columns=["Variant"])
+                        _amz_mc = [c for c in _amz_sku_fc_core.columns if c != "SKU"]
+                        _amz_sku_fc_core["forecast_3mo"] = _amz_sku_fc_core[_amz_mc].sum(axis=1)
+                        _amz_fc_map = dict(zip(_amz_sku_fc_core["SKU"], _amz_sku_fc_core["forecast_3mo"]))
+                        _amz_fc_ok = True
+            except Exception:
+                pass
+
             # KPI cards
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total SKUs", len(amz_df))
@@ -126,72 +155,85 @@ def render(ctx):
                 get_flavor(row["sku"], row["product_name"]) for _, row in amz_df[["sku", "product_name"]].iterrows()
             ])
 
+            # Add Days of Supply column
+            _amz_dos_vals = []
+            for _, _r in amz_df.iterrows():
+                _fc3 = _amz_fc_map.get(_r["sku"], 0)
+                _daily = _fc3 / 91.32 if _fc3 > 0 else 0
+                _total = _r.get("total_quantity", 0) or 0
+                _amz_dos_vals.append(round(_total / _daily) if _daily > 0 else None)
+            display_amz["DoS"] = _amz_dos_vals
+            display_amz["DoS"] = display_amz["DoS"].apply(
+                lambda x: f"{int(x)}d" if pd.notnull(x) and x is not None else "\u2014"
+            )
+
+            # Reorder columns: put DoS after Total
+            _amz_col_order = ["SKU", "Flavor", "ASIN", "Fulfillable", "Reserved",
+                              "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total", "DoS"]
+            display_amz = display_amz[[c for c in _amz_col_order if c in display_amz.columns]]
+
+            def _color_dos_amz(val):
+                if isinstance(val, str) and val.endswith('d'):
+                    try:
+                        days = int(val[:-1])
+                        if days < 30:
+                            return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
+                        elif days < 60:
+                            return 'background-color: #fef3c7; color: #92400e'
+                    except ValueError:
+                        pass
+                return ''
+
             for _ac in ["Fulfillable", "Reserved", "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total"]:
                 if _ac in display_amz.columns:
-                    display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
-            render_html_table(display_amz, max_height=min(len(display_amz) * 35 + 38, 700))
+                    display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
+            render_html_table(display_amz, max_height=min(len(display_amz) * 35 + 38, 700),
+                              style_fn=_color_dos_amz, style_cols=["DoS"])
 
             # Forecast vs Amazon Inventory comparison
             st.divider()
             st.subheader("Forecast vs. Amazon FBA Stock")
             st.caption("Compares Amazon demand forecast with FBA inventory to flag shortfalls.")
 
-            try:
-                import json as _json_amz
-                with get_db() as conn:
-                    existing_spend_amz = get_media_spend(conn, source="All Sources")
-                if existing_spend_amz:
-                    media_plan_amz = existing_spend_amz
-                else:
-                    media_plan_amz = [{"month": (datetime.utcnow() + relativedelta(months=i)).strftime("%Y-%m"),
-                                       "spend": 0, "new_customer_roas": 0.7} for i in range(3)]
-                media_json_amz = _json_amz.dumps(media_plan_amz, sort_keys=True)
+            if _amz_fc_ok:
+                try:
+                    amz_core = amz_df[amz_df["sku"].isin(FORECAST_SKUS)][["sku", "total_quantity"]].copy()
+                    comparison_amz = _amz_sku_fc_core[["SKU", "forecast_3mo"]].merge(
+                        amz_core, left_on="SKU", right_on="sku", how="left"
+                    ).drop(columns=["sku"])
+                    comparison_amz["total_quantity"] = comparison_amz["total_quantity"].fillna(0)
+                    comparison_amz["months_of_stock"] = (
+                        comparison_amz["total_quantity"] / (comparison_amz["forecast_3mo"] / 3)
+                    ).round(1)
+                    comparison_amz["months_of_stock"] = comparison_amz["months_of_stock"].replace(
+                        [float("inf"), float("-inf")], 0
+                    ).fillna(0)
+                    comparison_amz.columns = ["SKU", "Forecast (3mo)", "FBA Total", "Months of Stock"]
+                    comparison_amz.insert(1, "Flavor", comparison_amz["SKU"].map(lambda s: get_flavor(s)))
+                    comparison_amz = sort_df_by_best_seller(comparison_amz, sku_col="SKU")
 
-                # Try to get Amazon-specific forecast, fall back to combined
-                amz_source = "amazon" if "amazon" in active_sources else None
-                wf_amz = _cached_waterfall(media_json_amz, amz_source, 3, _load_seasonal_json())
+                    _mos_raw_amz = comparison_amz["Months of Stock"].copy()
 
-                if not wf_amz.empty:
-                    sku_fc_amz = _cached_sku_forecast(wf_amz.to_json(), amz_source)
-                    if not sku_fc_amz.empty:
-                        sku_fc_amz = sku_fc_amz[sku_fc_amz["SKU"].isin(FORECAST_SKUS)].copy()
-                        if "Variant" in sku_fc_amz.columns:
-                            sku_fc_amz = sku_fc_amz.drop(columns=["Variant"])
+                    for _cac in ["Forecast (3mo)", "FBA Total"]:
+                        if _cac in comparison_amz.columns:
+                            comparison_amz[_cac] = comparison_amz[_cac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
+                    comparison_amz["Months of Stock"] = _mos_raw_amz.apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
 
-                        month_cols_amz = [c for c in sku_fc_amz.columns if c != "SKU"]
-                        sku_fc_amz["forecast_3mo"] = sku_fc_amz[month_cols_amz].sum(axis=1)
+                    def _color_mos_amz(val):
+                        if isinstance(val, str):
+                            try:
+                                v = float(val)
+                                if v < 1:
+                                    return 'background-color: #fee2e2; color: #991b1b; font-weight: bold'
+                                elif v < 2:
+                                    return 'background-color: #fef3c7; color: #92400e'
+                            except ValueError:
+                                pass
+                        return ''
 
-                        amz_core = amz_df[amz_df["sku"].isin(FORECAST_SKUS)][["sku", "total_quantity"]].copy()
-                        comparison_amz = sku_fc_amz[["SKU", "forecast_3mo"]].merge(
-                            amz_core, left_on="SKU", right_on="sku", how="left"
-                        ).drop(columns=["sku"])
-                        comparison_amz["total_quantity"] = comparison_amz["total_quantity"].fillna(0)
-                        comparison_amz["months_of_stock"] = (
-                            comparison_amz["total_quantity"] / (comparison_amz["forecast_3mo"] / 3)
-                        ).round(1)
-                        comparison_amz["months_of_stock"] = comparison_amz["months_of_stock"].replace(
-                            [float("inf"), float("-inf")], 0
-                        ).fillna(0)
-                        comparison_amz.columns = ["SKU", "Forecast (3mo)", "FBA Total", "Months of Stock"]
-                        comparison_amz.insert(1, "Flavor", comparison_amz["SKU"].map(lambda s: get_flavor(s)))
-                        comparison_amz = sort_df_by_best_seller(comparison_amz, sku_col="SKU")
-
-                        def _color_amz_stock(val):
-                            if val < 1:
-                                return "background-color: #fee2e2"
-                            elif val < 2:
-                                return "background-color: #fef3c7"
-                            return ""
-
-                        for _cac in ["Forecast (3mo)", "FBA Fulfillable"]:
-                            if _cac in comparison_amz.columns:
-                                comparison_amz[_cac] = comparison_amz[_cac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
-                        if "Months of Stock" in comparison_amz.columns:
-                            comparison_amz["Months of Stock"] = comparison_amz["Months of Stock"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
-                        render_html_table(comparison_amz, max_height=min(len(comparison_amz) * 35 + 38, 700))
-                    else:
-                        st.info("No SKU forecast data available.")
-                else:
-                    st.info("No waterfall forecast available.")
-            except Exception as e:
-                st.warning(f"Could not load forecast comparison: {e}")
+                    render_html_table(comparison_amz, max_height=min(len(comparison_amz) * 35 + 38, 700),
+                                      style_fn=_color_mos_amz, style_cols=["Months of Stock"])
+                except Exception as e:
+                    st.warning(f"Could not load forecast comparison: {e}")
+            else:
+                st.info("No forecast data available for comparison.")

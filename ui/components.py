@@ -4,10 +4,19 @@ import streamlit as st
 from datetime import datetime, timedelta
 
 
-def render_html_table(df, max_height=None):
+def render_html_table(df, max_height=None, style_fn=None, style_cols=None):
     """Render a plain DataFrame as a styled HTML table with white background.
-    Replaces st.dataframe() to avoid Glide canvas dark-background issues."""
-    styled = (
+    Replaces st.dataframe() to avoid Glide canvas dark-background issues.
+
+    Args:
+        df: DataFrame to render.
+        max_height: Optional max container height in pixels (scrollable).
+        style_fn: Optional callable(value) -> CSS string for conditional cell
+            coloring.  Applied only to *style_cols* (or all columns if
+            *style_cols* is None).
+        style_cols: Optional list of column names to apply *style_fn* to.
+    """
+    styler = (
         df.style
         .set_properties(**{
             "background-color": "#ffffff",
@@ -37,7 +46,12 @@ def render_html_table(df, max_height=None):
         ])
         .hide(axis="index")
     )
-    html = styled.to_html()
+    if style_fn is not None:
+        cols = style_cols if style_cols else list(df.columns)
+        cols = [c for c in cols if c in df.columns]
+        if cols:
+            styler = styler.map(style_fn, subset=cols)
+    html = styler.to_html()
     height_style = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
     st.markdown(
         f'<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
@@ -46,7 +60,7 @@ def render_html_table(df, max_height=None):
         '<style>'
         '.html-table table { width:100%; border-collapse:collapse; }'
         '.html-table th, .html-table td { white-space:nowrap; }'
-        '.html-table tr:hover td { background:#F7FAFC !important; }'
+        '.html-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
         '</style>'
         f'<div class="html-table" style="overflow-x:auto;">{html}</div></div>',
         unsafe_allow_html=True,
