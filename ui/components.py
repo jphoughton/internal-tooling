@@ -1,10 +1,12 @@
 """Reusable Streamlit UI components for the Hydrant dashboard."""
 import os
+import secrets
 import streamlit as st
 from datetime import datetime, timedelta
 
 
-def render_html_table(df, max_height=None, style_fn=None, style_cols=None):
+def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
+                      column_groups=None):
     """Render a plain DataFrame as a styled HTML table with white background.
     Replaces st.dataframe() to avoid Glide canvas dark-background issues.
 
@@ -15,6 +17,9 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None):
             coloring.  Applied only to *style_cols* (or all columns if
             *style_cols* is None).
         style_cols: Optional list of column names to apply *style_fn* to.
+        column_groups: Optional list of (group_name, [col_names]) tuples.
+            Adds visual separators and a group header row between column
+            groups.  Use empty string for unnamed groups (e.g. identity cols).
     """
     styler = (
         df.style
@@ -52,7 +57,58 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None):
         if cols:
             styler = styler.map(style_fn, subset=cols)
     html = styler.to_html()
+
+    # --- Column group headers & boundary borders ---
+    group_css = ''
+    group_header_html = ''
+    container_extra_class = ''
+    if column_groups:
+        table_id = f'ht{secrets.token_hex(3)}'
+        col_list = list(df.columns)
+        container_extra_class = ' html-table-grouped'
+
+        # Group header row
+        cells = []
+        is_first = True
+        for group_name, group_cols in column_groups:
+            actual = [c for c in group_cols if c in col_list]
+            if not actual:
+                continue
+            border = '' if is_first else 'border-left:2px solid #CBD5E1;'
+            cells.append(
+                f'<th colspan="{len(actual)}" style="'
+                f'background-color:#E8EDF3;color:#64748b;font-size:0.68rem;'
+                f'font-weight:600;text-transform:uppercase;letter-spacing:0.06em;'
+                f'padding:6px 14px;border-bottom:none;'
+                f'text-align:center;position:sticky;top:0;z-index:2;'
+                f'{border}'
+                f'">{group_name}</th>'
+            )
+            is_first = False
+        if cells:
+            group_header_html = '<tr class="group-header">' + ''.join(cells) + '</tr>'
+            html = html.replace('<thead>', '<thead>' + group_header_html, 1)
+
+        # Boundary borders (scoped to this table)
+        for i, (_, group_cols) in enumerate(column_groups):
+            if i == 0:
+                continue
+            first_cols = [c for c in group_cols if c in col_list]
+            if first_cols:
+                idx = col_list.index(first_cols[0])
+                group_css += (
+                    f'#{table_id} th.col{idx},'
+                    f'#{table_id} td.col{idx}'
+                    f'{{ border-left: 2px solid #CBD5E1 !important; }}\n'
+                )
+
     height_style = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
+    table_id_attr = f' id="{table_id}"' if column_groups else ''
+    grouped_css = (
+        '.html-table-grouped th.col_heading { top: 29px !important; }'
+        '.html-table .group-header:hover th { background-color: #E8EDF3 !important; }'
+        f'{group_css}'
+    ) if column_groups else ''
     st.markdown(
         f'<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
         f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
@@ -61,8 +117,10 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None):
         '.html-table table { width:100%; border-collapse:collapse; }'
         '.html-table th, .html-table td { white-space:nowrap; }'
         '.html-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
+        f'{grouped_css}'
         '</style>'
-        f'<div class="html-table" style="overflow-x:auto;">{html}</div></div>',
+        f'<div class="html-table{container_extra_class}" style="overflow-x:auto;"'
+        f'{table_id_attr}>{html}</div></div>',
         unsafe_allow_html=True,
     )
 

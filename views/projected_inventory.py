@@ -394,6 +394,11 @@ def render(ctx):
                 max_height=min(len(disp_proj) * 35 + 38, 700),
                 style_fn=_color_cell,
                 style_cols=_inv_style_cols,
+                column_groups=[
+                    ('', ['SKU', 'Flavor']),
+                    ('Current Stock', ['3PL', 'FBA', 'In Transit', 'Total Stock', 'DoS']),
+                    ('Monthly Projections', disp_month_labels),
+                ],
             )
 
             # --- Stockout Alerts ---

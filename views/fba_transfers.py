@@ -286,6 +286,12 @@ def render(ctx):
                 display_transfer["Days Until Transfer"] = display_transfer["Days Until Transfer"].apply(
                     lambda x: f"{int(x)}" if pd.notnull(x) else "\u2014"
                 )
-            render_html_table(display_transfer, max_height=min(len(display_transfer) * 35 + 38, 500))
+            render_html_table(display_transfer, max_height=min(len(display_transfer) * 35 + 38, 500),
+                              column_groups=[
+                                  ('', ['SKU', 'Flavor']),
+                                  ('FBA Status', ['FBA Stock', 'FBA Monthly Demand', 'FBA Stockout']),
+                                  ('Transfer Plan', ['Transfer By', 'Days Until Transfer', 'Transfer Qty']),
+                                  ('3PL Supply', ['3PL Available', 'Can Fulfill', 'Urgency']),
+                              ])
         else:
             st.info("No Amazon FBA SKUs with measurable demand found.")

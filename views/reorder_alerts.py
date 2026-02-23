@@ -418,7 +418,13 @@ def render(ctx):
                     display_reorder[_roc] = display_reorder[_roc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
             if "Months of Cover" in display_reorder.columns:
                 display_reorder["Months of Cover"] = display_reorder["Months of Cover"].apply(lambda x: f"{x:.1f}" if pd.notnull(x) else "")
-            render_html_table(display_reorder, max_height=min(len(display_reorder) * 35 + 38, 700))
+            render_html_table(display_reorder, max_height=min(len(display_reorder) * 35 + 38, 700),
+                              column_groups=[
+                                  ('', ['SKU', 'Flavor', 'Urgency']),
+                                  ('Current Stock', ['3PL Stock', 'FBA Stock', 'Total Stock', 'Inbound']),
+                                  ('Demand', ['Monthly Demand', 'Months of Cover']),
+                                  ('Action', ['Reorder By', 'Stockout Date', 'Order Qty', 'Planned Inbound']),
+                              ])
 
             # --- Export ---
             st.divider()

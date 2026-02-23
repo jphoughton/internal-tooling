@@ -188,7 +188,13 @@ def render(ctx):
                 if _ac in display_amz.columns:
                     display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
             render_html_table(display_amz, max_height=min(len(display_amz) * 35 + 38, 700),
-                              style_fn=_color_dos_amz, style_cols=["DoS"])
+                              style_fn=_color_dos_amz, style_cols=["DoS"],
+                              column_groups=[
+                                  ('', ['SKU', 'Flavor', 'ASIN']),
+                                  ('Available', ['Fulfillable', 'Reserved']),
+                                  ('Inbound', ['Inbound Shipped', 'Inbound Receiving']),
+                                  ('Summary', ['Unfulfillable', 'Total', 'DoS']),
+                              ])
 
             # Forecast vs Amazon Inventory comparison
             st.divider()

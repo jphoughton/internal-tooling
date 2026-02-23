@@ -178,7 +178,12 @@ def render(ctx):
                 if _ic in display_df.columns:
                     display_df[_ic] = display_df[_ic].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
             render_html_table(display_df, max_height=min(len(display_df) * 35 + 38, 700),
-                              style_fn=_color_dos_3pl, style_cols=["DoS"])
+                              style_fn=_color_dos_3pl, style_cols=["DoS"],
+                              column_groups=[
+                                  ('', ['SKU', 'Flavor']),
+                                  ('Stock Levels', ['On Hand', 'Allocated', 'Available', 'DoS']),
+                                  ('Pipeline', ['Backordered', 'Inbound']),
+                              ])
 
             # Forecast vs Inventory comparison (core SKUs only)
             st.divider()
