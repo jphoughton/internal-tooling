@@ -1259,8 +1259,28 @@ def render(ctx):
                     with get_db() as conn:
                         conv_id = get_setting(conn, "klaviyo_conversion_metric_id")
                     include_revenue = bool(conv_id)
+                    debug_parts = [f"saved_id={conv_id}"]
                     if not conv_id:
+                        # Debug: call Metrics API directly and show response
+                        import requests as _dbg_requests
+                        _dbg_headers = {
+                            "Authorization": f"Klaviyo-API-Key {_mkt_klaviyo_key}",
+                            "revision": "2025-01-15",
+                            "Accept": "application/json",
+                        }
+                        try:
+                            _dbg_resp = _dbg_requests.get(
+                                "https://a.klaviyo.com/api/metrics",
+                                headers=_dbg_headers,
+                                params={"page[size]": "3"},
+                                timeout=15,
+                            )
+                            st.info(f"Metrics API: {_dbg_resp.status_code} | {_dbg_resp.text[:500]}")
+                        except Exception as _dbg_e:
+                            st.warning(f"Metrics API debug call failed: {_dbg_e}")
+
                         conv_id = fetch_placed_order_metric_id(_mkt_klaviyo_key)
+                        debug_parts.append(f"placed_order={conv_id}")
                         if conv_id:
                             include_revenue = True
                             with get_db() as conn:
@@ -1268,6 +1288,7 @@ def render(ctx):
                         else:
                             # Fallback: any metric (engagement stats still work)
                             conv_id = fetch_any_metric_id(_mkt_klaviyo_key)
+                            debug_parts.append(f"fallback={conv_id}")
 
                     cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
                     fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
