@@ -164,26 +164,3 @@ def map_amazon_sku(seller_sku, asin=None, product_name=None):
 
     # Fallback: return original seller_sku (will show as unmapped in dashboard)
     return seller_sku
-
-
-def get_all_mapped_asins():
-    """Return set of all ASINs we have mappings for."""
-    return set(ASIN_TO_MASTER_SKU.keys())
-
-
-def get_unmapped_items(inventory_items):
-    """
-    Find Amazon inventory items that don't map to any master SKU.
-
-    Args:
-        inventory_items: list of dicts with 'sku' and 'asin' keys
-
-    Returns:
-        list of dicts with unmapped items
-    """
-    unmapped = []
-    for item in inventory_items:
-        master = get_master_sku(seller_sku=item.get("sku"), asin=item.get("asin"))
-        if master is None or master == item.get("sku"):
-            unmapped.append(item)
-    return unmapped

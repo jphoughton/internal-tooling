@@ -7,11 +7,11 @@ by their line items (linked via __parentId). Line items follow their parent orde
 This is much faster than paginated REST API for large historical backfills.
 """
 import json
-import hashlib
 import requests
 import time
 import config as cfg
 from db import get_db, upsert_customer, upsert_order, upsert_order_item, upsert_sku, rebuild_daily_sales
+from etl.customer_id import generate_customer_id as _generate_customer_id
 
 
 def poll_bulk_operation(timeout_minutes=30):
@@ -67,22 +67,6 @@ def poll_bulk_operation(timeout_minutes=30):
         time.sleep(10)
 
     raise TimeoutError(f"Bulk operation did not complete within {timeout_minutes} minutes")
-
-
-def _generate_customer_id(customer_data):
-    """Generate stable customer ID from Shopify customer data."""
-    if not customer_data:
-        return None
-    # Use Shopify's GID (e.g. "gid://shopify/Customer/12345")
-    gid = customer_data.get("id")
-    if gid:
-        # Extract numeric ID from GID
-        numeric_id = gid.split("/")[-1]
-        return f"shp-{numeric_id}"
-    email = customer_data.get("email")
-    if email:
-        return f"shp-{hashlib.md5(email.lower().encode()).hexdigest()[:12]}"
-    return None
 
 
 def download_and_import(url, on_progress=None):

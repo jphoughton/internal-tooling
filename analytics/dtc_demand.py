@@ -15,6 +15,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import get_db
 from analytics.sku_flavors import get_flavor
+from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff
 
 
 def get_current_month_progress():
@@ -83,23 +84,6 @@ def compute_remaining_month_demand(rollup_table, month_progress=None):
             "remaining": remaining,
         }
     return result
-
-
-def _month_str(dt):
-    return dt.strftime("%Y-%m")
-
-
-def _add_months(month_str, n):
-    dt = datetime.strptime(month_str, "%Y-%m")
-    dt += relativedelta(months=n)
-    return _month_str(dt)
-
-
-def _month_diff(a, b):
-    """Months from b to a (a - b)."""
-    da = datetime.strptime(a, "%Y-%m")
-    db = datetime.strptime(b, "%Y-%m")
-    return (da.year - db.year) * 12 + (da.month - db.month)
 
 
 # ----------------------------------------------------------------
@@ -719,65 +703,3 @@ def build_master_dtc_forecast(
         "channel_split": channel_split,
         "revenue": revenue,
     }
-
-
-# Keep old function signatures for backward compatibility
-def build_amazon_forecast(horizon_months=12, growth_rate=0.0):
-    """Legacy wrapper."""
-    return build_amazon_sku_month_table(horizon_months=horizon_months, growth_rate=growth_rate)
-
-
-def get_shopify_sku_sales_by_customer_type(lookback_months=3):
-    """Legacy: Break down Shopify SKU sales into new vs repeat."""
-    with get_db() as conn:
-        cutoff = (datetime.utcnow() - relativedelta(months=lookback_months)).strftime('%Y-%m-%d')
-        rows = conn.execute("""
-            SELECT
-                oi.sku,
-                SUM(CASE
-                    WHEN strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
-                    THEN oi.quantity ELSE 0
-                END) as new_units,
-                SUM(CASE
-                    WHEN strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
-                    THEN oi.quantity ELSE 0
-                END) as repeat_units,
-                SUM(oi.quantity) as total_units
-            FROM order_items oi
-            JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE o.source = 'shopify'
-              AND o.order_date >= ?
-            GROUP BY oi.sku
-            ORDER BY total_units DESC
-        """, (cutoff,)).fetchall()
-
-    if not rows:
-        return pd.DataFrame()
-
-    data = []
-    grand_total = sum(r["total_units"] for r in rows)
-    for r in rows:
-        total = r["total_units"] or 0
-        new = r["new_units"] or 0
-        repeat = r["repeat_units"] or 0
-        data.append({
-            "sku": r["sku"],
-            "flavor": get_flavor(r["sku"]),
-            "new_units": new,
-            "repeat_units": repeat,
-            "total_units": total,
-            "new_pct": round(new / total * 100, 1) if total > 0 else 0,
-            "repeat_pct": round(repeat / total * 100, 1) if total > 0 else 0,
-            "pct_of_sales": round(total / grand_total * 100, 1) if grand_total > 0 else 0,
-        })
-
-    return pd.DataFrame(data)
-
-
-# Legacy functions kept for any old imports
-def build_new_customer_sku_table(source_filter=None, lookback_months=3, horizon_months=12, forecast_skus=None):
-    return pd.DataFrame()
-
-def build_repeat_customer_sku_table(source_filter=None, lookback_months=3, forecast_skus=None):
-    return pd.DataFrame()

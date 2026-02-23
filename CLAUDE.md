@@ -6,7 +6,7 @@ Multi-channel e-commerce analytics dashboard for **Hydrant** (DTC hydration mix 
 
 ## Tech Stack
 
-- **Frontend**: Streamlit 1.50.0 (multi-page app, ~5,200 lines in dashboard.py)
+- **Frontend**: Streamlit 1.50.0 (modular multi-page app — thin router + 11 page modules)
 - **Backend**: Python 3.x, SQLite (WAL mode for concurrent reads)
 - **Forecasting**: Facebook Prophet 1.1.5+ (daily → monthly time series)
 - **Data Processing**: Pandas 2.1+, NumPy 1.24+
@@ -19,14 +19,36 @@ Multi-channel e-commerce analytics dashboard for **Hydrant** (DTC hydration mix 
 
 ```
 Inventory/
-├── dashboard.py           # Streamlit multi-page app (ALL UI — 5,200+ lines)
+├── dashboard.py           # Thin router: sidebar, auth, notification bar, page dispatch (~575 lines)
 ├── config.py              # Environment & credentials management
-├── db.py                  # SQLite schema, connection helpers, upsert operations
+├── db.py                  # PostgreSQL/SQLite adapter, schema, connection helpers, upserts
 ├── scheduler.py           # Daemon scheduler for daily ETL sync
-├── mock_data.py           # 12-month synthetic dataset generator for testing
 ├── requirements.txt       # Python dependencies
 ├── run.sh                 # Launch script
 ├── launch.command         # macOS double-click launcher
+│
+├── pages/                 # One file per dashboard page — each exports render(ctx)
+│   ├── overview.py        # KPIs, revenue trends, source split, inventory snapshot
+│   ├── retention.py       # Cohort matrix heatmap, retention curve, seasonality editor
+│   ├── demand_forecast.py # Waterfall chart, media spend editor, 5 SKU-by-month tables
+│   ├── projected_inventory.py # Planned inbound editor, inventory runway projections
+│   ├── inventory_3pl.py   # Packiyo 3PL stock levels, forecast vs inventory
+│   ├── inventory_amazon.py# FBA stock levels, forecast vs inventory
+│   ├── reorder_alerts.py  # Urgency-ranked reorder plan, runway charts, timeline Gantt
+│   ├── fba_transfers.py   # 3PL→FBA transfer urgency, timeline Gantt
+│   ├── marketing.py       # Pacing tables, DoD/WoW/MoM with gradient coloring
+│   ├── financials.py      # Bank transaction import, P&L, cash flow charts
+│   └── settings.py        # API credentials, data imports, Google Sheets sync
+│
+├── ui/                    # Reusable Streamlit UI building blocks
+│   ├── styles.py          # Global CSS (Hydrant brand), Plotly theme, nav section CSS
+│   ├── components.py      # HTML table renderer, freshness badge, date filter, auth
+│   ├── charts.py          # Plotly chart factories (timeline/Gantt charts)
+│   └── tables.py          # DataFrame formatting, gradient styling, SKU display helpers
+│
+├── utils/                 # Shared utilities
+│   ├── date_helpers.py    # month_str, parse_month, add_months, month_diff
+│   └── constants.py       # FORECAST_SKUS, TW_ADJUSTMENT, seasonal indices, pacing bounds
 │
 ├── analytics/             # Demand & retention calculation modules
 │   ├── forecast.py        # Prophet-based SKU demand forecasting
@@ -38,16 +60,24 @@ Inventory/
 │
 ├── etl/                   # Data integration pipelines
 │   ├── sync.py            # Daily orchestration: triggers all syncs
-│   ├── amazon.py          # Sales & Traffic reports (SP-API flat-file)
-│   ├── amazon_inventory.py# FBA inventory levels
+│   ├── amazon.py          # Sales & Traffic reports (SP-API)
+│   ├── amazon_inventory.py# FBA inventory levels (multi-strategy fallback)
 │   ├── amazon_sku_map.py  # ASIN ↔ Master SKU mapping (23 entries)
-│   ├── amazon_restock.py  # (Unused in current pipeline)
+│   ├── customer_id.py     # Shared Shopify customer ID generation
 │   ├── shopify_client.py  # Order/customer sync + auto-token refresh
 │   ├── shopify_oauth.py   # OAuth flow for Shopify token
-│   ├── shopify_bulk_import.py # Bulk operations handler
+│   ├── shopify_bulk_import.py # Bulk JSONL operations handler
 │   ├── packiyo_client.py  # 3PL real-time inventory query
 │   ├── google_sheets.py   # Public Sheet CSV import (no OAuth)
-│   └── klaviyo_client.py  # (Configured, not actively synced)
+│   └── klaviyo_client.py  # Klaviyo email metrics (configured, not actively synced)
+│
+├── tests/                 # Test suite
+│   ├── conftest.py        # Pytest fixtures, read-only DB connection
+│   ├── test_data_quality.py # 32 data quality tests (revenue, dates, integrity)
+│   ├── test_date_helpers.py # Date math utility tests
+│   ├── test_sku_map.py    # ASIN→SKU mapping tests
+│   ├── test_customer_id.py# Customer ID generation tests
+│   └── test_constants.py  # Constants sanity checks
 │
 ├── .streamlit/
 │   └── config.toml        # Streamlit theme config
@@ -57,7 +87,6 @@ Inventory/
 │   └── seed.sql.gz        # Real data seed (Git LFS, auto-restored on first run)
 │
 ├── .env                   # API credentials (gitignored)
-│
 ├── .mcp.json              # MCP servers (committed — auto-loads for all Claude Code users)
 ├── .claude/
 │   └── settings.json      # Claude Code permissions (committed — shared with team)
@@ -104,8 +133,8 @@ Shopify Admin ──────► shopify_client.py ──────► cust
 Packiyo 3PL ────────► packiyo_client.py ──────► [real-time only]──┤
   (inventory)          get_inventory()                             ├──► reorder.py (runway sim)
                                                                     │
-FBA Inventory ──────► amazon_inventory.py ────► [real-time only]──┘    ──► dashboard.py
-                                                                            (5 pages)
+FBA Inventory ──────► amazon_inventory.py ────► [real-time only]──┘    ──► pages/*.py
+                                                                            (11 pages)
 Google Sheets ──────► google_sheets.py ───────► google_sheet_data
   (public CSV)
 
@@ -210,20 +239,63 @@ Day-by-day forward simulation:
 
 ## Dashboard Pages
 
-1. **Overview** — KPIs, Shopify+Amazon revenue by source, top SKUs, daily trend
-2. **Retention** — Cohort matrix heatmap, customer LTV, SKU lifecycle trends, seasonality editor
-3. **Demand Forecast** — Prophet output, waterfall tables (new/repeat/Amazon/master rollup)
-4. **Reorder Alerts** — Urgency-ranked table, inventory runway chart, FBA transfer alerts, "Mark as Ordered"
-5. **Marketing** — Channel-filtered (All/Roll Up/DTC/Amazon) pacing tables, DoD/WoW/MoM performance with gradient coloring
-6. **Settings** — API credentials, media spend, seasonal indices, planned inbound, Google Sheets sync
+Each page is a standalone module in `pages/` exporting a `render(ctx)` function. The `ctx` dict provides shared cached functions and state from the router.
+
+| #   | Page                | Module                         | Key Features                                                 |
+| --- | ------------------- | ------------------------------ | ------------------------------------------------------------ |
+| 1   | Overview            | `pages/overview.py`            | KPIs, revenue trends by source, top SKUs, inventory snapshot |
+| 2   | Retention           | `pages/retention.py`           | Cohort heatmap, retention curve, seasonality editor          |
+| 3   | Demand Forecast     | `pages/demand_forecast.py`     | Waterfall chart, media spend editor, 5 SKU-by-month tables   |
+| 4   | Projected Inventory | `pages/projected_inventory.py` | Planned inbound editor, inventory runway projections         |
+| 5   | 3PL Inventory       | `pages/inventory_3pl.py`       | Packiyo stock levels, forecast vs inventory comparison       |
+| 6   | Amazon Inventory    | `pages/inventory_amazon.py`    | FBA stock levels, forecast vs inventory comparison           |
+| 7   | Reorder Alerts      | `pages/reorder_alerts.py`      | Urgency-ranked table, runway charts, timeline Gantt          |
+| 8   | FBA Transfers       | `pages/fba_transfers.py`       | Transfer urgency alerts, 3PL→FBA timeline Gantt              |
+| 9   | Marketing           | `pages/marketing.py`           | Pacing tables, DoD/WoW/MoM with gradient coloring            |
+| 10  | Financials          | `pages/financials.py`          | Bank transaction import, P&L, cash flow charts               |
+| 11  | Settings            | `pages/settings.py`            | API credentials, data imports, Google Sheets sync            |
+
+### Page Module Convention
+
+```python
+# pages/example.py
+"""Example page."""
+import streamlit as st
+from db import get_db, read_sql
+from ui.components import render_html_table, render_freshness_badge
+
+def render(ctx):
+    """Render the page. ctx contains shared cached functions and state."""
+    forecast_skus = ctx['forecast_skus']
+    cached_waterfall = ctx['cached_waterfall']
+    # ... page implementation ...
+```
 
 ### UI Patterns
 
 - `st.segmented_control` for channel filters (NOT st.button — buttons don't maintain state across reruns)
-- `_gradient_perf_style()` for DoD/WoW/MoM — smooth 5-tier color gradient (deep green → amber → deep red)
-- Slim single-line notification banner at top for urgent reorder alerts
-- All SKU tables sorted by best-seller rank (last 90 days sales volume)
+- `gradient_perf_style()` in `ui/tables.py` for DoD/WoW/MoM — smooth 5-tier color gradient
+- `render_html_table()` in `ui/components.py` for all styled HTML tables
+- `render_freshness_badge()` in `ui/components.py` for data freshness indicators
+- `render_timeline_chart()` in `ui/charts.py` for Gantt-style timeline charts
+- Slim single-line notification banner at top for urgent reorder alerts (in `dashboard.py` router)
+- All SKU tables sorted by best-seller rank (use `get_sku_sales_rank()`)
 - `@st.cache_data(ttl=...)` used extensively (10s to 1800s depending on computation cost)
+
+## Testing
+
+```bash
+pytest tests/ -v              # Run all tests (data quality + unit tests)
+pytest tests/test_date_helpers.py -v  # Run specific test file
+```
+
+| Test file              | What it tests                                                     | Count |
+| ---------------------- | ----------------------------------------------------------------- | ----- |
+| `test_data_quality.py` | Revenue sanity, date validity, referential integrity, sync health | 32    |
+| `test_date_helpers.py` | Date math utilities (add_months, month_diff, parse/format)        | 21    |
+| `test_sku_map.py`      | ASIN→SKU mapping, seller SKU resolution, registration             | 17    |
+| `test_customer_id.py`  | Customer ID generation (REST, GraphQL, email fallback)            | 12    |
+| `test_constants.py`    | Constants sanity (SKU count, seasonal indices, TW adjustment)     | 9     |
 
 ## Environment Variables (.env)
 
@@ -386,24 +458,35 @@ git commit -m "fix: emergency hotfix" --no-verify
 
 ## Rules for AI
 
+### Architecture
+
+- **Page changes go in `pages/` modules** — dashboard.py is a thin router, do NOT add page code to it
+- **New UI components go in `ui/`** — reusable widgets, chart factories, table formatters
+- **Shared constants go in `utils/constants.py`** — no magic numbers in page modules
+- **Shared date math goes in `utils/date_helpers.py`** — do NOT define \_month_str etc. locally
+- **Customer ID generation uses `etl/customer_id.py`** — do NOT duplicate in Shopify modules
+- Each page module exports `render(ctx)` — receives shared cached functions via the ctx dict
+
+### Code Quality
+
 - Always use conventional commit messages (enforced by hooks)
 - Run the app and verify changes before committing: `streamlit run dashboard.py`
+- Run tests before committing: `pytest tests/ -v`
 - Don't modify .env or credentials — instruct the user to do it
 - Don't add new dependencies without explaining why in the commit message
-- Prefer editing existing files over creating new ones
-- Keep dashboard.py sections organized by page (Overview, Retention, Forecast, Reorder, Marketing, Settings)
 - All SKU displays must be sorted by best-seller rank (use `get_sku_sales_rank()`)
 - Use `@st.cache_data(ttl=N)` for expensive computations
 - Use `st.segmented_control` for stateful toggles, NOT `st.button`
-- The `_gradient_perf_style()` pattern should be used for any new DoD/WoW/MoM displays
+- Use `gradient_perf_style()` from `ui/tables.py` for DoD/WoW/MoM displays
+- Use `render_html_table()` from `ui/components.py` instead of st.dataframe
+- Use `render_timeline_chart()` from `ui/charts.py` for Gantt charts
 - Amazon data never goes through the `orders` table — only `daily_sku_sales`
-- Test with mock data first (`USE_MOCK_DATA=true`) before touching live APIs
-- **After any deploy or UI change**: Use Playwright MCP to load the deployed URL (or localhost), screenshot each page, and verify data is actually rendering. Never assume a deploy worked — always verify visually.
-- Pages must never show completely empty — always provide a database fallback (e.g. sales velocity) when live API credentials are missing
+- **After any deploy or UI change**: Use Playwright MCP to screenshot each page and verify rendering
+- Pages must never show completely empty — always provide a database fallback when API creds are missing
 
 ## Current State
 
-- **Working**: Full dashboard with 6 pages, ETL for Amazon + Shopify + Packiyo, Prophet forecasting, waterfall demand split, reorder alerts with urgency tiers, gradient DoD/WoW/MoM coloring, channel-filtered marketing page, notification banner
-- **In Progress**: Seasonal demand multipliers (Task 1 from plan), Overview page revamp (Task 2), reorder alerts with planned inbound (Task 3)
+- **Working**: Full dashboard with 11 pages, ETL for Amazon + Shopify + Packiyo + Google Sheets, Prophet forecasting, waterfall demand split, reorder alerts with urgency tiers, FBA transfer alerts, gradient DoD/WoW/MoM coloring, channel-filtered marketing page, notification banner, bank transaction import (Financials page)
+- **Architecture**: Modular — thin router (575 lines) + 11 page modules + ui/ + utils/ packages, 91 unit tests
 - **Known Issues**: None critical
-- **Next Up**: DTC→Amazon FBA transfer lead time alerts, Google Sheets import, Klaviyo integration, bank transaction import
+- **Next Up**: Klaviyo integration, more analytics unit tests (waterfall, reorder simulation)

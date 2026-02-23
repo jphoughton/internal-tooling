@@ -5,7 +5,6 @@ Data strategy (two report types pulled daily):
 1. SALES: Sales & Traffic report (aggregated daily by ASIN).
    Inserts directly into daily_sku_sales for demand forecasting.
    ASINs are mapped to master SKUs via etl.amazon_sku_map.
-   Fallback: Flat-file All Orders report if S&T isn't available.
 
 2. RETENTION: FBA Customer Shipment Sales report (GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA).
    Contains hashed buyer emails (consistent across orders), order IDs, SKUs,
@@ -161,92 +160,6 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
             print(f"  {day_str}: ERROR — {e}", flush=True)
 
         current += timedelta(days=1)
-
-    return record_count
-
-
-def fetch_flat_file_orders(conn, since_date=None, until_date=None):
-    """
-    FALLBACK METHOD: Flat-file All Orders report (tab-separated).
-    Aggregates order-level data into daily_sku_sales.
-    Used when Sales & Traffic report isn't available (e.g., new accounts).
-
-    Returns number of line-item records processed.
-    """
-    credentials = get_credentials()
-    if not credentials["refresh_token"]:
-        raise ValueError("Amazon SP-API credentials not configured.")
-
-    if since_date is None:
-        since_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
-    if until_date is None:
-        until_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    reports_api = Reports(credentials=credentials, marketplace=get_marketplace())
-
-    report_response = reports_api.create_report(
-        reportType="GET_FLAT_FILE_ALL_ORDERS_DATA_BY_ORDER_DATE_GENERAL",
-        dataStartTime=f"{since_date}T00:00:00Z",
-        dataEndTime=f"{until_date}T23:59:59Z",
-        marketplaceIds=[cfg.AMAZON_MARKETPLACE_ID],
-    )
-
-    report_id = report_response.payload["reportId"]
-    print(f"Amazon flat-file order report requested: {report_id}")
-
-    document_id = _wait_for_report(reports_api, report_id)
-    if not document_id:
-        return 0
-
-    content = _download_report(reports_api, document_id)
-
-    reader = csv.DictReader(io.StringIO(content), delimiter="\t")
-    record_count = 0
-
-    for row in reader:
-        seller_sku = row.get("sku", "")
-        if not seller_sku:
-            continue
-
-        asin = row.get("asin", "")
-        product_name = row.get("product-name", "")
-
-        # Map Amazon seller-SKU to master SKU via ASIN
-        master_sku = map_amazon_sku(seller_sku, asin, product_name)
-
-        date = row.get("purchase-date", "")[:10]
-        if not date:
-            continue
-
-        # Column name varies: "quantity-purchased" or "quantity"
-        qty_str = row.get("quantity-purchased", "") or row.get("quantity", "")
-        try:
-            quantity = int(float(qty_str)) if qty_str else 1
-        except (ValueError, TypeError):
-            quantity = 1
-
-        price_str = row.get("item-price", "")
-        try:
-            price = float(price_str) if price_str else 0.0
-        except (ValueError, TypeError):
-            price = 0.0
-
-        # Skip rows with no quantity data (header-only or cancelled)
-        if quantity <= 0:
-            quantity = 1  # Default to 1 unit for orders without qty
-
-        # Upsert-aggregate into daily sales
-        conn.execute("""
-            INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
-            VALUES (?, ?, 'amazon', ?, ?, 1)
-            ON CONFLICT(sale_date, sku, source) DO UPDATE SET
-                units_sold = daily_sku_sales.units_sold + excluded.units_sold,
-                revenue = daily_sku_sales.revenue + excluded.revenue,
-                order_count = daily_sku_sales.order_count + 1
-        """, (date, master_sku, quantity, price))
-
-        upsert_sku(conn, master_sku, product_name, None, date, "amazon")
-        record_count += 1
 
     return record_count
 

@@ -142,28 +142,6 @@ def get_flavor(sku, product_name=None):
     return ""
 
 
-def get_flavor_map(sku_product_pairs=None):
-    """
-    Build a {sku: flavor} dict.
-
-    Args:
-        sku_product_pairs: optional list of (sku, product_name) tuples
-                           for non-core SKUs. If None, only returns
-                           the core map + suffix decoding.
-
-    Returns:
-        dict: {sku: flavor_string}
-    """
-    result = dict(_CORE_FLAVORS)
-
-    if sku_product_pairs:
-        for sku, name in sku_product_pairs:
-            if sku not in result:
-                result[sku] = get_flavor(sku, name)
-
-    return result
-
-
 # ---------------------------------------------------------------------------
 # SKU sales rank — used to sort all SKU displays best-seller → least-seller
 # ---------------------------------------------------------------------------

@@ -7,7 +7,6 @@ Docs: https://developers.klaviyo.com/en/reference/api-overview
 Auth: Private API key via header  Authorization: Klaviyo-API-Key {key}
 """
 import logging
-from datetime import datetime, timedelta
 from klaviyo_api import KlaviyoAPI
 
 logger = logging.getLogger(__name__)
@@ -72,46 +71,6 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         return []
 
 
-def fetch_campaign_metrics(api_key, campaign_id):
-    """
-    Fetch performance metrics for a specific campaign.
-
-    Returns dict with opens, clicks, revenue, etc.
-    """
-    try:
-        client = get_client(api_key)
-        # Use the Reporting API for campaign stats
-        resp = client.Reporting.query_campaign_values(
-            body={
-                "data": {
-                    "type": "campaign-values-report",
-                    "attributes": {
-                        "statistics": [
-                            "opens", "unique_opens", "open_rate",
-                            "clicks", "unique_clicks", "click_rate",
-                            "recipients", "bounces", "bounce_rate",
-                            "unsubscribes", "unsubscribe_rate",
-                            "revenue", "conversion_value",
-                            "conversions", "conversion_rate",
-                        ],
-                        "timeframe": {"key": "last_365_days"},
-                        "conversion_metric_id": "Placed Order",
-                        "filter": f'equals(campaign_id,"{campaign_id}")',
-                    },
-                }
-            }
-        )
-
-        if resp and hasattr(resp, "data") and resp.data:
-            result = resp.data[0].attributes.get("statistics", {})
-            return result
-
-        return {}
-    except Exception as e:
-        logger.error(f"Failed to fetch metrics for campaign {campaign_id}: {e}")
-        return {}
-
-
 def fetch_flows(api_key, status="live"):
     """
     Fetch flows (automated email sequences) from Klaviyo.
@@ -145,65 +104,6 @@ def fetch_flows(api_key, status="live"):
     except Exception as e:
         logger.error(f"Failed to fetch Klaviyo flows: {e}")
         return []
-
-
-def fetch_flow_metrics(api_key, flow_id):
-    """Fetch performance metrics for a specific flow."""
-    try:
-        client = get_client(api_key)
-        resp = client.Reporting.query_flow_values(
-            body={
-                "data": {
-                    "type": "flow-values-report",
-                    "attributes": {
-                        "statistics": [
-                            "opens", "unique_opens", "open_rate",
-                            "clicks", "unique_clicks", "click_rate",
-                            "recipients", "bounces", "bounce_rate",
-                            "unsubscribes", "unsubscribe_rate",
-                            "revenue", "conversion_value",
-                            "conversions", "conversion_rate",
-                        ],
-                        "timeframe": {"key": "last_365_days"},
-                        "conversion_metric_id": "Placed Order",
-                        "filter": f'equals(flow_id,"{flow_id}")',
-                    },
-                }
-            }
-        )
-
-        if resp and hasattr(resp, "data") and resp.data:
-            return resp.data[0].attributes.get("statistics", {})
-        return {}
-    except Exception as e:
-        logger.error(f"Failed to fetch metrics for flow {flow_id}: {e}")
-        return {}
-
-
-def fetch_metrics_overview(api_key, days=90):
-    """
-    Fetch high-level email metrics for the last N days.
-
-    Returns a dict of aggregate metrics.
-    """
-    try:
-        client = get_client(api_key)
-
-        # Get aggregate metrics via the Metrics API
-        resp = client.Metrics.get_metrics(
-            page_size=50,
-        )
-
-        metrics_map = {}
-        if resp and hasattr(resp, "data"):
-            for m in resp.data:
-                metrics_map[m.attributes.get("name", "")] = m.id
-
-        logger.info(f"Found {len(metrics_map)} Klaviyo metrics")
-        return metrics_map
-    except Exception as e:
-        logger.error(f"Failed to fetch Klaviyo metrics overview: {e}")
-        return {}
 
 
 def fetch_lists(api_key):

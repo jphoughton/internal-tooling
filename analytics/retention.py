@@ -176,18 +176,3 @@ def classify_sku_trend(sku):
         return "declining"
     else:
         return "stable"
-
-
-def get_all_sku_trends():
-    """Get trend classification for all active SKUs."""
-    with get_db() as conn:
-        skus = [r["sku"] for r in conn.execute(
-            "SELECT sku FROM sku_master WHERE is_active = 1"
-        ).fetchall()]
-
-    results = []
-    for sku in skus:
-        trend = classify_sku_trend(sku)
-        results.append({"sku": sku, "trend": trend})
-
-    return pd.DataFrame(results)

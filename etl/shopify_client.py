@@ -2,12 +2,12 @@
 Shopify Admin API integration.
 Fetches orders and line items, normalizes to common schema.
 """
-import hashlib
 import requests
 import time
 from datetime import datetime, timedelta
 import config as cfg
 from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
+from etl.customer_id import generate_customer_id
 
 
 def get_base_url():
@@ -22,19 +22,6 @@ def get_headers():
         "X-Shopify-Access-Token": cfg.SHOPIFY_ACCESS_TOKEN,
         "Content-Type": "application/json",
     }
-
-
-def generate_customer_id(customer_data):
-    """Generate stable customer ID from Shopify customer data."""
-    if not customer_data:
-        return None
-    shopify_id = customer_data.get("id")
-    if shopify_id:
-        return f"shp-{shopify_id}"
-    email = customer_data.get("email", "")
-    if email:
-        return f"shp-{hashlib.md5(email.encode()).hexdigest()[:12]}"
-    return None
 
 
 def _refresh_token():
