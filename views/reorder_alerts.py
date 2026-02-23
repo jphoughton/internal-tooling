@@ -35,17 +35,14 @@ def render(ctx):
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
     st.caption("Forecast-driven reorder timing based on live 3PL + FBA inventory.")
 
-    from analytics.reorder import build_reorder_plan, build_inventory_runway_chart, LEAD_TIME_WEEKS, MOQ_UNITS, SAFETY_STOCK_WEEKS
+    from analytics.reorder import build_reorder_plan, build_inventory_runway_chart
 
-    # --- Settings ---
-    with st.expander("Settings", expanded=False):
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1:
-            lt_weeks = st.number_input("Lead Time (weeks)", min_value=1, max_value=52, value=LEAD_TIME_WEEKS, key="ro_lt")
-        with col_s2:
-            moq = st.number_input("MOQ per SKU (units)", min_value=100, max_value=100000, value=MOQ_UNITS, step=500, key="ro_moq")
-        with col_s3:
-            safety_wk = st.number_input("Safety Buffer (weeks)", min_value=0, max_value=12, value=SAFETY_STOCK_WEEKS, key="ro_safety")
+    # --- Business Variables (from sidebar panel) ---
+    bv = ctx['biz_vars']
+    lt_weeks = bv['lead_time_weeks']
+    moq = bv['moq_units']
+    safety_wk = bv['safety_buffer_weeks']
+    st.caption(f"Lead time: {lt_weeks} wks · MOQ: {moq:,} units · Safety: {safety_wk} wks — change in sidebar **Business Variables**")
 
     # --- Get SKU forecast from waterfall ---
     has_forecast = False

@@ -30,13 +30,10 @@ def render(ctx):
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
     st.caption("When to ship inventory from your 3PL (Packiyo) to Amazon FBA.")
 
-    # --- Settings ---
-    with st.expander("Settings", expanded=False):
-        transfer_lt_weeks = st.number_input(
-            "DTC\u2192FBA Transfer Lead Time (weeks)", min_value=1, max_value=12, value=4,
-            key="fba_transfer_lt",
-            help="How many weeks it takes for inventory to ship from your 3PL to Amazon FBA.",
-        )
+    # --- Business Variables (from sidebar panel) ---
+    bv = ctx['biz_vars']
+    transfer_lt_weeks = bv['fba_transfer_lt_weeks']
+    st.caption(f"Transfer lead time: {transfer_lt_weeks} wks — change in sidebar **Business Variables**")
 
     # --- Fetch inventory from both sources ---
     inv_data_3pl_fba = []

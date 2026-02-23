@@ -24,6 +24,7 @@ from analytics.waterfall import (
 from analytics.sku_flavors import get_flavor
 from ui.styles import inject_global_styles, get_nav_section_css
 from ui.components import check_password
+from ui.business_vars import get_business_vars, render_sidebar_panel
 
 
 # --- Cached wrappers for expensive computations ---
@@ -162,6 +163,12 @@ if configured_sources:
     st.sidebar.caption(f"Connected: {_src_labels}")
 else:
     st.sidebar.caption("\u2699\uFE0F No sources \u2014 go to Settings")
+
+# --- Business Variables panel (persistent across all pages) ---
+if render_sidebar_panel():
+    clear_waterfall_cache()
+    st.cache_data.clear()
+    st.rerun()
 
 # --- Auto-sync: trigger if no successful sync since 5 AM PST today ---
 if configured_sources:
@@ -344,7 +351,7 @@ def _compute_global_alerts():
     """Compute reorder & FBA transfer urgency alerts for the notification bar."""
     alerts = {"reorder": [], "transfer": []}
     try:
-        from analytics.reorder import build_reorder_plan, LEAD_TIME_WEEKS, MOQ_UNITS, SAFETY_STOCK_WEEKS
+        from analytics.reorder import build_reorder_plan
         import json as _json_alert
 
         # Load forecast
@@ -418,12 +425,13 @@ def _compute_global_alerts():
             except Exception:
                 pass
 
+        _bv_alert = get_business_vars()
         reorder_df, _ = build_reorder_plan(
             sku_forecast_table=_sku_alert,
             inventory_data=inv_data,
-            lead_time_weeks=LEAD_TIME_WEEKS,
-            moq=MOQ_UNITS,
-            safety_weeks=SAFETY_STOCK_WEEKS,
+            lead_time_weeks=_bv_alert['lead_time_weeks'],
+            moq=_bv_alert['moq_units'],
+            safety_weeks=_bv_alert['safety_buffer_weeks'],
             forecast_skus=FORECAST_SKUS,
             planned_inbound=_planned,
         )
@@ -452,7 +460,7 @@ def _compute_global_alerts():
                 """, conn)
             _amz_dem_map = dict(zip(_amz_dem["sku"], _amz_dem["monthly_demand"])) if not _amz_dem.empty else {}
             _today = datetime.utcnow().date()
-            _xfer_lt = 4 * 7  # 4 weeks default
+            _xfer_lt = _bv_alert['fba_transfer_lt_weeks'] * 7
 
             for item in _amz_inv_items:
                 sku = item["sku"]
@@ -545,6 +553,7 @@ if _all_urgent:
 # PAGE DISPATCH
 # ================================================================
 # Build shared context for page modules
+_biz_vars = get_business_vars()
 _ctx = {
     'forecast_skus': FORECAST_SKUS,
     'cached_waterfall': _cached_waterfall,
@@ -554,6 +563,7 @@ _ctx = {
     'load_seasonal_json': _load_seasonal_json,
     'active_sources': active_sources,
     'configured_sources': configured_sources,
+    'biz_vars': _biz_vars,
 }
 
 if page == "Overview":

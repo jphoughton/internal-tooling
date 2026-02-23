@@ -119,11 +119,12 @@ def render(ctx):
             pi_wf = _cached_waterfall(pi_media_json, None, 12, _load_seasonal_json())
             pi_sku_fc = _cached_sku_forecast(pi_wf.to_json(), None) if not pi_wf.empty else pd.DataFrame()
 
+            _bv_pi = ctx.get('biz_vars', {})
             pi_dtc = build_master_dtc_forecast(
                 shopify_waterfall_df=pi_wf,
                 shopify_sku_forecast_df=pi_sku_fc,
-                amazon_growth_rate=0.0,
-                horizon_months=12,
+                amazon_growth_rate=_bv_pi.get('amazon_growth_pct', 0.0),
+                horizon_months=_bv_pi.get('forecast_horizon', 12),
                 forecast_skus=FORECAST_SKUS,
                 media_plan=pi_spend,
                 amazon_revenue_forecast=pi_amz_dict,

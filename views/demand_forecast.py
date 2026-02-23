@@ -139,16 +139,11 @@ def render(ctx):
     else:
         st.caption('Seasonality disabled \u2014 enable on the Retention page to apply seasonal adjustments.')
 
-    # --- Filters ---
-    col_hz, col_amz_growth = st.columns(2)
-    with col_hz:
-        horizon = st.selectbox('Forecast Horizon', [6, 12, 18], index=1, key='wf_horizon')
-    with col_amz_growth:
-        amz_growth = st.number_input(
-            'Amazon Monthly Growth %', min_value=-20.0, max_value=50.0, value=0.0, step=1.0,
-            key='amz_growth',
-            help='Expected monthly growth rate for Amazon sales (e.g., 5 = 5% monthly growth).'
-        )
+    # --- Filters (from sidebar Business Variables) ---
+    bv = ctx['biz_vars']
+    horizon = bv['forecast_horizon']
+    amz_growth = bv['amazon_growth_pct']
+    st.caption(f"Horizon: {horizon} months · Amazon growth: {amz_growth:+.0f}%/mo — change in sidebar **Business Variables**")
 
     # --- Media Spend Input (Shopify) ---
     with st.expander('Media Spend Plan', expanded=False):
