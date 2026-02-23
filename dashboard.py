@@ -5128,13 +5128,14 @@ elif page == "Settings":
     with col_save:
         if st.button("Save Credentials", type="primary"):
             all_vals = {**amazon_vals, **shopify_vals, **packiyo_vals}
+            # save_credentials already filters out empty values
             save_env(all_vals)
-            st.success("Credentials saved!")
+            st.success("Credentials saved! (only non-empty fields were updated)")
             st.rerun()
 
     with col_oauth:
         if st.button("Connect Shopify", type="secondary"):
-            # Save current values first
+            # save_credentials already filters out empty values
             save_env(shopify_vals)
             from etl.shopify_oauth import get_access_token
             with st.spinner("Requesting access token from Shopify..."):

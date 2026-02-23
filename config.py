@@ -99,18 +99,27 @@ def _load_credentials_from_db():
 
 
 def save_credentials(values: dict):
-    """Persist credentials to both the DB (durable) and .env (local convenience)."""
+    """Persist credentials to both the DB (durable) and .env (local convenience).
+
+    Only saves non-empty values to prevent accidental overwrites when
+    Streamlit form fields render with empty defaults.
+    """
+    # Filter out empty/whitespace-only values to avoid wiping existing keys
+    non_empty = {k: v for k, v in values.items() if v and str(v).strip()}
+    if not non_empty:
+        return
+
     # --- Write to DB (primary, persistent on Railway) ---
     try:
         from db import get_db, set_setting
         with get_db() as conn:
-            for k, v in values.items():
+            for k, v in non_empty.items():
                 set_setting(conn, k, v)
     except Exception:
         pass
 
     # --- Also write to .env for local dev convenience ---
-    _save_env_file(values)
+    _save_env_file(non_empty)
 
     reload_config()
 
