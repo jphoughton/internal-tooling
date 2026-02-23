@@ -36,6 +36,7 @@ def _get_pool():
             maxconn=20,
             dsn=url,
             connect_timeout=10,
+            options='-c statement_timeout=30000',  # 30s per statement
         )
     return _pool
 
@@ -310,10 +311,14 @@ _SCHEMA_SQL = [
 
 def init_db():
     """Create all tables and indexes if they don't exist."""
+    print("  init_db: connecting...", flush=True)
     with get_db() as conn:
-        for stmt in _SCHEMA_SQL:
+        for i, stmt in enumerate(_SCHEMA_SQL):
+            label = stmt.strip()[:60].replace('\n', ' ')
+            print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
             conn.execute(stmt)
 
+        print("  init_db: seeding seasonal indices...", flush=True)
         # Seed default seasonal indices if table is empty
         existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
         if existing['cnt'] == 0:
@@ -328,7 +333,9 @@ def init_db():
                 )
 
         # Migrate legacy media_spend source='all' to 'All Sources'
+        print("  init_db: migrating media_spend source values...", flush=True)
         conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
+        print("  init_db: done.", flush=True)
 
 
 # ---------------------------------------------------------------------------
