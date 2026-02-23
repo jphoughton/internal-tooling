@@ -84,18 +84,25 @@ def render(ctx):
             st.subheader('Cohort Heatmap')
             st.caption('Each row is a monthly cohort. Values = % of customers returning at each month offset.')
 
-            # Create heatmap
+            # Drop month 0 (always ~100%, distorts the color scale)
+            repeat_cols = [c for c in matrix.columns if c != 0]
+            display_matrix = matrix[repeat_cols] if repeat_cols else matrix
+
+            # Dynamic zmax so the full color range maps to actual retention values
+            max_val = display_matrix.max().max() if not display_matrix.empty else 1.0
+            zmax = min(max_val * 1.3, 1.0) if max_val > 0 else 1.0
+
             fig = px.imshow(
-                matrix.values,
+                display_matrix.values,
                 labels=dict(x='Months Since First Purchase', y='Cohort', color='Retention %'),
-                x=[str(c) for c in matrix.columns],
-                y=matrix.index.tolist(),
+                x=[str(c) for c in display_matrix.columns],
+                y=display_matrix.index.tolist(),
                 color_continuous_scale='Blues',
                 aspect='auto',
-                zmin=0, zmax=1,
+                zmin=0, zmax=zmax,
             )
             fig.update_layout(
-                height=max(300, len(matrix) * 40),
+                height=max(300, len(display_matrix) * 40),
                 yaxis=dict(type='category'),
             )
             st.plotly_chart(fig, use_container_width=True)
