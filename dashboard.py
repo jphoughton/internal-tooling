@@ -1617,20 +1617,28 @@ elif page == "Retention":
         "Month": _month_names,
         "Index": [_seas_indices.get(m, 1.0) for m in range(1, 13)],
     })
+    _seas_df["Month"] = _seas_df["Month"].astype(str)
+    _seas_df["Index"] = pd.to_numeric(_seas_df["Index"], errors="coerce").fillna(1.0)
 
     col_seas_edit, col_seas_chart = st.columns([1, 2])
 
+    _seas_values = [_seas_indices.get(m, 1.0) for m in range(1, 13)]
+    _edited_seas_values = list(_seas_values)
+
     with col_seas_edit:
-        edited_seas = st.data_editor(
-            _seas_df,
-            column_config={
-                "Month": st.column_config.TextColumn("Month", disabled=True),
-                "Index": st.column_config.NumberColumn("Seasonal Index", min_value=0.5, max_value=2.0, step=0.01, format="%.2f"),
-            },
-            use_container_width=True,
-            hide_index=True,
-            key="seas_editor",
-        )
+        # 2-column grid: Month label | Number input
+        for i, (name, val) in enumerate(zip(_month_names, _seas_values)):
+            _lbl_c, _inp_c = st.columns([1, 2])
+            with _lbl_c:
+                st.markdown(f"**{name}**")
+            with _inp_c:
+                _edited_seas_values[i] = st.number_input(
+                    name, min_value=0.50, max_value=2.00, value=float(val),
+                    step=0.01, format="%.2f", key=f"seas_{i}", label_visibility="collapsed",
+                )
+
+    # Build edited DataFrame for chart + save
+    edited_seas = pd.DataFrame({"Month": _month_names, "Index": _edited_seas_values})
 
     with col_seas_chart:
         fig_seas = go.Figure()
@@ -1723,17 +1731,30 @@ elif page == "Demand Forecast":
         spend_df["spend"] = pd.to_numeric(spend_df["spend"], errors="coerce").fillna(0.0)
         spend_df["new_customer_roas"] = pd.to_numeric(spend_df["new_customer_roas"], errors="coerce").fillna(0.7)
 
-        edited_spend = st.data_editor(
-            spend_df,
-            column_config={
-                "month": st.column_config.TextColumn("Month", disabled=True),
-                "spend": st.column_config.NumberColumn("Monthly Ad Spend ($)", min_value=0, step=500, format="$%.0f"),
-                "new_customer_roas": st.column_config.NumberColumn("New Customer ROAS", min_value=0.1, step=0.1, format="%.1fx"),
-            },
-            use_container_width=True,
-            hide_index=True,
-            key="spend_editor",
-        )
+        # Header row
+        _hdr_m, _hdr_s, _hdr_r = st.columns([1, 1.5, 1.5])
+        _hdr_m.markdown("**Month**")
+        _hdr_s.markdown("**Ad Spend ($)**")
+        _hdr_r.markdown("**New Cust. ROAS**")
+
+        _spend_edits = []
+        for idx, row in spend_df.iterrows():
+            _cm, _cs, _cr = st.columns([1, 1.5, 1.5])
+            with _cm:
+                st.markdown(f"`{row['month']}`")
+            with _cs:
+                _sv = st.number_input(
+                    "spend", value=float(row["spend"]), min_value=0.0, step=500.0,
+                    format="%.0f", key=f"spend_{idx}", label_visibility="collapsed",
+                )
+            with _cr:
+                _rv = st.number_input(
+                    "roas", value=float(row["new_customer_roas"]), min_value=0.1, step=0.1,
+                    format="%.1f", key=f"roas_{idx}", label_visibility="collapsed",
+                )
+            _spend_edits.append({"month": row["month"], "spend": _sv, "new_customer_roas": _rv})
+
+        edited_spend = pd.DataFrame(_spend_edits)
 
         if st.button("Save & Recalculate", type="primary"):
             with get_db() as conn:
@@ -1766,16 +1787,23 @@ elif page == "Demand Forecast":
         amz_rev_df["month"] = amz_rev_df["month"].astype(str)
         amz_rev_df["revenue"] = pd.to_numeric(amz_rev_df["revenue"], errors="coerce").fillna(0.0)
 
-        edited_amz_rev = st.data_editor(
-            amz_rev_df,
-            column_config={
-                "month": st.column_config.TextColumn("Month", disabled=True),
-                "revenue": st.column_config.NumberColumn("Projected Revenue ($)", min_value=0, step=5000, format="$%.0f"),
-            },
-            use_container_width=True,
-            hide_index=True,
-            key="amz_rev_editor",
-        )
+        _amz_hdr_m, _amz_hdr_r = st.columns([1, 2])
+        _amz_hdr_m.markdown("**Month**")
+        _amz_hdr_r.markdown("**Projected Revenue ($)**")
+
+        _amz_rev_edits = []
+        for idx, row in amz_rev_df.iterrows():
+            _am, _ar = st.columns([1, 2])
+            with _am:
+                st.markdown(f"`{row['month']}`")
+            with _ar:
+                _rv = st.number_input(
+                    "revenue", value=float(row["revenue"]), min_value=0.0, step=5000.0,
+                    format="%.0f", key=f"amz_rev_{idx}", label_visibility="collapsed",
+                )
+            _amz_rev_edits.append({"month": row["month"], "revenue": _rv})
+
+        edited_amz_rev = pd.DataFrame(_amz_rev_edits)
 
         if st.button("Save Amazon Forecast & Recalculate", type="primary"):
             with get_db() as conn:
@@ -2314,46 +2342,45 @@ elif page == "Projected Inventory":
                         row_data[m] = sku_inbound.get(m, 0)
                     inbound_rows.append(row_data)
 
-                inbound_edit_df = pd.DataFrame(inbound_rows)
-                for m in month_cols:
-                    inbound_edit_df[m] = pd.to_numeric(inbound_edit_df[m], errors="coerce").fillna(0).astype(int)
+                # Build editable grid: one SKU per expander row, number inputs per month
+                _inbound_edits = {}  # {sku: {month: units}}
+                _n_months = len(month_cols)
 
-                # Rename month columns to short labels for display
-                inbound_display_cols = {"SKU": "SKU", "Flavor": "Flavor"}
-                inbound_col_config = {
-                    "SKU": st.column_config.TextColumn("SKU", disabled=True, width="small"),
-                    "Flavor": st.column_config.TextColumn("Flavor", disabled=True, width="small"),
-                }
-                for m in month_cols:
-                    short = month_labels[m]
-                    inbound_display_cols[m] = short
-                    inbound_col_config[short] = st.column_config.NumberColumn(
-                        short, min_value=0, step=100, default=0,
-                    )
+                if _n_months > 0:
+                    # Header row
+                    _h_cols = st.columns([2] + [1] * _n_months)
+                    _h_cols[0].markdown("**Flavor**")
+                    for j, m in enumerate(month_cols):
+                        _h_cols[j + 1].markdown(f"**{month_labels[m]}**")
 
-                inbound_edit_display = inbound_edit_df.rename(columns=inbound_display_cols)
+                for sku in sorted_skus:
+                    flavor = get_flavor(sku)
+                    sku_inbound = existing_inbound.get(sku, {})
+                    _row_cols = st.columns([2] + [1] * _n_months)
+                    _row_cols[0].markdown(f"<small>{flavor}</small>", unsafe_allow_html=True)
+                    _inbound_edits[sku] = {}
+                    for j, m in enumerate(month_cols):
+                        with _row_cols[j + 1]:
+                            val = int(sku_inbound.get(m, 0))
+                            _inbound_edits[sku][m] = st.number_input(
+                                f"{sku}_{m}", value=val, min_value=0, step=100,
+                                key=f"inb_{sku}_{m}", label_visibility="collapsed",
+                            )
 
-                edited_inbound = st.data_editor(
-                    inbound_edit_display,
-                    column_config=inbound_col_config,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(len(inbound_edit_display) * 35 + 38, 700),
-                    key="planned_inbound_editor",
-                )
+                # Build edited_inbound DataFrame for downstream use
+                _inbound_out_rows = []
+                for sku in sorted_skus:
+                    row_out = {"SKU": sku, "Flavor": get_flavor(sku)}
+                    for m in month_cols:
+                        row_out[month_labels[m]] = _inbound_edits.get(sku, {}).get(m, 0)
+                    _inbound_out_rows.append(row_out)
+                edited_inbound = pd.DataFrame(_inbound_out_rows)
 
                 if st.button("Save & Recalculate", type="primary", key="save_inbound"):
-                    # Map short labels back to YYYY-MM
-                    reverse_labels = {v: k for k, v in month_labels.items()}
                     with get_db() as conn:
-                        for _, row in edited_inbound.iterrows():
-                            sku = row["SKU"]
-                            for col in edited_inbound.columns:
-                                if col in ("SKU", "Flavor"):
-                                    continue
-                                m = reverse_labels.get(col, col)
-                                units = int(row[col] or 0)
-                                upsert_planned_inbound(conn, sku, m, units)
+                        for sku, months in _inbound_edits.items():
+                            for m, units in months.items():
+                                upsert_planned_inbound(conn, sku, m, int(units))
                     st.rerun()
 
             # --- Load planned inbound for projection ---

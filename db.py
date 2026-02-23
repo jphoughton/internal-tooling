@@ -258,7 +258,7 @@ _SCHEMA_SQL = [
         month TEXT NOT NULL,
         spend REAL NOT NULL DEFAULT 0,
         new_customer_roas REAL NOT NULL DEFAULT 1.0,
-        source TEXT DEFAULT 'all',
+        source TEXT DEFAULT 'All Sources',
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
         UNIQUE(month, source)
     )""",
@@ -326,6 +326,9 @@ def init_db():
                     "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
                     (m, v),
                 )
+
+        # Migrate legacy media_spend source='all' to 'All Sources'
+        conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +467,7 @@ def get_synced_sources(conn, sources):
 # ---------------------------------------------------------------------------
 # Media spend & forecasts
 # ---------------------------------------------------------------------------
-def upsert_media_spend(conn, month, spend, roas, source="all"):
+def upsert_media_spend(conn, month, spend, roas, source="All Sources"):
     conn.execute("""
         INSERT INTO media_spend (month, spend, new_customer_roas, source)
         VALUES (%s, %s, %s, %s)
@@ -475,7 +478,7 @@ def upsert_media_spend(conn, month, spend, roas, source="all"):
     """, (month, spend, roas, source))
 
 
-def get_media_spend(conn, source="all"):
+def get_media_spend(conn, source="All Sources"):
     rows = conn.execute(
         "SELECT month, spend, new_customer_roas FROM media_spend WHERE source = %s ORDER BY month",
         (source,)
