@@ -1279,13 +1279,21 @@ def render(ctx):
 
                     parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
                     if cm or fm:
-                        parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
+                        parts.append(f"metrics for {len(cm)} campaigns + {len(fm)} flows")
+                    else:
+                        parts.append("no metrics returned")
+                    parts.append(f"metric_id={'set' if conv_id else 'NONE'}")
                     if not include_revenue:
-                        parts.append("revenue skipped (no Placed Order metric — set in Settings)")
-                    st.success(" — ".join(parts))
-                    st.rerun()
+                        parts.append("revenue skipped")
+                    st.success(" | ".join(parts))
+                    # Show sample data for debugging
+                    if cm:
+                        sample_id = next(iter(cm))
+                        st.info(f"Sample metrics ({sample_id}): {cm[sample_id]}")
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
 
         # Load from DB
         with get_db() as conn:
