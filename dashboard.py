@@ -3772,14 +3772,14 @@ elif page == "Marketing":
 
                     # Spend, NC, NC Rev from amazon_daily_rollup
                     _amz_rollup = _amz_conn.execute(
-                        "SELECT SUM(spend), SUM(new_customers), SUM(new_customer_rev) "
+                        "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
                         "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
                         (f"{_cur_month}-01", _now.strftime("%Y-%m-%d")),
                     ).fetchone()
-                    if _amz_rollup and _amz_rollup[0] is not None:
-                        _cm_amz_spend = float(_amz_rollup[0] or 0)
-                        _cm_amz_nc = int(float(_amz_rollup[1] or 0))
-                        _cm_amz_nc_rev = float(_amz_rollup[2] or 0)
+                    if _amz_rollup and _amz_rollup["total_spend"] is not None:
+                        _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
+                        _cm_amz_nc = int(float(_amz_rollup["total_nc"] or 0))
+                        _cm_amz_nc_rev = float(_amz_rollup["total_nc_rev"] or 0)
             except Exception:
                 pass
 
@@ -3835,14 +3835,14 @@ elif page == "Marketing":
                     _l7d_amz_rev = float(_l7_amz[0] or 0) / 7
                     # Rollup L7D
                     _l7_rollup = _l7_conn.execute(
-                        "SELECT SUM(spend), SUM(new_customers), SUM(new_customer_rev) "
+                        "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
                         "FROM amazon_daily_rollup WHERE date >= ?",
                         (_l7d_start,),
                     ).fetchone()
-                    if _l7_rollup and _l7_rollup[0] is not None:
-                        _l7d_amz_spend = float(_l7_rollup[0] or 0) / 7
-                        _l7d_amz_nc = float(_l7_rollup[1] or 0) / 7
-                        _l7d_amz_nc_rev = float(_l7_rollup[2] or 0) / 7
+                    if _l7_rollup and _l7_rollup["total_spend"] is not None:
+                        _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
+                        _l7d_amz_nc = float(_l7_rollup["total_nc"] or 0) / 7
+                        _l7d_amz_nc_rev = float(_l7_rollup["total_nc_rev"] or 0) / 7
             except Exception:
                 pass
 
