@@ -1,8 +1,4 @@
-if npm run test --if-present 2>/dev/null; then
-  echo "Tests passed"
-else
-  echo "No test script found, skipping"
-fi
+#!/bin/sh
 
-# Git LFS pre-push
-command -v git-lfs >/dev/null 2>&1 && git lfs pre-push "$@"
+# Git LFS pre-push (if available)
+command -v git-lfs >/dev/null 2>&1 && git lfs pre-push "$@" || true

@@ -197,13 +197,18 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             total = float(order.get("total_price", 0))
             currency = order.get("currency", "USD")
 
-            # Customer
+            # Customer — use Shopify's customer created_at as first_order_date
+            # so returning customers are attributed to their true cohort, not
+            # the first order we happened to sync.
             customer_data = order.get("customer")
             customer_id = generate_customer_id(customer_data)
             customer_email = customer_data.get("email") if customer_data else None
+            customer_first_date = (
+                customer_data.get("created_at", "")[:10] if customer_data else None
+            ) or order_date
 
             if customer_id:
-                upsert_customer(conn, customer_id, customer_email, "shopify", order_date)
+                upsert_customer(conn, customer_id, customer_email, "shopify", customer_first_date)
 
             # Order
             order_id = f"shp-{shopify_order_id}"

@@ -6,10 +6,9 @@ Data strategy (two report types pulled daily):
    Inserts directly into daily_sku_sales for demand forecasting.
    ASINs are mapped to master SKUs via etl.amazon_sku_map.
 
-2. RETENTION: FBA Customer Shipment Sales report (GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA).
-   Contains hashed buyer emails (consistent across orders), order IDs, SKUs,
-   and quantities — enough to build Amazon-side retention cohorts.
-   The hashed emails are stable so we can track repeat purchases.
+2. RETENTION: Fulfilled Shipments report (GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL).
+   Contains buyer-email (stable marketplace alias per buyer), order IDs, SKUs,
+   and pricing — enough to build Amazon-side retention cohorts.
 """
 import csv
 import gzip
@@ -166,9 +165,11 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
 
 def fetch_fulfillment_data(conn, since_date=None, until_date=None):
     """
-    Fetch FBA Customer Shipment Sales data for retention analysis.
-    This report contains hashed buyer emails (buyer-email column) that are
-    consistent across orders, letting us track Amazon repeat purchases.
+    Fetch Amazon Fulfilled Shipments data for retention analysis.
+
+    Uses GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL which provides
+    buyer-email (hashed marketplace alias, stable per buyer), order IDs,
+    SKUs, and pricing — enough to build Amazon-side retention cohorts.
 
     Inserts into orders, order_items, and customers tables for cohort analysis.
     Returns number of records processed.
@@ -185,7 +186,7 @@ def fetch_fulfillment_data(conn, since_date=None, until_date=None):
     reports_api = Reports(credentials=credentials, marketplace=get_marketplace())
 
     report_response = reports_api.create_report(
-        reportType="GET_FBA_FULFILLMENT_CUSTOMER_SHIPMENT_SALES_DATA",
+        reportType="GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL",
         dataStartTime=f"{since_date}T00:00:00Z",
         dataEndTime=f"{until_date}T23:59:59Z",
         marketplaceIds=[cfg.AMAZON_MARKETPLACE_ID],
@@ -204,44 +205,47 @@ def fetch_fulfillment_data(conn, since_date=None, until_date=None):
     record_count = 0
 
     for row in reader:
-        # The hashed buyer email is stable across orders
+        # buyer-email is a stable marketplace alias (e.g. abc123@marketplace.amazon.com)
         buyer_email_hash = row.get("buyer-email", "")
         if not buyer_email_hash:
             continue
 
         customer_id = f"amz-{buyer_email_hash[:16]}"
         amazon_order_id = row.get("amazon-order-id", "")
-        shipment_date = row.get("shipment-date", "")[:10]
+        # Use purchase-date for cohort assignment (when the order was placed)
+        order_date_raw = row.get("purchase-date", "") or row.get("shipment-date", "")
+        order_date = order_date_raw[:10]
         seller_sku = row.get("sku", "")
-        asin = row.get("asin", "")
         try:
             quantity = int(float(row.get("quantity-shipped", 0) or 0))
         except (ValueError, TypeError):
             quantity = 1
+        # item-price is the total line-item price (not per-unit)
         try:
-            price_per_unit = float(row.get("item-price-per-unit", 0) or 0)
+            item_price = float(row.get("item-price", 0) or 0)
         except (ValueError, TypeError):
-            price_per_unit = 0.0
+            item_price = 0.0
+        price_per_unit = round(item_price / quantity, 2) if quantity > 0 else 0.0
         product_name = row.get("product-name", "")
 
         if not seller_sku or not amazon_order_id:
             continue
 
-        # Map Amazon seller-SKU to master SKU via ASIN
-        master_sku = map_amazon_sku(seller_sku, asin, product_name)
+        # Map Amazon seller-SKU to master SKU (no ASIN in this report)
+        master_sku = map_amazon_sku(seller_sku, "", product_name)
 
-        # Customer (use hash as email placeholder — it's not a real email)
-        upsert_customer(conn, customer_id, None, "amazon", shipment_date)
+        # Customer (use marketplace alias as identifier)
+        upsert_customer(conn, customer_id, None, "amazon", order_date)
 
         # Order
         order_id = f"amz-{amazon_order_id}"
-        total = round(quantity * price_per_unit, 2)
+        total = round(item_price, 2)
         upsert_order(conn, order_id, "amazon", amazon_order_id,
-                      customer_id, shipment_date, total)
+                      customer_id, order_date, total)
 
         # Order item
         upsert_order_item(conn, order_id, master_sku, product_name, quantity, price_per_unit)
-        upsert_sku(conn, master_sku, product_name, None, shipment_date, "amazon")
+        upsert_sku(conn, master_sku, product_name, None, order_date, "amazon")
         record_count += 1
 
     return record_count
