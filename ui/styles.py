@@ -403,6 +403,57 @@ section[data-testid="stSidebar"] .nav-section {
     font-weight: 600;
 }
 
+/* ── Sidebar Business Variables expander ── */
+section[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background: rgba(255,255,255,0.07) !important;
+    border: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"]:hover {
+    border-color: rgba(126,204,229,0.4) !important;
+    background: rgba(255,255,255,0.10) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] summary p {
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.01em;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput input {
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    border-radius: 6px !important;
+    color: #ffffff !important;
+    font-size: 0.82rem !important;
+    padding: 4px 8px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stSelectbox > div > div {
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    border-radius: 6px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] label {
+    font-size: 0.75rem !important;
+    color: rgba(255,255,255,0.7) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stCaption,
+section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] {
+    color: rgba(255,255,255,0.5) !important;
+    font-size: 0.7rem !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"] {
+    background: #7ECCE5 !important;
+    color: #0B2A45 !important;
+    border: none !important;
+    font-weight: 700 !important;
+    border-radius: 8px !important;
+    font-size: 0.8rem !important;
+    padding: 6px 16px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"]:hover {
+    background: #5dbdd8 !important;
+}
+
 /* ── Styled dataframe (Pandas Styler) ── */
 .stTable {
     border-radius: 12px;
