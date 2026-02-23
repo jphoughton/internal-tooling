@@ -48,7 +48,6 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         campaigns = []
         resp = client.Campaigns.get_campaigns(
             filter="equals(messages.channel,'email')",
-            page_size=min(limit, 50),
         )
 
         if resp and hasattr(resp, "data"):
@@ -83,7 +82,6 @@ def fetch_flows(api_key, status="live"):
         resp = client.Flows.get_flows(
             filter=f"equals(status,'{status}')",
             sort="name",
-            page_size=50,
         )
 
         if resp and hasattr(resp, "data"):
@@ -110,7 +108,7 @@ def fetch_lists(api_key):
     try:
         client = get_client(api_key)
         lists = []
-        resp = client.Lists.get_lists(page_size=50)
+        resp = client.Lists.get_lists()
 
         if resp and hasattr(resp, "data"):
             for l in resp.data:
