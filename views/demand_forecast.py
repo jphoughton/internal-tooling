@@ -7,8 +7,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql,
-    get_media_spend, upsert_media_spend,
-    get_amazon_revenue_forecast, upsert_amazon_revenue_forecast,
+    get_media_spend, get_amazon_revenue_forecast,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.forecast import forecast_sku
@@ -145,134 +144,31 @@ def render(ctx):
     amz_growth = bv['amazon_growth_pct']
     st.caption(f"Horizon: {horizon} months · Amazon growth: {amz_growth:+.0f}%/mo — change in sidebar **Business Variables**")
 
-    # --- Media Spend Input (Shopify) ---
-    with st.expander('Media Spend Plan', expanded=False):
-        st.caption('Enter your monthly DTC ad budget, expected new customer ROAS, and Amazon ad budget. DTC spend drives the Shopify new customer forecast. Amazon spend sets the Marketing page pacing goal.')
-
-        with get_db() as conn:
-            existing_spend = get_media_spend(conn, source='All Sources')
-            existing_amz_spend = get_media_spend(conn, source='Amazon')
-        amz_spend_lookup = {r['month']: r['spend'] for r in existing_amz_spend}
-
-        if existing_spend:
-            spend_df = pd.DataFrame(existing_spend)
-        else:
-            now = datetime.utcnow()
-            rows = []
-            for i in range(horizon):
-                m = now + relativedelta(months=i)
-                rows.append({'month': m.strftime('%Y-%m'), 'spend': 0.0, 'new_customer_roas': 0.7})
-            spend_df = pd.DataFrame(rows)
-
-        now = datetime.utcnow()
-        horizon_months_list = [(now + relativedelta(months=i)).strftime('%Y-%m') for i in range(horizon)]
-        existing_months = set(spend_df['month'].tolist())
-        for m in horizon_months_list:
-            if m not in existing_months:
-                spend_df = pd.concat([spend_df, pd.DataFrame([{'month': m, 'spend': 5000.0, 'new_customer_roas': 2.0}])], ignore_index=True)
-        spend_df = spend_df[spend_df['month'].isin(horizon_months_list)].sort_values('month').reset_index(drop=True)
-        spend_df['month'] = spend_df['month'].astype(str)
-        spend_df['spend'] = pd.to_numeric(spend_df['spend'], errors='coerce').fillna(0.0)
-        spend_df['new_customer_roas'] = pd.to_numeric(spend_df['new_customer_roas'], errors='coerce').fillna(0.7)
-
-        # Header row
-        _hdr_m, _hdr_s, _hdr_r, _hdr_a = st.columns([1, 1.2, 1.2, 1.2])
-        _hdr_m.markdown('**Month**')
-        _hdr_s.markdown('**DTC Ad Spend ($)**')
-        _hdr_r.markdown('**New Cust. ROAS**')
-        _hdr_a.markdown('**Amazon Ad Spend ($)**')
-
-        _spend_edits = []
-        _amz_spend_edits = []
-        for idx, row in spend_df.iterrows():
-            _cm, _cs, _cr, _ca = st.columns([1, 1.2, 1.2, 1.2])
-            with _cm:
-                st.markdown(f"`{row['month']}`")
-            with _cs:
-                _sv = st.number_input(
-                    'spend', value=float(row['spend']), min_value=0.0, step=500.0,
-                    format='%.0f', key=f'spend_{idx}', label_visibility='collapsed',
-                )
-            with _cr:
-                _rv = st.number_input(
-                    'roas', value=float(row['new_customer_roas']), min_value=0.1, step=0.1,
-                    format='%.1f', key=f'roas_{idx}', label_visibility='collapsed',
-                )
-            with _ca:
-                _av = st.number_input(
-                    'amz_spend', value=float(amz_spend_lookup.get(row['month'], 0.0)),
-                    min_value=0.0, step=500.0, format='%.0f',
-                    key=f'amz_spend_{idx}', label_visibility='collapsed',
-                )
-            _spend_edits.append({'month': row['month'], 'spend': _sv, 'new_customer_roas': _rv})
-            _amz_spend_edits.append({'month': row['month'], 'spend': _av})
-
-        edited_spend = pd.DataFrame(_spend_edits)
-
-        if st.button('Save & Recalculate', type='primary'):
-            with get_db() as conn:
-                for _, row in edited_spend.iterrows():
-                    upsert_media_spend(conn, row['month'], row['spend'], row['new_customer_roas'], source='All Sources')
-                for amz_row in _amz_spend_edits:
-                    upsert_media_spend(conn, amz_row['month'], amz_row['spend'], 0.0, source='Amazon')
-            _cached_waterfall.clear()
-            _cached_sku_forecast.clear()
-            st.rerun()
-
-    # --- Amazon Revenue Forecast Input ---
-    with st.expander('Amazon Revenue Forecast', expanded=False):
-        st.caption('Enter your projected Amazon revenue per month. Units will be derived automatically using historical rev/unit. Leave at $0 to use velocity-based projections instead.')
-
-        with get_db() as conn:
-            existing_amz_rev = get_amazon_revenue_forecast(conn)
-
-        now_amz = datetime.utcnow()
-        amz_horizon_months = [(now_amz + relativedelta(months=i)).strftime('%Y-%m') for i in range(horizon)]
-
-        if existing_amz_rev:
-            amz_rev_df = pd.DataFrame(existing_amz_rev)
-        else:
-            amz_rev_df = pd.DataFrame([{'month': m, 'revenue': 0.0} for m in amz_horizon_months])
-
-        existing_amz_months = set(amz_rev_df['month'].tolist())
-        for m in amz_horizon_months:
-            if m not in existing_amz_months:
-                amz_rev_df = pd.concat([amz_rev_df, pd.DataFrame([{'month': m, 'revenue': 0.0}])], ignore_index=True)
-        amz_rev_df = amz_rev_df[amz_rev_df['month'].isin(amz_horizon_months)].sort_values('month').reset_index(drop=True)
-        amz_rev_df['month'] = amz_rev_df['month'].astype(str)
-        amz_rev_df['revenue'] = pd.to_numeric(amz_rev_df['revenue'], errors='coerce').fillna(0.0)
-
-        _amz_hdr_m, _amz_hdr_r = st.columns([1, 2])
-        _amz_hdr_m.markdown('**Month**')
-        _amz_hdr_r.markdown('**Projected Revenue ($)**')
-
-        _amz_rev_edits = []
-        for idx, row in amz_rev_df.iterrows():
-            _am, _ar = st.columns([1, 2])
-            with _am:
-                st.markdown(f"`{row['month']}`")
-            with _ar:
-                _rv = st.number_input(
-                    'revenue', value=float(row['revenue']), min_value=0.0, step=5000.0,
-                    format='%.0f', key=f'amz_rev_{idx}', label_visibility='collapsed',
-                )
-            _amz_rev_edits.append({'month': row['month'], 'revenue': _rv})
-
-        edited_amz_rev = pd.DataFrame(_amz_rev_edits)
-
-        if st.button('Save Amazon Forecast & Recalculate', type='primary'):
-            with get_db() as conn:
-                for _, row in edited_amz_rev.iterrows():
-                    upsert_amazon_revenue_forecast(conn, row['month'], row['revenue'])
-            st.cache_data.clear()
-            st.rerun()
-
     st.divider()
 
-    # --- Compute all forecasts ---
+    # --- Load media spend and Amazon revenue from DB (edited in sidebar) ---
+    with get_db() as conn:
+        _db_spend = get_media_spend(conn, source='All Sources')
+        _db_amz_rev = get_amazon_revenue_forecast(conn)
 
-    # Build Amazon revenue forecast dict for the engine
-    amz_rev_forecast_dict = {row['month']: row['revenue'] for _, row in edited_amz_rev.iterrows() if row['revenue'] > 0}
+    now = datetime.utcnow()
+    horizon_months_list = [(now + relativedelta(months=i)).strftime('%Y-%m') for i in range(horizon)]
+
+    if _db_spend:
+        edited_spend = pd.DataFrame(_db_spend)
+    else:
+        edited_spend = pd.DataFrame([
+            {'month': m, 'spend': 0.0, 'new_customer_roas': 0.7} for m in horizon_months_list
+        ])
+    # Ensure all horizon months are present
+    _existing_months = set(edited_spend['month'].tolist())
+    for m in horizon_months_list:
+        if m not in _existing_months:
+            edited_spend = pd.concat([edited_spend, pd.DataFrame([{'month': m, 'spend': 5000.0, 'new_customer_roas': 2.0}])], ignore_index=True)
+    edited_spend = edited_spend[edited_spend['month'].isin(horizon_months_list)].sort_values('month').reset_index(drop=True)
+
+    amz_rev_lookup = {r['month']: r['revenue'] for r in _db_amz_rev}
+    amz_rev_forecast_dict = {m: rev for m, rev in amz_rev_lookup.items() if rev > 0}
 
     # Shopify waterfall
     media_plan = edited_spend.to_dict('records')

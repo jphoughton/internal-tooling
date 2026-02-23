@@ -165,7 +165,7 @@ else:
     st.sidebar.caption("\u2699\uFE0F No sources \u2014 go to Settings")
 
 # --- Business Variables panel (persistent across all pages) ---
-if render_sidebar_panel():
+if render_sidebar_panel(forecast_skus=FORECAST_SKUS):
     clear_waterfall_cache()
     st.cache_data.clear()
     st.rerun()
