@@ -904,11 +904,14 @@ else:
 
 # --- Auto-sync: run daily sync if last sync was > 24 hours ago ---
 if configured_sources:
-    with get_db() as conn:
-        _last_any_sync = conn.execute(
-            "SELECT MAX(created_at) as last_ts FROM sync_log WHERE status = 'success'"
-        ).fetchone()
-        _last_ts = _last_any_sync["last_ts"] if _last_any_sync else None
+    try:
+        with get_db() as conn:
+            _last_any_sync = conn.execute(
+                "SELECT MAX(created_at) as last_ts FROM sync_log WHERE status = 'success'"
+            ).fetchone()
+            _last_ts = _last_any_sync["last_ts"] if _last_any_sync else None
+    except Exception:
+        _last_ts = None
     _needs_auto_sync = False
     if _last_ts:
         try:
@@ -943,10 +946,12 @@ if st.sidebar.button("Refresh Data"):
         from etl.sync import run_daily_sync
 
         needs_full_refresh = False
-        with get_db() as conn:
-            has_data = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-
-        if has_data == 0:
+        try:
+            with get_db() as conn:
+                has_data = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+            if has_data == 0:
+                needs_full_refresh = True
+        except Exception:
             needs_full_refresh = True
 
         sync_container = st.sidebar.container()
@@ -1036,7 +1041,7 @@ def load_overview_stats(date_start=None, date_end=None):
             JOIN sku_master sm ON oi.sku = sm.sku
             JOIN orders o ON oi.order_id = o.order_id
             WHERE 1=1 {date_clause_orders.replace('order_date', 'o.order_date')}
-            GROUP BY oi.sku
+            GROUP BY oi.sku, sm.product_name, sm.category
             ORDER BY total_units DESC
             LIMIT 10
         """, conn, params=params_d)

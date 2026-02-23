@@ -15,11 +15,6 @@ from contextlib import contextmanager
 # ---------------------------------------------------------------------------
 # Connection pool
 # ---------------------------------------------------------------------------
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
-# Railway uses postgres:// but psycopg2 requires postgresql://
-if DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-
 _pool = None
 
 
@@ -27,7 +22,11 @@ def _get_pool():
     """Lazy-init the connection pool (avoids import-time errors)."""
     global _pool
     if _pool is None:
-        if not DATABASE_URL:
+        url = os.environ.get('DATABASE_URL', '')
+        # Railway uses postgres:// but psycopg2 requires postgresql://
+        if url.startswith('postgres://'):
+            url = url.replace('postgres://', 'postgresql://', 1)
+        if not url:
             raise RuntimeError(
                 'DATABASE_URL is not set. '
                 'Set it in .env or Railway service variables.'
@@ -35,7 +34,7 @@ def _get_pool():
         _pool = psycopg2.pool.SimpleConnectionPool(
             minconn=1,
             maxconn=10,
-            dsn=DATABASE_URL,
+            dsn=url,
             connect_timeout=10,
         )
     return _pool

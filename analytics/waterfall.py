@@ -718,7 +718,7 @@ def get_variant_mix_by_age(source_filter=None):
                     JOIN customers c ON o.customer_id = c.customer_id
                     WHERE o.order_date = c.first_order_date
                       {source_clause} {recency_clause}
-                    GROUP BY oi.sku
+                    GROUP BY oi.sku, oi.product_name
                 """).fetchall()
             else:
                 rows = conn.execute(f"""
@@ -730,7 +730,7 @@ def get_variant_mix_by_age(source_filter=None):
                       AND CAST((julianday(o.order_date) - julianday(c.first_order_date))
                           / 30.44 AS INTEGER) BETWEEN {lo} AND {hi}
                       {source_clause} {recency_clause}
-                    GROUP BY oi.sku
+                    GROUP BY oi.sku, oi.product_name
                 """).fetchall()
 
             total = sum(r["qty"] for r in rows) or 1
@@ -781,7 +781,7 @@ def _get_sku_mix(source_filter=None, lookback_months=3):
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.order_date >= date('now', '-{lookback_months} months')
               {source_clause}
-            GROUP BY oi.sku
+            GROUP BY oi.sku, oi.product_name
         """).fetchall()
 
     total = sum(r["qty"] for r in rows) or 1
