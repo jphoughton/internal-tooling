@@ -155,17 +155,21 @@ def _klaviyo_headers(api_key):
 
 
 def fetch_placed_order_metric_id(api_key):
-    """Auto-discover the Klaviyo 'Placed Order' metric ID.
+    """Auto-discover the Klaviyo 'Placed Order' metric ID via raw HTTP.
 
     Returns metric ID string, or None if not found.
     """
     try:
-        client = get_client(api_key)
-        resp = client.Metrics.get_metrics(
-            filter="equals(name,'Placed Order')",
+        resp = _requests.get(
+            f"{_KLAVIYO_API}/metrics",
+            headers=_klaviyo_headers(api_key),
+            params={"filter": "equals(name,'Placed Order')"},
+            timeout=15,
         )
-        if resp and hasattr(resp, "data") and resp.data:
-            metric_id = resp.data[0].id
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if data:
+            metric_id = data[0]["id"]
             logger.info(f"Found Placed Order metric: {metric_id}")
             return metric_id
         logger.warning("Placed Order metric not found in Klaviyo")
@@ -180,23 +184,25 @@ def _build_report_body(report_type, stats, conversion_metric_id):
     attrs = {
         "statistics": stats,
         "timeframe": {"key": "last_12_months"},
+        "conversion_metric_id": conversion_metric_id,
         "filter": "equals(send_channel,'email')",
     }
-    if conversion_metric_id:
-        attrs["conversion_metric_id"] = conversion_metric_id
     return {"data": {"type": report_type, "attributes": attrs}}
 
 
-def fetch_campaign_metrics(api_key, conversion_metric_id=None):
+def fetch_campaign_metrics(api_key, conversion_metric_id):
     """Fetch performance metrics for all email campaigns.
 
     Uses POST /api/campaign-values-reports (1 API call for all campaigns).
+    Requires a valid conversion_metric_id.
 
     Returns dict mapping campaign_id -> {metric_name: value, ...}
     """
-    stats = list(_ENGAGEMENT_STATS)
-    if conversion_metric_id:
-        stats += _REVENUE_STATS
+    if not conversion_metric_id:
+        logger.warning("No conversion_metric_id — skipping campaign metrics")
+        return {}
+
+    stats = _ENGAGEMENT_STATS + _REVENUE_STATS
 
     body = _build_report_body("campaign-values-report", stats, conversion_metric_id)
 
@@ -207,8 +213,9 @@ def fetch_campaign_metrics(api_key, conversion_metric_id=None):
         timeout=30,
     )
     if not resp.ok:
-        logger.error(f"Campaign metrics API error {resp.status_code}: {resp.text[:500]}")
-        resp.raise_for_status()
+        error_detail = resp.text[:1000]
+        logger.error(f"Campaign metrics API {resp.status_code}: {error_detail}")
+        raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
     data = resp.json()
 
     results = {}
@@ -221,16 +228,19 @@ def fetch_campaign_metrics(api_key, conversion_metric_id=None):
     return results
 
 
-def fetch_flow_metrics(api_key, conversion_metric_id=None):
+def fetch_flow_metrics(api_key, conversion_metric_id):
     """Fetch performance metrics for all flows.
 
     Uses POST /api/flow-values-reports (1 API call for all flows).
+    Requires a valid conversion_metric_id.
 
     Returns dict mapping flow_id -> {metric_name: value, ...}
     """
-    stats = list(_ENGAGEMENT_STATS)
-    if conversion_metric_id:
-        stats += _REVENUE_STATS
+    if not conversion_metric_id:
+        logger.warning("No conversion_metric_id — skipping flow metrics")
+        return {}
+
+    stats = _ENGAGEMENT_STATS + _REVENUE_STATS
 
     body = _build_report_body("flow-values-report", stats, conversion_metric_id)
 
@@ -241,8 +251,9 @@ def fetch_flow_metrics(api_key, conversion_metric_id=None):
         timeout=30,
     )
     if not resp.ok:
-        logger.error(f"Flow metrics API error {resp.status_code}: {resp.text[:500]}")
-        resp.raise_for_status()
+        error_detail = resp.text[:1000]
+        logger.error(f"Flow metrics API {resp.status_code}: {error_detail}")
+        raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
     data = resp.json()
 
     results = {}
