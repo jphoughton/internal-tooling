@@ -7,6 +7,8 @@ from db import (
     get_media_spend, get_amazon_revenue_forecast,
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
+    get_klaviyo_campaigns, get_klaviyo_flows, get_klaviyo_lists,
+    upsert_klaviyo_campaign, upsert_klaviyo_flow, upsert_klaviyo_list,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
@@ -1178,42 +1180,46 @@ def render(ctx):
     st.divider()
     st.subheader("Klaviyo")
     if _mkt_klaviyo_key:
+        if st.button("Refresh from Klaviyo", key="kl_refresh"):
+            with st.spinner("Syncing from Klaviyo API..."):
+                try:
+                    from etl.klaviyo_client import fetch_campaigns, fetch_flows, fetch_lists
+                    campaigns = fetch_campaigns(_mkt_klaviyo_key)
+                    flows = fetch_flows(_mkt_klaviyo_key)
+                    lists = fetch_lists(_mkt_klaviyo_key)
+                    with get_db() as conn:
+                        for c in campaigns:
+                            upsert_klaviyo_campaign(conn, c)
+                        for f in flows:
+                            upsert_klaviyo_flow(conn, f)
+                        for l in lists:
+                            upsert_klaviyo_list(conn, l)
+                    st.success(f"Synced {len(campaigns)} campaigns, {len(flows)} flows, {len(lists)} lists.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
         kl_tab1, kl_tab2, kl_tab3 = st.tabs(["Campaigns", "Flows", "Lists"])
         with kl_tab1:
-            if st.button("Load Campaigns", key="kl_load_campaigns"):
-                with st.spinner("Fetching from Klaviyo..."):
-                    try:
-                        from etl.klaviyo_client import fetch_campaigns
-                        kl_campaigns = fetch_campaigns(_mkt_klaviyo_key)
-                        if kl_campaigns:
-                            render_html_table(pd.DataFrame(kl_campaigns))
-                        else:
-                            st.warning("No email campaigns found.")
-                    except Exception as e:
-                        st.error(f"Failed to fetch campaigns: {e}")
+            with get_db() as conn:
+                kl_campaigns = get_klaviyo_campaigns(conn)
+            if kl_campaigns:
+                render_html_table(pd.DataFrame(kl_campaigns))
+            else:
+                st.info("No campaigns synced yet. Click **Refresh from Klaviyo** above or wait for the daily sync.")
         with kl_tab2:
-            if st.button("Load Flows", key="kl_load_flows"):
-                with st.spinner("Fetching from Klaviyo..."):
-                    try:
-                        from etl.klaviyo_client import fetch_flows
-                        kl_flows = fetch_flows(_mkt_klaviyo_key)
-                        if kl_flows:
-                            render_html_table(pd.DataFrame(kl_flows))
-                        else:
-                            st.warning("No flows found.")
-                    except Exception as e:
-                        st.error(f"Failed to fetch flows: {e}")
+            with get_db() as conn:
+                kl_flows = get_klaviyo_flows(conn)
+            if kl_flows:
+                render_html_table(pd.DataFrame(kl_flows))
+            else:
+                st.info("No flows synced yet.")
         with kl_tab3:
-            if st.button("Load Lists", key="kl_load_lists"):
-                with st.spinner("Fetching from Klaviyo..."):
-                    try:
-                        from etl.klaviyo_client import fetch_lists
-                        kl_lists = fetch_lists(_mkt_klaviyo_key)
-                        if kl_lists:
-                            render_html_table(pd.DataFrame(kl_lists))
-                        else:
-                            st.warning("No lists found.")
-                    except Exception as e:
-                        st.error(f"Failed to fetch lists: {e}")
+            with get_db() as conn:
+                kl_lists = get_klaviyo_lists(conn)
+            if kl_lists:
+                render_html_table(pd.DataFrame(kl_lists))
+            else:
+                st.info("No lists synced yet.")
     else:
         st.info("Add your Klaviyo API key on the **Settings** page to see email/SMS analytics.")

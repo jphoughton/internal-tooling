@@ -24,7 +24,8 @@ def test_connection(api_key):
         # Fetch account info to test the key
         resp = client.Accounts.get_accounts()
         if resp and hasattr(resp, "data") and resp.data:
-            name = resp.data[0].attributes.get("contact_information", {}).get("organization_name", "Connected")
+            contact_info = getattr(resp.data[0].attributes, "contact_information", None)
+            name = getattr(contact_info, "organization_name", "Connected") if contact_info else "Connected"
             return True, f"Connected to Klaviyo ({name})"
         return True, "Connected to Klaviyo"
     except Exception as e:
@@ -55,11 +56,11 @@ def fetch_campaigns(api_key, status="sent", limit=50):
                 attrs = c.attributes
                 campaigns.append({
                     "id": c.id,
-                    "name": attrs.get("name", ""),
-                    "status": attrs.get("status", ""),
-                    "send_time": attrs.get("send_time", ""),
-                    "created_at": attrs.get("created_at", ""),
-                    "updated_at": attrs.get("updated_at", ""),
+                    "name": getattr(attrs, "name", ""),
+                    "status": getattr(attrs, "status", ""),
+                    "send_time": getattr(attrs, "send_time", ""),
+                    "created_at": getattr(attrs, "created_at", ""),
+                    "updated_at": getattr(attrs, "updated_at", ""),
                 })
 
         logger.info(f"Fetched {len(campaigns)} Klaviyo campaigns")
@@ -89,11 +90,11 @@ def fetch_flows(api_key, status="live"):
                 attrs = f.attributes
                 flows.append({
                     "id": f.id,
-                    "name": attrs.get("name", ""),
-                    "status": attrs.get("status", ""),
-                    "created": attrs.get("created", ""),
-                    "updated": attrs.get("updated", ""),
-                    "trigger_type": attrs.get("trigger_type", ""),
+                    "name": getattr(attrs, "name", ""),
+                    "status": getattr(attrs, "status", ""),
+                    "created": getattr(attrs, "created", ""),
+                    "updated": getattr(attrs, "updated", ""),
+                    "trigger_type": getattr(attrs, "trigger_type", ""),
                 })
 
         logger.info(f"Fetched {len(flows)} Klaviyo flows")
@@ -115,9 +116,9 @@ def fetch_lists(api_key):
                 attrs = l.attributes
                 lists.append({
                     "id": l.id,
-                    "name": attrs.get("name", ""),
-                    "created": attrs.get("created", ""),
-                    "updated": attrs.get("updated", ""),
+                    "name": getattr(attrs, "name", ""),
+                    "created": getattr(attrs, "created", ""),
+                    "updated": getattr(attrs, "updated", ""),
                 })
 
         logger.info(f"Fetched {len(lists)} Klaviyo lists")

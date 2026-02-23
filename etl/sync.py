@@ -89,6 +89,24 @@ def run_daily_sync(full_refresh=False, on_status=None):
     else:
         print("Shopify not configured — skipping.")
 
+    # --- Klaviyo (only if configured) ---
+    with get_db() as conn:
+        from db import get_setting
+        _klaviyo_key = get_setting(conn, "klaviyo_api_key", "")
+    if _klaviyo_key:
+        _report(step_idx, "Syncing Klaviyo...")
+        try:
+            results["klaviyo"] = _sync_klaviyo(_klaviyo_key)
+        except Exception as e:
+            results["klaviyo"] = f"ERROR: {e}"
+            print(f"Klaviyo sync failed: {e}")
+            with get_db() as conn:
+                log_sync(conn, "klaviyo", datetime.utcnow().strftime("%Y-%m-%d"),
+                         0, status="error", error_message=str(e))
+        step_idx += 1
+    else:
+        print("Klaviyo not configured — skipping.")
+
     # --- Google Sheet (if configured) ---
     _report(step_idx, "Syncing Google Sheet...")
     try:
@@ -170,6 +188,29 @@ def _sync_shopify(full_refresh, on_status=None, step_idx=0, total_steps=1):
         log_sync(conn, "shopify", today, count)
 
     return count
+
+
+def _sync_klaviyo(api_key):
+    """Pull Klaviyo campaigns, flows, and lists into the DB."""
+    from etl.klaviyo_client import fetch_campaigns, fetch_flows, fetch_lists
+    from db import upsert_klaviyo_campaign, upsert_klaviyo_flow, upsert_klaviyo_list
+
+    campaigns = fetch_campaigns(api_key)
+    flows = fetch_flows(api_key)
+    lists = fetch_lists(api_key)
+    total = len(campaigns) + len(flows) + len(lists)
+
+    with get_db() as conn:
+        for c in campaigns:
+            upsert_klaviyo_campaign(conn, c)
+        for f in flows:
+            upsert_klaviyo_flow(conn, f)
+        for l in lists:
+            upsert_klaviyo_list(conn, l)
+        log_sync(conn, "klaviyo", datetime.utcnow().strftime("%Y-%m-%d"), total)
+
+    print(f"Klaviyo sync: {len(campaigns)} campaigns, {len(flows)} flows, {len(lists)} lists")
+    return total
 
 
 def _get_since_date(conn, source, full_refresh, max_days=365 * 5):

@@ -303,6 +303,34 @@ _SCHEMA_SQL = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS klaviyo_campaigns (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        status TEXT,
+        send_time TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        synced_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS klaviyo_flows (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        status TEXT,
+        trigger_type TEXT,
+        created TEXT,
+        updated TEXT,
+        synced_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS klaviyo_lists (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        created TEXT,
+        updated TEXT,
+        synced_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -592,6 +620,67 @@ def set_setting(conn, key, value):
             value = excluded.value,
             updated_at = CURRENT_TIMESTAMP::text
     """, (key, str(value)))
+
+
+# ---------------------------------------------------------------------------
+# Klaviyo
+# ---------------------------------------------------------------------------
+def upsert_klaviyo_campaign(conn, campaign):
+    conn.execute("""
+        INSERT INTO klaviyo_campaigns (id, name, status, send_time, created_at, updated_at, synced_at)
+        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name, status = excluded.status,
+            send_time = excluded.send_time, created_at = excluded.created_at,
+            updated_at = excluded.updated_at, synced_at = CURRENT_TIMESTAMP::text
+    """, (campaign["id"], campaign["name"], campaign["status"],
+          campaign["send_time"], campaign["created_at"], campaign["updated_at"]))
+
+
+def upsert_klaviyo_flow(conn, flow):
+    conn.execute("""
+        INSERT INTO klaviyo_flows (id, name, status, trigger_type, created, updated, synced_at)
+        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name, status = excluded.status,
+            trigger_type = excluded.trigger_type, created = excluded.created,
+            updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
+    """, (flow["id"], flow["name"], flow["status"],
+          flow["trigger_type"], flow["created"], flow["updated"]))
+
+
+def upsert_klaviyo_list(conn, lst):
+    conn.execute("""
+        INSERT INTO klaviyo_lists (id, name, created, updated, synced_at)
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name, created = excluded.created,
+            updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
+    """, (lst["id"], lst["name"], lst["created"], lst["updated"]))
+
+
+def get_klaviyo_campaigns(conn):
+    rows = conn.execute(
+        "SELECT id, name, status, send_time, created_at, updated_at "
+        "FROM klaviyo_campaigns ORDER BY send_time DESC NULLS LAST"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_klaviyo_flows(conn):
+    rows = conn.execute(
+        "SELECT id, name, status, trigger_type, created, updated "
+        "FROM klaviyo_flows ORDER BY name"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_klaviyo_lists(conn):
+    rows = conn.execute(
+        "SELECT id, name, created, updated "
+        "FROM klaviyo_lists ORDER BY name"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
