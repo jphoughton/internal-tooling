@@ -115,14 +115,24 @@ _ALL_NAV_PAGES = []
 for _grp_name, _grp_pages in _NAV_GROUPS:
     _ALL_NAV_PAGES.extend(_grp_pages)
 
+# Restore page from URL query params (survives browser refresh)
+_qp = st.query_params
+_default_page = _qp.get("page", "Overview")
+_default_idx = _ALL_NAV_PAGES.index(_default_page) if _default_page in _ALL_NAV_PAGES else 0
+
 # Single radio drives actual selection (hidden, styled via CSS)
 page = st.sidebar.radio(
     "Navigate",
     _ALL_NAV_PAGES,
+    index=_default_idx,
     format_func=lambda x: f"{_NAV_ICONS.get(x, '')}  {x}",
     label_visibility="collapsed",
     key="_nav_radio",
 )
+
+# Persist selected page to URL query params
+if page != _default_page:
+    st.query_params["page"] = page
 
 # Inject section headers via JS/CSS after the radio renders
 # Build a mapping: for each page index, which group it belongs to
