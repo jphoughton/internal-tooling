@@ -1,5 +1,6 @@
-"""Retention page."""
+"""Retention page — Triple Whale-style cohort analysis table."""
 import json as _json
+import calendar
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -15,11 +16,13 @@ from db import (
 from analytics.retention import (
     get_customer_cohort_data,
     get_cohort_sizes,
+    build_cohort_matrices,
+    get_cohort_summary,
 )
 from analytics.waterfall import clear_waterfall_cache, get_aov_and_units
 from analytics.dtc_demand import build_repeat_customer_sku_month_table
-from analytics.sku_flavors import get_flavor
 from ui.components import render_freshness_badge, smart_date_filter, render_html_table
+from ui.tables import make_cohort_cell_style
 
 
 @st.cache_data(ttl=300)
@@ -29,6 +32,83 @@ def _load_sku_list():
             'SELECT sku, product_name, category, sources FROM sku_master WHERE is_active = 1 ORDER BY category, sku'
         ).fetchall()
     return pd.DataFrame([dict(r) for r in rows])
+
+
+def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_str):
+    """Build a formatted display DataFrame for the cohort analysis table.
+
+    Returns (display_df, month_col_names) or (None, []) if no data.
+    """
+    revenue = matrices['revenue']
+    customers = matrices['customers']
+    cohort_sizes = matrices['cohort_sizes']
+
+    if revenue.empty:
+        return None, []
+
+    # Filter to date range
+    all_cohorts = sorted(revenue.index)
+    filtered = [c for c in all_cohorts if start_str <= c <= end_str]
+    if not filtered:
+        return None, []
+
+    revenue = revenue.loc[filtered]
+    customers = customers.loc[filtered]
+    sizes = cohort_sizes.reindex(filtered)
+
+    # Compute metric matrix
+    if metric == 'Total Sales':
+        if cumulative:
+            data = revenue.cumsum(axis=1)
+        else:
+            data = revenue.copy()
+    elif metric == 'Retention Rate':
+        retention = customers.div(sizes, axis=0)
+        if cumulative:
+            data = retention.cumsum(axis=1)
+        else:
+            data = retention.copy()
+    else:  # LTV
+        if cumulative:
+            data = revenue.cumsum(axis=1).div(sizes, axis=0)
+        else:
+            data = revenue.div(sizes, axis=0)
+
+    # Build summary columns
+    summary_filtered = summary[summary['cohort'].isin(filtered)].set_index('cohort')
+    display_rows = []
+    for cohort in filtered:
+        row = {'Cohort': cohort}
+        if cohort in summary_filtered.index:
+            s = summary_filtered.loc[cohort]
+            row['Customers'] = f'{int(s["customers"]):,}' if pd.notna(s['customers']) else ''
+            row['NCPA'] = f'${s["ncpa"]:.2f}' if pd.notna(s['ncpa']) else ''
+            row['AOV'] = f'${s["aov"]:.2f}' if pd.notna(s['aov']) else ''
+            row['1st Order %'] = f'{s["first_order_pct"]:.2f}%' if pd.notna(s['first_order_pct']) else ''
+        else:
+            row['Customers'] = ''
+            row['NCPA'] = ''
+            row['AOV'] = ''
+            row['1st Order %'] = ''
+
+        # Month columns
+        if cohort in data.index:
+            for col in data.columns:
+                val = data.loc[cohort, col]
+                col_name = f'M{int(col)}'
+                if pd.isna(val):
+                    row[col_name] = ''
+                elif metric == 'Total Sales':
+                    row[col_name] = f'${val:,.0f}'
+                elif metric == 'Retention Rate':
+                    row[col_name] = f'{val * 100:.2f}%'
+                else:  # LTV
+                    row[col_name] = f'${val:,.2f}'
+        display_rows.append(row)
+
+    display_df = pd.DataFrame(display_rows)
+    month_cols = [c for c in display_df.columns if c.startswith('M') and c[1:].isdigit()]
+    return display_df, month_cols
 
 
 def render(ctx):
@@ -46,6 +126,7 @@ def render(ctx):
         _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
 
+    # --- Filters ---
     col1, col2 = st.columns(2)
     skus = _load_sku_list()
     sku_options = skus['sku'].tolist() if not skus.empty else []
@@ -58,83 +139,96 @@ def render(ctx):
     sku_val = None if sku_filter == 'All SKUs' else sku_filter
     source_val = None if source_filter == 'All Sources' else source_filter
 
-    matrix = get_customer_cohort_data(sku_filter=sku_val, source_filter=source_val)
+    # --- Cohort Analysis Table ---
+    matrices = build_cohort_matrices(sku_filter=sku_val, source_filter=source_val)
+    summary = get_cohort_summary(sku_filter=sku_val, source_filter=source_val)
 
-    if matrix.empty:
+    if matrices['revenue'].empty:
         st.warning('No retention data available with current filters.')
     else:
-        # Date range filter — scoped to this page only
-        all_cohorts = sorted(matrix.index.tolist())
+        # Date range filter
+        all_cohorts = sorted(matrices['revenue'].index.tolist())
         earliest = datetime.strptime(all_cohorts[0], '%Y-%m').date()
-        # Use last day of latest cohort month so current month isn't clipped
         _latest_first = datetime.strptime(all_cohorts[-1], '%Y-%m').date()
-        import calendar
         latest = _latest_first.replace(day=calendar.monthrange(_latest_first.year, _latest_first.month)[1])
 
         start_date, end_date = smart_date_filter(earliest, latest, 'ret', default_preset='All Time')
-
-        # Filter matrix to selected date range
         start_str = start_date.strftime('%Y-%m')
         end_str = end_date.strftime('%Y-%m')
-        filtered_cohorts = [c for c in all_cohorts if start_str <= c <= end_str]
-        matrix = matrix.loc[filtered_cohorts]
 
-        if matrix.empty:
+        # Metric selector + cumulative toggle
+        _ctrl_col, _toggle_col = st.columns([3, 1])
+        with _ctrl_col:
+            metric = st.segmented_control(
+                'Metric',
+                options=['Total Sales', 'Retention Rate', 'LTV'],
+                default='Total Sales',
+                key='cohort_metric',
+            )
+        with _toggle_col:
+            cumulative = st.toggle('Cumulative', value=True, key='cohort_cumulative')
+
+        if not metric:
+            metric = 'Total Sales'
+
+        display_df, month_cols = _build_cohort_table(
+            matrices, summary, metric, cumulative, start_str, end_str,
+        )
+
+        if display_df is None or display_df.empty:
             st.warning('No cohorts in the selected date range.')
         else:
-            st.subheader('Cohort Heatmap')
-            st.caption('Each row is a monthly cohort. Values = % of customers returning at each month offset.')
+            st.subheader('Cohort Analysis')
+            st.caption(f'{metric} {"(Cumulative)" if cumulative else "(Per Month)"} — by first order month.')
 
-            # Drop month 0 (always ~100%, distorts the color scale)
-            repeat_cols = [c for c in matrix.columns if c != 0]
-            display_matrix = matrix[repeat_cols] if repeat_cols else matrix
+            # Color gradient on month columns
+            if month_cols:
+                from ui.tables import _parse_perf_num
+                flat_vals = []
+                for mc in month_cols:
+                    for v in display_df[mc]:
+                        num = _parse_perf_num(v)
+                        if num is not None and num > 0:
+                            flat_vals.append(num)
+                if flat_vals:
+                    vmin = np.percentile(flat_vals, 5)
+                    vmax = np.percentile(flat_vals, 95)
+                else:
+                    vmin, vmax = 0, 1
+                style_fn = make_cohort_cell_style(vmin, vmax)
+            else:
+                style_fn = None
 
-            # Dynamic zmax so the full color range maps to actual retention values
-            max_val = display_matrix.max().max() if not display_matrix.empty else 1.0
-            zmax = min(max_val * 1.3, 1.0) if max_val > 0 else 1.0
+            summary_cols = ['Cohort', 'Customers', 'NCPA', 'AOV', '1st Order %']
+            column_groups = [
+                ('', summary_cols),
+                ('Month', month_cols),
+            ]
 
-            # Build custom hovertext: show retention % for elapsed months, nothing for future
-            z_vals = display_matrix.values.copy().astype(float)
-            hover_text = []
-            for i, cohort_label in enumerate(display_matrix.index):
-                row_text = []
-                for j, col in enumerate(display_matrix.columns):
-                    val = z_vals[i, j]
-                    if np.isnan(val):
-                        row_text.append('')
-                    else:
-                        row_text.append(f'{val:.1%}')
-                hover_text.append(row_text)
-
-            fig = go.Figure(data=go.Heatmap(
-                z=z_vals,
-                x=[str(c) for c in display_matrix.columns],
-                y=display_matrix.index.tolist(),
-                colorscale='Blues',
-                zmin=0, zmax=zmax,
-                colorbar=dict(title='Retention %'),
-                hovertext=hover_text,
-                hovertemplate='Cohort: %{y}<br>Month %{x}: %{hovertext}<extra></extra>',
-                xgap=1, ygap=1,
-            ))
-            fig.update_layout(
-                height=max(300, len(display_matrix) * 40),
-                yaxis=dict(type='category', autorange='reversed'),
-                plot_bgcolor='#F0F0F0',
+            render_html_table(
+                display_df,
+                max_height=min(len(display_df) * 35 + 60, 700),
+                style_fn=style_fn,
+                style_cols=month_cols,
+                column_groups=column_groups,
             )
-            st.plotly_chart(fig, use_container_width=True)
 
-            # Average retention curve — computed from the date-filtered matrix
+    # --- Retention Curve ---
+    st.divider()
+    matrix = get_customer_cohort_data(sku_filter=sku_val, source_filter=source_val)
+    if not matrix.empty:
+        all_cohorts_curve = sorted(matrix.index.tolist())
+        filtered_cohorts = [c for c in all_cohorts_curve if start_str <= c <= end_str] if 'start_str' in dir() else all_cohorts_curve
+        matrix_filtered = matrix.loc[[c for c in filtered_cohorts if c in matrix.index]]
+
+        if not matrix_filtered.empty:
             st.subheader('Retention Curve')
             st.caption('Average across selected cohorts.')
 
-            # Build curve from the filtered matrix directly
             _curve = {}
-            for col in matrix.columns:
-                vals = matrix[col].dropna()
-                if len(vals) >= 2:
-                    _curve[int(col)] = float(vals.mean())
-                elif len(vals) > 0:
+            for col in matrix_filtered.columns:
+                vals = matrix_filtered[col].dropna()
+                if len(vals) > 0:
                     _curve[int(col)] = float(vals.mean())
 
             if _curve:
@@ -164,7 +258,7 @@ def render(ctx):
             st.subheader('Cohort Sizes')
             sizes = get_cohort_sizes()
             if not sizes.empty:
-                sizes = sizes[sizes['cohort'].between(start_str, end_str)]
+                sizes = sizes[sizes['cohort'].between(start_str, end_str)] if 'start_str' in dir() else sizes
             if not sizes.empty:
                 fig = px.bar(sizes, x='cohort', y='cohort_size',
                              color_discrete_sequence=['#0F3557'])
@@ -197,7 +291,6 @@ def render(ctx):
             _new_rpu = _metrics.get('new_customer_rev_per_unit', 0)
             _media_map = {e['month']: e for e in _media_plan_raw} if _media_plan_raw else {}
 
-            # Use forecast-SKU-only repeat units (same as Demand Forecast page)
             _forecast_skus = ctx.get('forecast_skus')
             _rep_sku_table = build_repeat_customer_sku_month_table(
                 _wf, horizon_months=12, forecast_skus=_forecast_skus,
@@ -211,7 +304,6 @@ def render(ctx):
             for _, row in _wf.iterrows():
                 m = row['month']
                 repeat_rev = round(_rep_units_by_month.get(m, 0) * _repeat_rpu)
-                # New customer rev: spend × ROAS when available, else units × rev_per_unit
                 entry = _media_map.get(m, {})
                 spend = entry.get('spend', 0) or 0
                 roas = entry.get('new_customer_roas', 0) or 0
@@ -241,7 +333,6 @@ def render(ctx):
             _display_df = pd.concat([_display_df, pd.DataFrame([_totals])], ignore_index=True)
             render_html_table(_display_df)
 
-            # Stacked bar chart
             _chart_df = _rev_df[['Month', '_repeat', '_new']].rename(columns={'_repeat': 'Repeat', '_new': 'New Customer'})
             _melted = _chart_df.melt(id_vars='Month', var_name='Segment', value_name='Revenue')
             fig_rev = px.bar(
@@ -273,7 +364,6 @@ def render(ctx):
 
     _seas_enabled = st.toggle('Enable Seasonality', value=(_seas_enabled_val == 'true'), key='seas_toggle')
 
-    # Build editable table
     _month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     _seas_df = pd.DataFrame({
         'Month': _month_names,
@@ -288,7 +378,6 @@ def render(ctx):
     _edited_seas_values = list(_seas_values)
 
     with col_seas_edit:
-        # 2-column grid: Month label | Number input
         for i, (name, val) in enumerate(zip(_month_names, _seas_values)):
             _lbl_c, _inp_c = st.columns([1, 2])
             with _lbl_c:
@@ -299,7 +388,6 @@ def render(ctx):
                     step=0.01, format='%.2f', key=f'seas_{i}', label_visibility='collapsed',
                 )
 
-    # Build edited DataFrame for chart + save
     edited_seas = pd.DataFrame({'Month': _month_names, 'Index': _edited_seas_values})
 
     with col_seas_chart:

@@ -84,6 +84,31 @@ def _parse_perf_num(val):
         return None
 
 
+def make_cohort_cell_style(vmin, vmax):
+    """Return a style_fn for render_html_table that colors cohort cells.
+
+    Maps absolute cell values to a teal gradient between vmin and vmax.
+    Parses formatted strings ('$1,234' or '12.3%') back to float.
+    """
+    span = vmax - vmin if vmax != vmin else 1.0
+
+    def _style(val):
+        num = _parse_perf_num(val)
+        if num is None:
+            return ''
+        t = max(0.0, min(1.0, (num - vmin) / span))
+        # Teal gradient: transparent -> Hydrant navy with increasing opacity
+        bg_alpha = 0.03 + 0.22 * t
+        text_color = '#0F3557' if t < 0.65 else '#ffffff'
+        weight = '500' if t < 0.65 else '600'
+        return (
+            f'background-color: rgba(15,53,87,{bg_alpha:.2f}); '
+            f'color: {text_color}; font-weight: {weight}'
+        )
+
+    return _style
+
+
 def gradient_perf_style(pct_change, higher_is_good):
     """Return CSS for a cell based on gradient intensity of change.
 
