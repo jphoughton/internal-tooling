@@ -13,5 +13,5 @@ echo "Initializing PostgreSQL schema..."
 python -c "from db import init_db; init_db()"
 echo "Schema ready."
 
-echo "Starting supervisord (dashboard + scheduler)..."
+echo "Starting supervisord (dashboard + scheduler) ..."
 exec supervisord -c /app/supervisord.conf
