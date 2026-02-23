@@ -2001,6 +2001,25 @@ elif page == "Demand Forecast":
         _render_df_as_html_global(disp_summary)
 
     # ================================================================
+    # SECTION: Master DTC Rollup by SKU × Month
+    # ================================================================
+    st.divider()
+    st.subheader("Master Demand by SKU")
+    st.caption("Combined Shopify (new + repeat) + Amazon demand per SKU per month. Use this for production planning and reorder decisions.")
+
+    if not rollup_table.empty:
+        ru_display, ru_fmt, ru_has_rev = _format_sku_month_table(
+            rollup_table, "% of Sales", rev_dict=revenue.get("rollup"),
+        )
+        _render_df_as_html_global(ru_display, max_height=min(len(ru_display) * 35 + 38, 700))
+
+        grand_total = rollup_table["Total"].sum()
+        dtc_rev_total = channel.get("dtc_rev", 0)
+        st.markdown(f"**Grand Total DTC Demand ({horizon}mo):** {grand_total:,.0f} units · **Revenue:** ${dtc_rev_total:,.0f}")
+    else:
+        st.info("No SKU demand data available.")
+
+    # ================================================================
     # SECTION: New Customer Sales by SKU × Month
     # ================================================================
     st.divider()
@@ -2071,25 +2090,6 @@ elif page == "Demand Forecast":
             _render_df_as_html_global(amz_display, max_height=min(len(amz_display) * 35 + 38, 600))
         else:
             st.info("No Amazon sales data available for forecasting.")
-
-    # ================================================================
-    # SECTION: Master DTC Rollup by SKU × Month
-    # ================================================================
-    st.divider()
-    st.subheader("Master Demand by SKU")
-    st.caption("Combined Shopify (new + repeat) + Amazon demand per SKU per month. Use this for production planning and reorder decisions.")
-
-    if not rollup_table.empty:
-        ru_display, ru_fmt, ru_has_rev = _format_sku_month_table(
-            rollup_table, "% of Sales", rev_dict=revenue.get("rollup"),
-        )
-        _render_df_as_html_global(ru_display, max_height=min(len(ru_display) * 35 + 38, 700))
-
-        grand_total = rollup_table["Total"].sum()
-        dtc_rev_total = channel.get("dtc_rev", 0)
-        st.markdown(f"**Grand Total DTC Demand ({horizon}mo):** {grand_total:,.0f} units · **Revenue:** ${dtc_rev_total:,.0f}")
-    else:
-        st.info("No SKU demand data available.")
 
     # --- Per-SKU Prophet Forecast (kept as expander) ---
     st.divider()

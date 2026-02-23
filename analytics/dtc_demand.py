@@ -320,11 +320,11 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
     if forecast_skus:
         rows = [r for r in rows if r["sku"] in forecast_skus]
 
-    total = sum(r["qty"] for r in rows)
+    total = float(sum(r["qty"] for r in rows))
     if total == 0:
         return {}, 0.0
 
-    mix = {r["sku"]: r["qty"] / total for r in rows}
+    mix = {r["sku"]: float(r["qty"]) / total for r in rows}
 
     # UPC: forecast-SKU units per new customer (12mo)
     if upc_data and upc_data["customers"] and upc_data["customers"] > 0:
@@ -431,11 +431,11 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
     if forecast_skus:
         rows = [r for r in rows if r["sku"] in forecast_skus]
 
-    total = sum(r["qty"] for r in rows)
+    total = float(sum(r["qty"] for r in rows))
     if total == 0:
         return {}, 0.0
 
-    mix = {r["sku"]: r["qty"] / total for r in rows}
+    mix = {r["sku"]: float(r["qty"]) / total for r in rows}
     upc = float(upc_row["upc"] or 0) if upc_row and upc_row["upc"] else 0.0
 
     return mix, upc
