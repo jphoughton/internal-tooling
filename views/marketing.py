@@ -1272,10 +1272,11 @@ def render(ctx):
                             _dbg_resp = _dbg_requests.get(
                                 "https://a.klaviyo.com/api/metrics",
                                 headers=_dbg_headers,
-                                params={"page[size]": "3"},
                                 timeout=15,
                             )
-                            st.info(f"Metrics API: {_dbg_resp.status_code} | {_dbg_resp.text[:500]}")
+                            _dbg_data = _dbg_resp.json().get("data", [])
+                            _dbg_names = [d.get("attributes", {}).get("name", "?") for d in _dbg_data[:5]]
+                            st.info(f"Metrics API: {_dbg_resp.status_code} | {len(_dbg_data)} metrics | first 5: {_dbg_names}")
                         except Exception as _dbg_e:
                             st.warning(f"Metrics API debug call failed: {_dbg_e}")
 

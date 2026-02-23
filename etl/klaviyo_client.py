@@ -191,7 +191,6 @@ def fetch_any_metric_id(api_key):
         resp = _requests.get(
             f"{_KLAVIYO_API}/metrics",
             headers=_klaviyo_headers(api_key),
-            params={"page[size]": 1},
             timeout=15,
         )
         resp.raise_for_status()
