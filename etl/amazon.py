@@ -329,9 +329,13 @@ def _wait_for_report(reports_api, report_id, timeout_minutes=20):
     """Poll report status until complete. Returns document ID or None."""
     deadline = time.time() + (timeout_minutes * 60)
 
+    poll_count = 0
     while time.time() < deadline:
         status_response = reports_api.get_report(report_id)
         status = status_response.payload.get("processingStatus")
+        poll_count += 1
+        elapsed = int(time.time() - (deadline - timeout_minutes * 60))
+        print(f"  Report {report_id}: {status} ({elapsed}s elapsed)", flush=True)
 
         if status == "DONE":
             return status_response.payload.get("reportDocumentId")

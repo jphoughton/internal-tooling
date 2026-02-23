@@ -45,7 +45,7 @@ from analytics.dtc_demand import (
     get_current_month_progress,
     compute_remaining_month_demand,
 )
-from config import USE_MOCK_DATA, ENV_KEYS, save_env, reload_config
+from config import ENV_KEYS, save_env, reload_config
 import config
 
 
@@ -895,9 +895,7 @@ except Exception:
     configured_sources = []
 
 st.sidebar.markdown("---")
-if USE_MOCK_DATA:
-    st.sidebar.caption("⚠️ Mock data mode")
-elif configured_sources:
+if configured_sources:
     _src_icons = {"shopify": "🟢", "amazon": "🟠"}
     _src_labels = " ".join(f"{_src_icons.get(s, '●')} {s.title()}" for s in configured_sources)
     st.sidebar.caption(f"Connected: {_src_labels}")
@@ -905,7 +903,7 @@ else:
     st.sidebar.caption("⚙️ No sources — go to Settings")
 
 # --- Auto-sync: run daily sync if last sync was > 24 hours ago ---
-if not USE_MOCK_DATA and configured_sources:
+if configured_sources:
     with get_db() as conn:
         _last_any_sync = conn.execute(
             "SELECT MAX(created_at) as last_ts FROM sync_log WHERE status = 'success'"
@@ -939,15 +937,7 @@ if not USE_MOCK_DATA and configured_sources:
 
 # Sync button
 if st.sidebar.button("Refresh Data"):
-    if USE_MOCK_DATA:
-        from mock_data import generate_mock_data
-        with st.spinner("Regenerating mock data..."):
-            generate_mock_data()
-        st.sidebar.success("Mock data refreshed!")
-        clear_waterfall_cache()
-        st.cache_data.clear()
-        st.rerun()
-    elif not configured_sources:
+    if not configured_sources:
         st.sidebar.error("No API sources configured. Go to **Settings** to connect Shopify or Amazon.")
     else:
         from etl.sync import run_daily_sync
@@ -5196,10 +5186,7 @@ elif page == "Settings":
         else:
             st.warning("Packiyo 3PL: Not configured")
 
-    if config.USE_MOCK_DATA:
-        st.info("Currently using **mock data**. Add API credentials above to switch to live data.")
-    else:
-        st.info("Currently using **live API data**.")
+    st.info("Currently using **live API data**.")
 
     # --- Backfill Full History ---
     st.divider()

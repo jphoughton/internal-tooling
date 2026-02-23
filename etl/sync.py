@@ -1,6 +1,5 @@
 """
 ETL orchestration: coordinates daily sync from all sources.
-Handles both mock and live API modes.
 """
 from datetime import datetime, timedelta
 from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync
@@ -17,10 +16,6 @@ def run_daily_sync(full_refresh=False, on_status=None):
         on_status: Optional callback(step, total_steps, message) for progress.
     """
     init_db()
-
-    if cfg.USE_MOCK_DATA:
-        print("Running in mock mode — no API calls.")
-        return
 
     has_amazon = all(getattr(cfg, k, "") for k in [
         "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",

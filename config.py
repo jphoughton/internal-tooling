@@ -52,9 +52,6 @@ SAFETY_STOCK_MULTIPLIER = float(os.getenv("SAFETY_STOCK_MULTIPLIER", "1.5"))
 SYNC_HOUR = int(os.getenv("SYNC_HOUR", "6"))  # Daily sync at 6 AM
 SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
 
-# --- Data source mode ---
-USE_MOCK_DATA = os.getenv("USE_MOCK_DATA", "true").lower() == "true"
-
 
 # --- All configurable keys for the Settings UI ---
 # These are the credential keys that can be edited via the dashboard and
@@ -109,16 +106,6 @@ def save_credentials(values: dict):
         with get_db() as conn:
             for k, v in values.items():
                 set_setting(conn, k, v)
-            # Also persist USE_MOCK_DATA flag
-            has_amazon = any(values.get(k) for k in [
-                "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-            ])
-            has_shopify = any(values.get(k) for k in [
-                "SHOPIFY_ACCESS_TOKEN", "SHOPIFY_CLIENT_ID",
-            ])
-            has_packiyo = bool(values.get("PACKIYO_API_TOKEN"))
-            mock = "false" if (has_amazon or has_shopify or has_packiyo) else "true"
-            set_setting(conn, "USE_MOCK_DATA", mock)
     except Exception:
         pass
 
@@ -145,17 +132,6 @@ def _save_env_file(values: dict):
 
     existing.update(values)
 
-    has_amazon = any(existing.get(k) for k in [
-        "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-    ])
-    has_shopify = any(existing.get(k) for k in [
-        "SHOPIFY_ACCESS_TOKEN", "SHOPIFY_CLIENT_ID",
-    ])
-    if has_amazon or has_shopify:
-        existing["USE_MOCK_DATA"] = "false"
-    else:
-        existing.setdefault("USE_MOCK_DATA", "true")
-
     lines = [f"{k}={v}" for k, v in existing.items()]
     ENV_FILE.write_text("\n".join(lines) + "\n")
 
@@ -181,7 +157,6 @@ def reload_config():
     g["PACKIYO_API_URL"] = os.getenv("PACKIYO_API_URL", "https://aveshops.packiyo.com/api/v1")
     g["PACKIYO_API_TOKEN"] = os.getenv("PACKIYO_API_TOKEN", "")
     g["PACKIYO_CUSTOMER_ID"] = os.getenv("PACKIYO_CUSTOMER_ID", "12")
-    g["USE_MOCK_DATA"] = os.getenv("USE_MOCK_DATA", "true").lower() == "true"
 
 
 # Load DB credentials on startup (after .env, so DB values take priority),
@@ -202,4 +177,3 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 PACKIYO_API_URL = os.getenv("PACKIYO_API_URL", "https://aveshops.packiyo.com/api/v1")
 PACKIYO_API_TOKEN = os.getenv("PACKIYO_API_TOKEN", "")
 PACKIYO_CUSTOMER_ID = os.getenv("PACKIYO_CUSTOMER_ID", "12")
-USE_MOCK_DATA = os.getenv("USE_MOCK_DATA", "true").lower() == "true"
