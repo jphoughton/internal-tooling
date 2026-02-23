@@ -85,11 +85,12 @@ inject_global_styles()
 
 
 # --- Sidebar ---
+import os as _os
+_logo_path = _os.path.join(_os.path.dirname(__file__), 'assets', 'hydrant-logo.svg')
+with open(_logo_path) as _f:
+    _logo_svg = _f.read()
 st.sidebar.markdown(
-    '<div style="display:flex;align-items:center;gap:10px;padding:4px 0 0;">'
-    '<span style="font-size:1.5rem;">\U0001F4A7</span>'
-    '<span style="font-size:1.3rem;font-weight:700;letter-spacing:-0.02em;">hydrant</span>'
-    '</div>',
+    f'<div style="padding:8px 0 0;">{_logo_svg}</div>',
     unsafe_allow_html=True,
 )
 st.sidebar.caption("Command Center")
