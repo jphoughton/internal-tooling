@@ -942,24 +942,11 @@ if st.sidebar.button("Refresh Data"):
     else:
         from etl.sync import run_daily_sync
 
-        # Detect stale/mock data: check for mock-style order IDs or mismatched sources
         needs_full_refresh = False
-        has_mock_data = False
         with get_db() as conn:
-            mock_check = conn.execute(
-                "SELECT COUNT(*) FROM orders WHERE order_id LIKE 'ama-ord-%' OR order_id LIKE 'sho-ord-%'"
-            ).fetchone()[0]
-            has_mock_data = mock_check > 0
             has_data = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
 
-        if has_mock_data:
-            with get_db() as conn:
-                for table in ["daily_sku_sales", "order_items", "orders", "customers", "sku_master", "sync_log"]:
-                    conn.execute(f"DELETE FROM {table}")
-            needs_full_refresh = True
-            clear_waterfall_cache()
-            st.cache_data.clear()
-        elif has_data == 0:
+        if has_data == 0:
             needs_full_refresh = True
 
         sync_container = st.sidebar.container()

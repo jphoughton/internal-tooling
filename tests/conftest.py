@@ -91,12 +91,3 @@ def skip_if_source_never_synced(db, source):
     return count
 
 
-def is_mock_data(db):
-    """Detect if the database contains mock data (WB-/TM-/LB- SKU prefixes)."""
-    if not table_exists(db, 'sku_master'):
-        return False
-    count = scalar(db,
-        "SELECT COUNT(*) FROM sku_master "
-        "WHERE sku LIKE 'WB-%' OR sku LIKE 'TM-%' OR sku LIKE 'LB-%'"
-    )
-    return count is not None and count > 5

@@ -12,7 +12,7 @@ Usage:
 import pytest
 from tests.conftest import (
     fetchone, fetchall, scalar,
-    skip_if_table_empty, skip_if_source_never_synced, is_mock_data,
+    skip_if_table_empty, skip_if_source_never_synced,
 )
 
 # 17 core Hydrant production SKUs
@@ -262,8 +262,6 @@ class TestSKUQuality:
 
     def test_forecast_skus_present_in_sales_data(self, db):
         skip_if_table_empty(db, 'daily_sku_sales')
-        if is_mock_data(db):
-            pytest.skip('Mock data detected — FORECAST_SKUS not applicable')
         found = scalar(db,
             "SELECT COUNT(DISTINCT sku) FROM daily_sku_sales WHERE sku = ANY(%s)",
             (list(FORECAST_SKUS),)

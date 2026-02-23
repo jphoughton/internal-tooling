@@ -306,9 +306,6 @@ cat > .env.example << 'EOF'
 # GitHub: https://github.com/settings/tokens -> repo, read:org scopes
 GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
 
-# --- App Config ---
-# USE_MOCK_DATA=true
-
 # --- Amazon SP-API ---
 # AMAZON_REFRESH_TOKEN=
 # AMAZON_LWA_CLIENT_ID=
