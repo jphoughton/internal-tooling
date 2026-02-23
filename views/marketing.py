@@ -1187,7 +1187,7 @@ def render(ctx):
                 try:
                     from etl.klaviyo_client import (
                         fetch_campaigns, fetch_flows, fetch_lists,
-                        fetch_placed_order_metric_id,
+                        fetch_placed_order_metric_id, fetch_any_metric_id,
                         fetch_campaign_metrics, fetch_flow_metrics,
                     )
                     campaigns = fetch_campaigns(_mkt_klaviyo_key)
@@ -1201,17 +1201,22 @@ def render(ctx):
                         for l in lists:
                             upsert_klaviyo_list(conn, l)
 
-                    # Metrics
+                    # Metrics — need a conversion_metric_id (API requires it)
                     with get_db() as conn:
                         conv_id = get_setting(conn, "klaviyo_conversion_metric_id")
+                    include_revenue = bool(conv_id)
                     if not conv_id:
                         conv_id = fetch_placed_order_metric_id(_mkt_klaviyo_key)
                         if conv_id:
+                            include_revenue = True
                             with get_db() as conn:
                                 set_setting(conn, "klaviyo_conversion_metric_id", conv_id)
+                        else:
+                            # Fallback: any metric (engagement stats still work)
+                            conv_id = fetch_any_metric_id(_mkt_klaviyo_key)
 
-                    cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id)
-                    fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id)
+                    cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
+                    fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
                     with get_db() as conn:
                         for cid, m in cm.items():
                             update_klaviyo_campaign_metrics(conn, cid, m)
@@ -1221,8 +1226,8 @@ def render(ctx):
                     parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
                     if cm or fm:
                         parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
-                    elif not conv_id:
-                        parts.append("revenue metrics skipped (no Placed Order metric found — set in Settings)")
+                    if not include_revenue:
+                        parts.append("revenue skipped (no Placed Order metric — set in Settings)")
                     st.success(" — ".join(parts))
                     st.rerun()
                 except Exception as e:

@@ -179,6 +179,35 @@ def fetch_placed_order_metric_id(api_key):
         return None
 
 
+def fetch_any_metric_id(api_key):
+    """Fetch any metric ID from Klaviyo (fallback for reporting API).
+
+    The Reporting API requires a conversion_metric_id even for engagement-only
+    stats. This grabs the first available metric as a fallback.
+
+    Returns metric ID string, or None if no metrics exist.
+    """
+    try:
+        resp = _requests.get(
+            f"{_KLAVIYO_API}/metrics",
+            headers=_klaviyo_headers(api_key),
+            params={"page[size]": 1},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if data:
+            metric_id = data[0]["id"]
+            name = data[0].get("attributes", {}).get("name", "unknown")
+            logger.info(f"Fallback metric: {name} ({metric_id})")
+            return metric_id
+        logger.warning("No metrics found in Klaviyo account")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch fallback metric: {e}")
+        return None
+
+
 def _build_report_body(report_type, stats, conversion_metric_id):
     """Build the JSON:API body for a Klaviyo reporting endpoint."""
     attrs = {
@@ -190,11 +219,11 @@ def _build_report_body(report_type, stats, conversion_metric_id):
     return {"data": {"type": report_type, "attributes": attrs}}
 
 
-def fetch_campaign_metrics(api_key, conversion_metric_id):
+def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
     """Fetch performance metrics for all email campaigns.
 
     Uses POST /api/campaign-values-reports (1 API call for all campaigns).
-    Requires a valid conversion_metric_id.
+    Requires a valid conversion_metric_id (any metric works for engagement stats).
 
     Returns dict mapping campaign_id -> {metric_name: value, ...}
     """
@@ -202,7 +231,9 @@ def fetch_campaign_metrics(api_key, conversion_metric_id):
         logger.warning("No conversion_metric_id — skipping campaign metrics")
         return {}
 
-    stats = _ENGAGEMENT_STATS + _REVENUE_STATS
+    stats = list(_ENGAGEMENT_STATS)
+    if include_revenue:
+        stats += _REVENUE_STATS
 
     body = _build_report_body("campaign-values-report", stats, conversion_metric_id)
 
@@ -228,11 +259,11 @@ def fetch_campaign_metrics(api_key, conversion_metric_id):
     return results
 
 
-def fetch_flow_metrics(api_key, conversion_metric_id):
+def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
     """Fetch performance metrics for all flows.
 
     Uses POST /api/flow-values-reports (1 API call for all flows).
-    Requires a valid conversion_metric_id.
+    Requires a valid conversion_metric_id (any metric works for engagement stats).
 
     Returns dict mapping flow_id -> {metric_name: value, ...}
     """
@@ -240,7 +271,9 @@ def fetch_flow_metrics(api_key, conversion_metric_id):
         logger.warning("No conversion_metric_id — skipping flow metrics")
         return {}
 
-    stats = _ENGAGEMENT_STATS + _REVENUE_STATS
+    stats = list(_ENGAGEMENT_STATS)
+    if include_revenue:
+        stats += _REVENUE_STATS
 
     body = _build_report_body("flow-values-report", stats, conversion_metric_id)
 

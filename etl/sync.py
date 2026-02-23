@@ -194,7 +194,8 @@ def _sync_klaviyo(api_key):
     """Pull Klaviyo campaigns, flows, lists, and performance metrics into the DB."""
     from etl.klaviyo_client import (
         fetch_campaigns, fetch_flows, fetch_lists,
-        fetch_placed_order_metric_id, fetch_campaign_metrics, fetch_flow_metrics,
+        fetch_placed_order_metric_id, fetch_any_metric_id,
+        fetch_campaign_metrics, fetch_flow_metrics,
     )
     from db import (
         upsert_klaviyo_campaign, upsert_klaviyo_flow, upsert_klaviyo_list,
@@ -221,16 +222,23 @@ def _sync_klaviyo(api_key):
     with get_db() as conn:
         conversion_metric_id = get_setting(conn, "klaviyo_conversion_metric_id")
 
+    include_revenue = bool(conversion_metric_id)
     if not conversion_metric_id:
         conversion_metric_id = fetch_placed_order_metric_id(api_key)
         if conversion_metric_id:
+            include_revenue = True
             with get_db() as conn:
                 set_setting(conn, "klaviyo_conversion_metric_id", conversion_metric_id)
             print(f"Auto-detected Placed Order metric: {conversion_metric_id}")
+        else:
+            # Fallback: any metric ID (API requires one even for engagement stats)
+            conversion_metric_id = fetch_any_metric_id(api_key)
+            if conversion_metric_id:
+                print(f"Using fallback metric for engagement stats: {conversion_metric_id}")
 
     try:
-        campaign_metrics = fetch_campaign_metrics(api_key, conversion_metric_id)
-        flow_metrics = fetch_flow_metrics(api_key, conversion_metric_id)
+        campaign_metrics = fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue)
+        flow_metrics = fetch_flow_metrics(api_key, conversion_metric_id, include_revenue)
 
         with get_db() as conn:
             for cid, metrics in campaign_metrics.items():
