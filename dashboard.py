@@ -2624,6 +2624,7 @@ elif page == "3PL Inventory":
             display_df = inv_df[display_cols].copy()
             display_df.columns = ["SKU", "Product", "On Hand", "Allocated",
                                   "Available", "Backordered", "Inbound"]
+            display_df = display_df.drop(columns=["Product"])
             display_df.insert(1, "Flavor", [
                 get_flavor(row["sku"], row["name"]) for _, row in inv_df[["sku", "name"]].iterrows()
             ])
