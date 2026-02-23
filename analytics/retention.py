@@ -448,3 +448,125 @@ def classify_sku_trend(sku):
         return "declining"
     else:
         return "stable"
+
+
+# ---------------------------------------------------------------------------
+# New vs Repeat customer summary helpers
+# ---------------------------------------------------------------------------
+
+@st.cache_data(ttl=300)
+def get_new_repeat_summary(start_date, end_date, source_filter=None):
+    """Compute new vs repeat customer summary for a date range.
+
+    A customer is 'new' if their first_order_date falls within
+    [start_date, end_date]. A customer is 'repeat' if they placed an order
+    in that range but their first_order_date is before start_date.
+
+    Args:
+        start_date: YYYY-MM-DD string
+        end_date:   YYYY-MM-DD string
+        source_filter: 'shopify' (DTC), 'amazon', or None (roll-up)
+
+    Returns dict with: new_customers, repeat_customers, new_revenue,
+        repeat_revenue, new_orders, repeat_orders, new_aov, repeat_aov
+    """
+    source_clause = ""
+    params_cust = [start_date, end_date, start_date, start_date, end_date]
+    params_rev = [start_date, end_date, start_date, start_date, end_date, start_date, start_date, end_date]
+
+    if source_filter:
+        source_clause = " AND o.source = ?"
+        params_cust.append(source_filter)
+        params_rev.append(source_filter)
+
+    with get_db() as conn:
+        # Customer counts
+        row = conn.execute(f"""
+            SELECT
+                SUM(CASE WHEN c.first_order_date >= ? AND c.first_order_date <= ?
+                         THEN 1 ELSE 0 END) AS new_customers,
+                SUM(CASE WHEN c.first_order_date < ?
+                         THEN 1 ELSE 0 END) AS repeat_customers
+            FROM (
+                SELECT DISTINCT o.customer_id
+                FROM orders o
+                WHERE o.order_date BETWEEN ? AND ?
+                {source_clause}
+            ) active
+            JOIN customers c ON active.customer_id = c.customer_id
+        """, params_cust).fetchone()
+
+        new_customers = int(row['new_customers'] or 0)
+        repeat_customers = int(row['repeat_customers'] or 0)
+
+        # Revenue and order counts
+        row2 = conn.execute(f"""
+            SELECT
+                SUM(CASE WHEN c.first_order_date >= ? AND c.first_order_date <= ?
+                         THEN oi.total_price ELSE 0 END) AS new_revenue,
+                SUM(CASE WHEN c.first_order_date < ?
+                         THEN oi.total_price ELSE 0 END) AS repeat_revenue,
+                COUNT(DISTINCT CASE WHEN c.first_order_date >= ? AND c.first_order_date <= ?
+                                    THEN o.order_id END) AS new_orders,
+                COUNT(DISTINCT CASE WHEN c.first_order_date < ?
+                                    THEN o.order_id END) AS repeat_orders
+            FROM orders o
+            JOIN customers c    ON o.customer_id = c.customer_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
+            WHERE o.order_date BETWEEN ? AND ?
+            {source_clause}
+        """, params_rev).fetchone()
+
+        new_revenue = float(row2['new_revenue'] or 0)
+        repeat_revenue = float(row2['repeat_revenue'] or 0)
+        new_orders = int(row2['new_orders'] or 0)
+        repeat_orders = int(row2['repeat_orders'] or 0)
+
+    return {
+        'new_customers': new_customers,
+        'repeat_customers': repeat_customers,
+        'new_revenue': round(new_revenue, 2),
+        'repeat_revenue': round(repeat_revenue, 2),
+        'new_orders': new_orders,
+        'repeat_orders': repeat_orders,
+        'new_aov': round(new_revenue / new_orders, 2) if new_orders else 0,
+        'repeat_aov': round(repeat_revenue / repeat_orders, 2) if repeat_orders else 0,
+    }
+
+
+@st.cache_data(ttl=300)
+def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
+    """Daily new vs repeat revenue for charting.
+
+    Args:
+        start_date: YYYY-MM-DD string
+        end_date:   YYYY-MM-DD string
+        source_filter: 'shopify', 'amazon', or None (roll-up)
+
+    Returns DataFrame with columns: order_date, new_revenue, repeat_revenue
+    """
+    source_clause = ""
+    params = [start_date, end_date, start_date, start_date, end_date]
+
+    if source_filter:
+        source_clause = " AND o.source = ?"
+        params.append(source_filter)
+
+    with get_db() as conn:
+        df = read_sql(f"""
+            SELECT
+                o.order_date,
+                SUM(CASE WHEN c.first_order_date >= ? AND c.first_order_date <= ?
+                         THEN oi.total_price ELSE 0 END) AS new_revenue,
+                SUM(CASE WHEN c.first_order_date < ?
+                         THEN oi.total_price ELSE 0 END) AS repeat_revenue
+            FROM orders o
+            JOIN customers c    ON o.customer_id = c.customer_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
+            WHERE o.order_date BETWEEN ? AND ?
+            {source_clause}
+            GROUP BY o.order_date
+            ORDER BY o.order_date
+        """, conn, params=params)
+
+    return df
