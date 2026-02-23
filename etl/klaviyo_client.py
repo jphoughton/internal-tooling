@@ -47,8 +47,7 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         client = get_client(api_key)
         campaigns = []
         resp = client.Campaigns.get_campaigns(
-            filter=f'equals(messages.channel,"email"),equals(status,"{status}")',
-            sort="-send_time",
+            filter="equals(messages.channel,'email')",
             page_size=min(limit, 50),
         )
 
@@ -68,7 +67,7 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         return campaigns
     except Exception as e:
         logger.error(f"Failed to fetch Klaviyo campaigns: {e}")
-        return []
+        raise
 
 
 def fetch_flows(api_key, status="live"):
@@ -82,7 +81,7 @@ def fetch_flows(api_key, status="live"):
         client = get_client(api_key)
         flows = []
         resp = client.Flows.get_flows(
-            filter=f'equals(status,"{status}")',
+            filter=f"equals(status,'{status}')",
             sort="name",
             page_size=50,
         )
@@ -103,7 +102,7 @@ def fetch_flows(api_key, status="live"):
         return flows
     except Exception as e:
         logger.error(f"Failed to fetch Klaviyo flows: {e}")
-        return []
+        raise
 
 
 def fetch_lists(api_key):
@@ -127,4 +126,4 @@ def fetch_lists(api_key):
         return lists
     except Exception as e:
         logger.error(f"Failed to fetch Klaviyo lists: {e}")
-        return []
+        raise
