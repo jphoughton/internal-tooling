@@ -178,20 +178,39 @@ def sync_amazon_rollup(conn):
             df[c] = df[c].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Backfill missing spend for recent days (up to today) using L7D average.
-    # The Google Sheet often lags a few days on spend data — NaN means "not yet
-    # reported", not "zero spend". We estimate those gap days so MTD pacing is
-    # accurate.
+    # Backfill missing/zero spend for past days (before today) using L7D average.
+    # The Google Sheet often lags a few days on spend data — NaN or 0 means
+    # "not yet reported", not "zero spend". We estimate those gap days so MTD
+    # pacing is accurate.
     if "spend" in df.columns:
-        from datetime import datetime
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        from datetime import datetime, timedelta
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         has_spend = df["spend"].notna() & (df["spend"] > 0)
         if has_spend.any():
             l7d_avg = df.loc[has_spend, "spend"].tail(7).mean()
-            gap_mask = df["spend"].isna() & (df["date"] < today_str)
+            # Backfill rows with NaN or 0 spend on days before today
+            gap_mask = ((df["spend"].isna()) | (df["spend"] == 0)) & (df["date"] < today_str)
             if gap_mask.any():
                 df.loc[gap_mask, "spend"] = round(l7d_avg, 2)
                 logger.info(f"Backfilled {gap_mask.sum()} days with L7D avg spend ${l7d_avg:.2f}")
+            # Add missing date rows between last sheet row and yesterday
+            max_date = df["date"].max()
+            if max_date < yesterday_str:
+                missing_dates = pd.date_range(
+                    start=pd.Timestamp(max_date) + timedelta(days=1),
+                    end=yesterday_str,
+                    freq="D",
+                )
+                if len(missing_dates) > 0:
+                    new_rows = pd.DataFrame({
+                        "date": [d.strftime("%Y-%m-%d") for d in missing_dates],
+                        "spend": round(l7d_avg, 2),
+                        "new_customers": 0,
+                        "new_customer_rev": 0,
+                    })
+                    df = pd.concat([df, new_rows], ignore_index=True)
+                    logger.info(f"Added {len(missing_dates)} missing date rows with L7D avg spend ${l7d_avg:.2f}")
 
     # Fill remaining NaN with 0 and drop rows with all-zero data
     for c in ["new_customers", "new_customer_rev", "spend"]:
