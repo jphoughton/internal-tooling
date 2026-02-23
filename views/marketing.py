@@ -23,7 +23,7 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
-    _TW_ADJ = ctx['biz_vars']['tw_adjustment_factor']
+    _TW_ADJ = ctx.get('biz_vars', {}).get('tw_adjustment_factor', 1.0)
 
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
@@ -1278,37 +1278,14 @@ def render(ctx):
                     with get_db() as conn:
                         conv_id = get_setting(conn, "klaviyo_conversion_metric_id")
                     include_revenue = bool(conv_id)
-                    debug_parts = [f"saved_id={conv_id}"]
                     if not conv_id:
-                        # Debug: call Metrics API directly and show response
-                        import requests as _dbg_requests
-                        _dbg_headers = {
-                            "Authorization": f"Klaviyo-API-Key {_mkt_klaviyo_key}",
-                            "revision": "2025-01-15",
-                            "Accept": "application/json",
-                        }
-                        try:
-                            _dbg_resp = _dbg_requests.get(
-                                "https://a.klaviyo.com/api/metrics",
-                                headers=_dbg_headers,
-                                timeout=15,
-                            )
-                            _dbg_data = _dbg_resp.json().get("data", [])
-                            _dbg_names = [d.get("attributes", {}).get("name", "?") for d in _dbg_data[:5]]
-                            st.info(f"Metrics API: {_dbg_resp.status_code} | {len(_dbg_data)} metrics | first 5: {_dbg_names}")
-                        except Exception as _dbg_e:
-                            st.warning(f"Metrics API debug call failed: {_dbg_e}")
-
                         conv_id = fetch_placed_order_metric_id(_mkt_klaviyo_key)
-                        debug_parts.append(f"placed_order={conv_id}")
                         if conv_id:
                             include_revenue = True
                             with get_db() as conn:
                                 set_setting(conn, "klaviyo_conversion_metric_id", conv_id)
                         else:
-                            # Fallback: any metric (engagement stats still work)
                             conv_id = fetch_any_metric_id(_mkt_klaviyo_key)
-                            debug_parts.append(f"fallback={conv_id}")
 
                     cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
                     fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
@@ -1320,21 +1297,13 @@ def render(ctx):
 
                     parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
                     if cm or fm:
-                        parts.append(f"metrics for {len(cm)} campaigns + {len(fm)} flows")
-                    else:
-                        parts.append("no metrics returned")
-                    parts.append(f"metric_id={'set' if conv_id else 'NONE'}")
+                        parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
                     if not include_revenue:
-                        parts.append("revenue skipped")
-                    st.success(" | ".join(parts))
-                    # Show sample data for debugging
-                    if cm:
-                        sample_id = next(iter(cm))
-                        st.info(f"Sample metrics ({sample_id}): {cm[sample_id]}")
+                        parts.append("revenue skipped (no Placed Order metric — set in Settings)")
+                    st.success(" — ".join(parts))
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
-                    import traceback
-                    st.code(traceback.format_exc())
 
         # Load from DB
         with get_db() as conn:
