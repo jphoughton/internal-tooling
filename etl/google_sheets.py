@@ -172,11 +172,31 @@ def sync_amazon_rollup(conn):
     # Parse dates to standard format
     df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=False).dt.strftime("%Y-%m-%d")
 
-    # Drop future rows with all zeros
+    # Parse numeric columns (strip $ and commas)
     for c in ["new_customers", "new_customer_rev", "spend"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Backfill missing spend for recent days (up to today) using L7D average.
+    # The Google Sheet often lags a few days on spend data — NaN means "not yet
+    # reported", not "zero spend". We estimate those gap days so MTD pacing is
+    # accurate.
+    if "spend" in df.columns:
+        from datetime import datetime
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        has_spend = df["spend"].notna() & (df["spend"] > 0)
+        if has_spend.any():
+            l7d_avg = df.loc[has_spend, "spend"].tail(7).mean()
+            gap_mask = df["spend"].isna() & (df["date"] < today_str)
+            if gap_mask.any():
+                df.loc[gap_mask, "spend"] = round(l7d_avg, 2)
+                logger.info(f"Backfilled {gap_mask.sum()} days with L7D avg spend ${l7d_avg:.2f}")
+
+    # Fill remaining NaN with 0 and drop rows with all-zero data
+    for c in ["new_customers", "new_customer_rev", "spend"]:
+        if c in df.columns:
+            df[c] = df[c].fillna(0)
 
     # Keep only rows that have any non-zero data
     data_cols = [c for c in ["new_customers", "new_customer_rev", "spend"] if c in df.columns]
