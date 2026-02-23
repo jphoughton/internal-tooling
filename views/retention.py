@@ -16,6 +16,7 @@ from analytics.retention import (
     get_cohort_sizes,
 )
 from analytics.waterfall import clear_waterfall_cache, get_aov_and_units
+from analytics.dtc_demand import build_repeat_customer_sku_month_table
 from analytics.sku_flavors import get_flavor
 from ui.components import render_freshness_badge, smart_date_filter, render_html_table
 
@@ -172,10 +173,20 @@ def render(ctx):
             _new_rpu = _metrics.get('new_customer_rev_per_unit', 0)
             _media_map = {e['month']: e for e in _media_plan_raw} if _media_plan_raw else {}
 
+            # Use forecast-SKU-only repeat units (same as Demand Forecast page)
+            _forecast_skus = ctx.get('forecast_skus')
+            _rep_sku_table = build_repeat_customer_sku_month_table(
+                _wf, horizon_months=12, forecast_skus=_forecast_skus,
+            )
+            _month_cols = [c for c in _rep_sku_table.columns if c.startswith('20')] if not _rep_sku_table.empty else []
+            _rep_units_by_month = {}
+            for m in _month_cols:
+                _rep_units_by_month[m] = _rep_sku_table[m].sum()
+
             _rev_rows = []
             for _, row in _wf.iterrows():
                 m = row['month']
-                repeat_rev = round(row.get('repeat_units', 0) * _repeat_rpu)
+                repeat_rev = round(_rep_units_by_month.get(m, 0) * _repeat_rpu)
                 # New customer rev: spend × ROAS when available, else units × rev_per_unit
                 entry = _media_map.get(m, {})
                 spend = entry.get('spend', 0) or 0
