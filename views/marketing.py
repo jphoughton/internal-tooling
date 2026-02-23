@@ -1218,7 +1218,12 @@ def render(ctx):
                         for fid, m in fm.items():
                             update_klaviyo_flow_metrics(conn, fid, m)
 
-                    st.success(f"Synced {len(campaigns)} campaigns, {len(flows)} flows — metrics updated.")
+                    parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
+                    if cm or fm:
+                        parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
+                    elif not conv_id:
+                        parts.append("revenue metrics skipped (no Placed Order metric found — set in Settings)")
+                    st.success(" — ".join(parts))
                     st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
@@ -1318,7 +1323,14 @@ def render(ctx):
 
         with kl_tab3:
             if kl_lists:
-                render_html_table(pd.DataFrame(kl_lists))
+                list_df = pd.DataFrame(kl_lists)
+                display = pd.DataFrame()
+                display["List Name"] = list_df["name"]
+                display["Created"] = list_df["created"].apply(
+                    lambda x: str(x)[:10] if x else "—")
+                display["Updated"] = list_df["updated"].apply(
+                    lambda x: str(x)[:10] if x else "—")
+                render_html_table(display, max_height=400)
             else:
                 st.info("No lists synced yet.")
     else:

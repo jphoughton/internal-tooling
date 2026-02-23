@@ -471,12 +471,13 @@ def render(ctx):
         with get_db() as conn:
             set_setting(conn, "klaviyo_api_key", klaviyo_key)
         st.success("Klaviyo API key saved.")
+        st.rerun()
 
     if _klaviyo_key:
         with get_db() as conn:
             _kl_last_sync = conn.execute(
                 "SELECT created_at FROM sync_log WHERE source = 'klaviyo' "
-                "ORDER BY created_at DESC LIMIT 1"
+                "AND status = 'success' ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
             _kl_metric_id = get_setting(conn, "klaviyo_conversion_metric_id", "")
         if _kl_last_sync:
@@ -494,6 +495,7 @@ def render(ctx):
                 set_setting(conn, "klaviyo_conversion_metric_id",
                             st.session_state.get("klaviyo_metric_id", ""))
             st.success("Conversion metric ID saved.")
+            st.rerun()
     else:
         st.caption("Enter your API key above to enable Klaviyo integration.")
 
