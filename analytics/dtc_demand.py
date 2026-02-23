@@ -135,25 +135,25 @@ def get_amazon_sku_velocity(lookback_days=30):
             GROUP BY sku
         """).fetchall()
         trend_map = {r["sku"]: {
-            "avg_7d": r["avg_7d"] or 0,
-            "avg_30d": r["avg_30d"] or 0,
-            "avg_rev_7d": r["avg_rev_7d"] or 0,
-            "avg_rev_30d": r["avg_rev_30d"] or 0,
+            "avg_7d": float(r["avg_7d"] or 0),
+            "avg_30d": float(r["avg_30d"] or 0),
+            "avg_rev_7d": float(r["avg_rev_7d"] or 0),
+            "avg_rev_30d": float(r["avg_rev_30d"] or 0),
         } for r in trend_rows}
 
     result = {}
     for r in rows:
         sku = r["sku"]
         trends = trend_map.get(sku, {"avg_7d": 0, "avg_30d": 0, "avg_rev_7d": 0, "avg_rev_30d": 0})
-        total_units = r["total_units"] or 0
-        total_rev = r["total_revenue"] or 0
+        total_units = float(r["total_units"] or 0)
+        total_rev = float(r["total_revenue"] or 0)
         rev_per_unit = total_rev / total_units if total_units > 0 else 0
         result[sku] = {
-            "avg_daily": r["avg_daily"] or 0,
+            "avg_daily": float(r["avg_daily"] or 0),
             "total_units": total_units,
             "total_revenue": total_rev,
             "rev_per_unit": rev_per_unit,
-            "days_of_data": r["days_of_data"] or 0,
+            "days_of_data": int(r["days_of_data"] or 0),
             "avg_7d": trends["avg_7d"],
             "avg_30d": trends["avg_30d"],
             "avg_rev_7d": trends["avg_rev_7d"],
