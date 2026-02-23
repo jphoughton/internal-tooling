@@ -8,6 +8,7 @@ Usage:
 """
 import io
 import logging
+import re
 import pandas as pd
 import requests
 
@@ -67,8 +68,15 @@ def sync_google_sheet(conn, sheet_id=None, gid=None):
     if df.empty:
         return -1
 
-    # Clean column names: strip whitespace, lowercase, replace spaces with underscores
-    df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+    # Clean column names: strip whitespace, lowercase, replace spaces/hyphens with
+    # underscores, then remove any remaining non-alphanumeric chars (e.g. ?, %, /)
+    # to prevent them from being misinterpreted as SQL placeholders by psycopg2.
+    df.columns = [
+        re.sub(r'[^a-z0-9_]', '', c.strip().lower().replace(' ', '_').replace('-', '_'))
+        for c in df.columns
+    ]
+    # Guard against columns that become empty after sanitization (e.g. "?" or "%")
+    df.columns = [c if c else f'col_{i}' for i, c in enumerate(df.columns)]
 
     # Create table dynamically based on columns
     # All columns stored as TEXT for flexibility (the source data types vary)

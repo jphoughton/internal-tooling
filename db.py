@@ -148,7 +148,10 @@ class ConnectionWrapper:
     def execute(self, sql, params=None):
         sql = _translate_sql(sql)
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(sql, params or ())
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
         return _CursorWrapper(cur)
 
     def commit(self):
