@@ -1719,6 +1719,9 @@ elif page == "Demand Forecast":
             if m not in existing_months:
                 spend_df = pd.concat([spend_df, pd.DataFrame([{"month": m, "spend": 5000.0, "new_customer_roas": 2.0}])], ignore_index=True)
         spend_df = spend_df[spend_df["month"].isin(horizon_months_list)].sort_values("month").reset_index(drop=True)
+        spend_df["month"] = spend_df["month"].astype(str)
+        spend_df["spend"] = pd.to_numeric(spend_df["spend"], errors="coerce").fillna(0.0)
+        spend_df["new_customer_roas"] = pd.to_numeric(spend_df["new_customer_roas"], errors="coerce").fillna(0.7)
 
         edited_spend = st.data_editor(
             spend_df,
@@ -1760,6 +1763,8 @@ elif page == "Demand Forecast":
             if m not in existing_amz_months:
                 amz_rev_df = pd.concat([amz_rev_df, pd.DataFrame([{"month": m, "revenue": 0.0}])], ignore_index=True)
         amz_rev_df = amz_rev_df[amz_rev_df["month"].isin(amz_horizon_months)].sort_values("month").reset_index(drop=True)
+        amz_rev_df["month"] = amz_rev_df["month"].astype(str)
+        amz_rev_df["revenue"] = pd.to_numeric(amz_rev_df["revenue"], errors="coerce").fillna(0.0)
 
         edited_amz_rev = st.data_editor(
             amz_rev_df,
@@ -2310,6 +2315,8 @@ elif page == "Projected Inventory":
                     inbound_rows.append(row_data)
 
                 inbound_edit_df = pd.DataFrame(inbound_rows)
+                for m in month_cols:
+                    inbound_edit_df[m] = pd.to_numeric(inbound_edit_df[m], errors="coerce").fillna(0).astype(int)
 
                 # Rename month columns to short labels for display
                 inbound_display_cols = {"SKU": "SKU", "Flavor": "Flavor"}
