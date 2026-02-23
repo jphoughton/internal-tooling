@@ -27,7 +27,7 @@ Inventory/
 ├── run.sh                 # Launch script
 ├── launch.command         # macOS double-click launcher
 │
-├── pages/                 # One file per dashboard page — each exports render(ctx)
+├── views/                 # One file per dashboard page — each exports render(ctx)
 │   ├── overview.py        # KPIs, revenue trends, source split, inventory snapshot
 │   ├── retention.py       # Cohort matrix heatmap, retention curve, seasonality editor
 │   ├── demand_forecast.py # Waterfall chart, media spend editor, 5 SKU-by-month tables
@@ -133,7 +133,7 @@ Shopify Admin ──────► shopify_client.py ──────► cust
 Packiyo 3PL ────────► packiyo_client.py ──────► [real-time only]──┤
   (inventory)          get_inventory()                             ├──► reorder.py (runway sim)
                                                                     │
-FBA Inventory ──────► amazon_inventory.py ────► [real-time only]──┘    ──► pages/*.py
+FBA Inventory ──────► amazon_inventory.py ────► [real-time only]──┘    ──► views/*.py
                                                                             (11 pages)
 Google Sheets ──────► google_sheets.py ───────► google_sheet_data
   (public CSV)
@@ -239,26 +239,26 @@ Day-by-day forward simulation:
 
 ## Dashboard Pages
 
-Each page is a standalone module in `pages/` exporting a `render(ctx)` function. The `ctx` dict provides shared cached functions and state from the router.
+Each page is a standalone module in `views/` exporting a `render(ctx)` function. The `ctx` dict provides shared cached functions and state from the router.
 
 | #   | Page                | Module                         | Key Features                                                 |
 | --- | ------------------- | ------------------------------ | ------------------------------------------------------------ |
-| 1   | Overview            | `pages/overview.py`            | KPIs, revenue trends by source, top SKUs, inventory snapshot |
-| 2   | Retention           | `pages/retention.py`           | Cohort heatmap, retention curve, seasonality editor          |
-| 3   | Demand Forecast     | `pages/demand_forecast.py`     | Waterfall chart, media spend editor, 5 SKU-by-month tables   |
-| 4   | Projected Inventory | `pages/projected_inventory.py` | Planned inbound editor, inventory runway projections         |
-| 5   | 3PL Inventory       | `pages/inventory_3pl.py`       | Packiyo stock levels, forecast vs inventory comparison       |
-| 6   | Amazon Inventory    | `pages/inventory_amazon.py`    | FBA stock levels, forecast vs inventory comparison           |
-| 7   | Reorder Alerts      | `pages/reorder_alerts.py`      | Urgency-ranked table, runway charts, timeline Gantt          |
-| 8   | FBA Transfers       | `pages/fba_transfers.py`       | Transfer urgency alerts, 3PL→FBA timeline Gantt              |
-| 9   | Marketing           | `pages/marketing.py`           | Pacing tables, DoD/WoW/MoM with gradient coloring            |
-| 10  | Financials          | `pages/financials.py`          | Bank transaction import, P&L, cash flow charts               |
-| 11  | Settings            | `pages/settings.py`            | API credentials, data imports, Google Sheets sync            |
+| 1   | Overview            | `views/overview.py`            | KPIs, revenue trends by source, top SKUs, inventory snapshot |
+| 2   | Retention           | `views/retention.py`           | Cohort heatmap, retention curve, seasonality editor          |
+| 3   | Demand Forecast     | `views/demand_forecast.py`     | Waterfall chart, media spend editor, 5 SKU-by-month tables   |
+| 4   | Projected Inventory | `views/projected_inventory.py` | Planned inbound editor, inventory runway projections         |
+| 5   | 3PL Inventory       | `views/inventory_3pl.py`       | Packiyo stock levels, forecast vs inventory comparison       |
+| 6   | Amazon Inventory    | `views/inventory_amazon.py`    | FBA stock levels, forecast vs inventory comparison           |
+| 7   | Reorder Alerts      | `views/reorder_alerts.py`      | Urgency-ranked table, runway charts, timeline Gantt          |
+| 8   | FBA Transfers       | `views/fba_transfers.py`       | Transfer urgency alerts, 3PL→FBA timeline Gantt              |
+| 9   | Marketing           | `views/marketing.py`           | Pacing tables, DoD/WoW/MoM with gradient coloring            |
+| 10  | Financials          | `views/financials.py`          | Bank transaction import, P&L, cash flow charts               |
+| 11  | Settings            | `views/settings.py`            | API credentials, data imports, Google Sheets sync            |
 
 ### Page Module Convention
 
 ```python
-# pages/example.py
+# views/example.py
 """Example page."""
 import streamlit as st
 from db import get_db, read_sql
@@ -460,7 +460,7 @@ git commit -m "fix: emergency hotfix" --no-verify
 
 ### Architecture
 
-- **Page changes go in `pages/` modules** — dashboard.py is a thin router, do NOT add page code to it
+- **Page changes go in `views/` modules** — dashboard.py is a thin router, do NOT add page code to it
 - **New UI components go in `ui/`** — reusable widgets, chart factories, table formatters
 - **Shared constants go in `utils/constants.py`** — no magic numbers in page modules
 - **Shared date math goes in `utils/date_helpers.py`** — do NOT define \_month_str etc. locally

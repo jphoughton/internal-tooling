@@ -541,35 +541,35 @@ _ctx = {
 }
 
 if page == "Overview":
-    from pages.overview import render
+    from views.overview import render
     render(_ctx)
 elif page == "Retention":
-    from pages.retention import render
+    from views.retention import render
     render(_ctx)
 elif page == "Demand Forecast":
-    from pages.demand_forecast import render
+    from views.demand_forecast import render
     render(_ctx)
 elif page == "Projected Inventory":
-    from pages.projected_inventory import render
+    from views.projected_inventory import render
     render(_ctx)
 elif page == "3PL Inventory":
-    from pages.inventory_3pl import render
+    from views.inventory_3pl import render
     render(_ctx)
 elif page == "Amazon Inventory":
-    from pages.inventory_amazon import render
+    from views.inventory_amazon import render
     render(_ctx)
 elif page == "Reorder Alerts":
-    from pages.reorder_alerts import render
+    from views.reorder_alerts import render
     render(_ctx)
 elif page == "FBA Transfers":
-    from pages.fba_transfers import render
+    from views.fba_transfers import render
     render(_ctx)
 elif page == "Marketing":
-    from pages.marketing import render
+    from views.marketing import render
     render(_ctx)
 elif page == "Financials":
-    from pages.financials import render
+    from views.financials import render
     render(_ctx)
 elif page == "Settings":
-    from pages.settings import render
+    from views.settings import render
     render(_ctx)

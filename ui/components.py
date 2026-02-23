@@ -191,11 +191,11 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
 
     dc1, dc2, dc_spacer = st.columns([1, 1, 4])
     with dc1:
-        start = st.date_input('From', value=default_start, min_value=data_min,
+        start = st.date_input('From', min_value=data_min,
                                max_value=data_max, key=f'{key_prefix}_start',
                                label_visibility='collapsed')
     with dc2:
-        end = st.date_input('To', value=default_end, min_value=data_min,
+        end = st.date_input('To', min_value=data_min,
                              max_value=data_max, key=f'{key_prefix}_end',
                              label_visibility='collapsed')
     return start, end
