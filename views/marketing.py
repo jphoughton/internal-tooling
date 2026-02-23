@@ -1182,29 +1182,38 @@ def render(ctx):
         with kl_tab1:
             if st.button("Load Campaigns", key="kl_load_campaigns"):
                 with st.spinner("Fetching from Klaviyo..."):
-                    from etl.klaviyo_client import fetch_campaigns
-                    kl_campaigns = fetch_campaigns(_mkt_klaviyo_key, status="sent")
-                    if kl_campaigns:
-                        render_html_table(pd.DataFrame(kl_campaigns))
-                    else:
-                        st.warning("No sent campaigns found.")
+                    try:
+                        from etl.klaviyo_client import fetch_campaigns
+                        kl_campaigns = fetch_campaigns(_mkt_klaviyo_key)
+                        if kl_campaigns:
+                            render_html_table(pd.DataFrame(kl_campaigns))
+                        else:
+                            st.warning("No email campaigns found.")
+                    except Exception as e:
+                        st.error(f"Failed to fetch campaigns: {e}")
         with kl_tab2:
             if st.button("Load Flows", key="kl_load_flows"):
                 with st.spinner("Fetching from Klaviyo..."):
-                    from etl.klaviyo_client import fetch_flows
-                    kl_flows = fetch_flows(_mkt_klaviyo_key)
-                    if kl_flows:
-                        render_html_table(pd.DataFrame(kl_flows))
-                    else:
-                        st.warning("No flows found.")
+                    try:
+                        from etl.klaviyo_client import fetch_flows
+                        kl_flows = fetch_flows(_mkt_klaviyo_key)
+                        if kl_flows:
+                            render_html_table(pd.DataFrame(kl_flows))
+                        else:
+                            st.warning("No flows found.")
+                    except Exception as e:
+                        st.error(f"Failed to fetch flows: {e}")
         with kl_tab3:
             if st.button("Load Lists", key="kl_load_lists"):
                 with st.spinner("Fetching from Klaviyo..."):
-                    from etl.klaviyo_client import fetch_lists
-                    kl_lists = fetch_lists(_mkt_klaviyo_key)
-                    if kl_lists:
-                        render_html_table(pd.DataFrame(kl_lists))
-                    else:
-                        st.warning("No lists found.")
+                    try:
+                        from etl.klaviyo_client import fetch_lists
+                        kl_lists = fetch_lists(_mkt_klaviyo_key)
+                        if kl_lists:
+                            render_html_table(pd.DataFrame(kl_lists))
+                        else:
+                            st.warning("No lists found.")
+                    except Exception as e:
+                        st.error(f"Failed to fetch lists: {e}")
     else:
         st.info("Add your Klaviyo API key on the **Settings** page to see email/SMS analytics.")
