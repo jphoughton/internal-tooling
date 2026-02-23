@@ -1,4 +1,5 @@
 """Retention page."""
+import json as _json
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -8,14 +9,15 @@ from db import (
     get_db,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
     get_seasonal_indices, get_setting, set_setting, upsert_seasonal_index,
+    get_media_spend,
 )
 from analytics.retention import (
     get_customer_cohort_data,
     get_cohort_sizes,
 )
-from analytics.waterfall import clear_waterfall_cache
+from analytics.waterfall import clear_waterfall_cache, get_aov_and_units
 from analytics.sku_flavors import get_flavor
-from ui.components import render_freshness_badge, smart_date_filter
+from ui.components import render_freshness_badge, smart_date_filter, render_html_table
 
 
 @st.cache_data(ttl=300)
@@ -146,6 +148,84 @@ def render(ctx):
                                   xaxis=dict(gridcolor='#E8EDF3'),
                                   yaxis=dict(gridcolor='#E8EDF3'))
                 st.plotly_chart(fig, use_container_width=True)
+
+    # --- Projected 12-Month Revenue ---
+    st.divider()
+    st.subheader('Projected Revenue (Next 12 Months)')
+    st.caption('Repeat revenue from existing cohorts + new customer revenue from media spend plan.')
+
+    _cached_waterfall = ctx.get('cached_waterfall')
+    _cached_aov = ctx.get('cached_aov_and_units')
+    _load_seasonal_json = ctx.get('load_seasonal_json')
+
+    if _cached_waterfall and _cached_aov:
+        with get_db() as conn:
+            _media_plan_raw = get_media_spend(conn, source='All Sources')
+            _seasonal_json = _load_seasonal_json() if _load_seasonal_json else None
+
+        _media_plan_json = _json.dumps(_media_plan_raw, sort_keys=True)
+        _wf = _cached_waterfall(_media_plan_json, None, 12, _seasonal_json)
+        _metrics = _cached_aov(None)
+
+        if not _wf.empty and _metrics:
+            _repeat_rpu = _metrics.get('repeat_rev_per_unit', 0)
+            _new_rpu = _metrics.get('new_customer_rev_per_unit', 0)
+            _media_map = {e['month']: e for e in _media_plan_raw} if _media_plan_raw else {}
+
+            _rev_rows = []
+            for _, row in _wf.iterrows():
+                m = row['month']
+                repeat_rev = round(row.get('repeat_units', 0) * _repeat_rpu)
+                # New customer rev: spend × ROAS when available, else units × rev_per_unit
+                entry = _media_map.get(m, {})
+                spend = entry.get('spend', 0) or 0
+                roas = entry.get('new_customer_roas', 0) or 0
+                if spend > 0 and roas > 0:
+                    new_rev = round(spend * roas)
+                else:
+                    new_rev = round(row.get('new_customer_units', 0) * _new_rpu)
+                total = repeat_rev + new_rev
+                _rev_rows.append({
+                    'Month': m,
+                    'Repeat Revenue': f'${repeat_rev:,.0f}',
+                    'New Customer Revenue': f'${new_rev:,.0f}',
+                    'Total Revenue': f'${total:,.0f}',
+                    '_repeat': repeat_rev,
+                    '_new': new_rev,
+                    '_total': total,
+                })
+
+            _rev_df = pd.DataFrame(_rev_rows)
+            _totals = {
+                'Month': 'Total',
+                'Repeat Revenue': f'${sum(r["_repeat"] for r in _rev_rows):,.0f}',
+                'New Customer Revenue': f'${sum(r["_new"] for r in _rev_rows):,.0f}',
+                'Total Revenue': f'${sum(r["_total"] for r in _rev_rows):,.0f}',
+            }
+            _display_df = _rev_df[['Month', 'Repeat Revenue', 'New Customer Revenue', 'Total Revenue']]
+            _display_df = pd.concat([_display_df, pd.DataFrame([_totals])], ignore_index=True)
+            render_html_table(_display_df)
+
+            # Stacked bar chart
+            _chart_df = _rev_df[['Month', '_repeat', '_new']].rename(columns={'_repeat': 'Repeat', '_new': 'New Customer'})
+            _melted = _chart_df.melt(id_vars='Month', var_name='Segment', value_name='Revenue')
+            fig_rev = px.bar(
+                _melted, x='Month', y='Revenue', color='Segment',
+                color_discrete_map={'Repeat': '#0F3557', 'New Customer': '#3B82F6'},
+                barmode='stack',
+            )
+            fig_rev.update_layout(
+                height=320, margin=dict(l=0, r=0, t=10, b=0),
+                yaxis=dict(tickprefix='$', tickformat=',.0f', gridcolor='#E8EDF3'),
+                xaxis=dict(gridcolor='#E8EDF3'),
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02),
+            )
+            st.plotly_chart(fig_rev, use_container_width=True)
+        else:
+            st.info('No waterfall data available. Configure media spend in the Demand Forecast page.')
+    else:
+        st.info('Revenue projection requires the waterfall engine. Ensure media spend is configured.')
 
     # --- Seasonality Factors ---
     st.divider()
