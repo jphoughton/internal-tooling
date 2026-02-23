@@ -31,9 +31,9 @@ def _get_pool():
                 'DATABASE_URL is not set. '
                 'Set it in .env or Railway service variables.'
             )
-        _pool = psycopg2.pool.SimpleConnectionPool(
+        _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
-            maxconn=10,
+            maxconn=20,
             dsn=url,
             connect_timeout=10,
         )

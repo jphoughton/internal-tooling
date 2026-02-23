@@ -134,15 +134,17 @@ def test_connection():
         return False, f"Connection test failed: {e}"
 
 
-def fetch_orders(conn, since_date=None, until_date=None, on_progress=None):
+def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
+                 commit_per_page=False):
     """
     Fetch orders from Shopify Admin API and insert into database.
 
     Args:
-        conn: SQLite connection
+        conn: Database connection
         since_date: ISO date string (YYYY-MM-DD). Defaults to 30 days ago.
         until_date: ISO date string. Defaults to today.
         on_progress: Optional callback(orders_so_far, page_number) for progress reporting.
+        commit_per_page: If True, commit after each page of 250 orders (for backfills).
 
     Returns:
         Number of orders fetched.
@@ -243,6 +245,9 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None):
                 upsert_sku(conn, sku, product_name, None, order_date, "shopify")
 
             order_count += 1
+
+        if commit_per_page:
+            conn.commit()
 
         if on_progress:
             on_progress(order_count, page_number)

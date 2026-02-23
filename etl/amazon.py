@@ -77,12 +77,11 @@ def _download_report(reports_api, document_id):
 
 def fetch_sales_report(conn, since_date=None, until_date=None):
     """
-    PRIMARY METHOD: Fetch Sales & Traffic report (daily aggregated by ASIN).
-    ASINs are mapped to master SKUs via amazon_sku_map.
-    Inserts directly into daily_sku_sales — no order-level data needed.
+    Fetch Sales & Traffic reports one day at a time (by ASIN).
 
-    The S&T report is JSON with salesAndTrafficByAsin and salesAndTrafficByDate.
-    Each entry has parentAsin (the ASIN string) and childAsin.
+    The S&T report's salesAndTrafficByAsin section aggregates across the
+    entire date range and has no per-row date field.  Requesting one day at
+    a time gives us accurate daily-SKU granularity.
 
     Returns number of daily-ASIN records inserted.
     """
@@ -96,62 +95,72 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
         until_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     reports_api = Reports(credentials=credentials, marketplace=get_marketplace())
-
-    # Request report — aggregated daily by ASIN (CHILD level)
-    report_response = reports_api.create_report(
-        reportType="GET_SALES_AND_TRAFFIC_REPORT",
-        dataStartTime=f"{since_date}T00:00:00Z",
-        dataEndTime=f"{until_date}T23:59:59Z",
-        reportOptions={
-            "dateGranularity": "DAY",
-            "asinGranularity": "CHILD",
-        },
-        marketplaceIds=[cfg.AMAZON_MARKETPLACE_ID],
-    )
-
-    report_id = report_response.payload["reportId"]
-    print(f"Amazon Sales & Traffic report requested: {report_id}")
-
-    document_id = _wait_for_report(reports_api, report_id)
-    if not document_id:
-        print("Report generation failed or timed out. Falling back to flat-file.")
-        return fetch_flat_file_orders(conn, since_date, until_date)
-
-    # Download and decompress report
-    text = _download_report(reports_api, document_id)
-    report_data = json.loads(text)
-
-    # Get date range from report spec
-    spec = report_data.get("reportSpecification", {})
-    report_date = spec.get("dataStartTime", since_date)[:10]
-
     record_count = 0
-    for entry in report_data.get("salesAndTrafficByAsin", []):
-        # parentAsin and childAsin are ASIN strings (not nested objects)
-        asin = entry.get("childAsin") or entry.get("parentAsin", "")
-        if not asin:
-            continue
 
-        sales = entry.get("salesByAsin", {})
-        units = int(sales.get("unitsOrdered", 0))
-        revenue = float(sales.get("orderedProductSales", {}).get("amount", 0))
+    current = datetime.strptime(since_date, "%Y-%m-%d")
+    end = datetime.strptime(until_date, "%Y-%m-%d")
 
-        # Use the report date (S&T reports are typically per-day)
-        date = entry.get("date", report_date)[:10]
+    while current <= end:
+        day_str = current.strftime("%Y-%m-%d")
+        print(f"  Requesting S&T for {day_str}...", flush=True)
 
-        # Map ASIN to master SKU
-        master_sku = map_amazon_sku(asin, asin)  # ASIN is both the identifier
+        try:
+            report_response = reports_api.create_report(
+                reportType="GET_SALES_AND_TRAFFIC_REPORT",
+                dataStartTime=f"{day_str}T00:00:00Z",
+                dataEndTime=f"{day_str}T23:59:59Z",
+                reportOptions={
+                    "dateGranularity": "DAY",
+                    "asinGranularity": "CHILD",
+                },
+                marketplaceIds=[cfg.AMAZON_MARKETPLACE_ID],
+            )
 
-        conn.execute("""
-            INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
-            VALUES (?, ?, 'amazon', ?, ?, 0)
-            ON CONFLICT(sale_date, sku, source) DO UPDATE SET
-                units_sold = excluded.units_sold,
-                revenue = excluded.revenue
-        """, (date, master_sku, units, revenue))
+            report_id = report_response.payload["reportId"]
+            document_id = _wait_for_report(reports_api, report_id)
+            if not document_id:
+                print(f"  Skipping {day_str} — report failed", flush=True)
+                current += timedelta(days=1)
+                continue
 
-        upsert_sku(conn, master_sku, None, None, date, "amazon")
-        record_count += 1
+            text = _download_report(reports_api, document_id)
+            report_data = json.loads(text)
+
+            day_count = 0
+            for entry in report_data.get("salesAndTrafficByAsin", []):
+                asin = entry.get("childAsin") or entry.get("parentAsin", "")
+                if not asin:
+                    continue
+
+                sales = entry.get("salesByAsin", {})
+                units = int(sales.get("unitsOrdered", 0))
+                revenue = float(sales.get("orderedProductSales", {}).get("amount", 0))
+
+                master_sku = map_amazon_sku(asin, asin)
+
+                conn.execute("""
+                    INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
+                    VALUES (?, ?, 'amazon', ?, ?, 0)
+                    ON CONFLICT(sale_date, sku, source) DO UPDATE SET
+                        units_sold = excluded.units_sold,
+                        revenue = excluded.revenue
+                """, (day_str, master_sku, units, revenue))
+
+                upsert_sku(conn, master_sku, None, None, day_str, "amazon")
+                day_count += 1
+
+            record_count += day_count
+            print(f"  {day_str}: {day_count} SKUs, done", flush=True)
+
+        except Exception as e:
+            err_str = str(e)
+            if 'QuotaExceeded' in err_str:
+                print(f"  {day_str}: Rate limited — waiting 60s...", flush=True)
+                time.sleep(60)
+                continue  # Retry same day
+            print(f"  {day_str}: ERROR — {e}", flush=True)
+
+        current += timedelta(days=1)
 
     return record_count
 

@@ -1,6 +1,11 @@
 """
 ETL orchestration: coordinates daily sync from all sources.
+
+Supports parallel backfill via run_parallel_backfill() which splits
+date ranges into chunks and processes them concurrently.
 """
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync
 import config as cfg
@@ -119,22 +124,15 @@ def run_daily_sync(full_refresh=False, on_status=None):
 
 
 def _sync_amazon(full_refresh):
-    """Pull Amazon order data for demand forecasting.
-
-    Uses the flat-file all-orders report as the primary source because:
-    - It includes both SKU and ASIN columns (needed for SKU mapping)
-    - It handles longer date ranges than Sales & Traffic reports
-    - It provides order-level detail
-    """
-    from etl.amazon import fetch_flat_file_orders
+    """Pull Amazon order data for demand forecasting via Sales & Traffic report."""
+    from etl.amazon import fetch_sales_report
 
     with get_db() as conn:
-        # Amazon flat-file reports only return ~30 days of data
         since = _get_since_date(conn, "amazon", full_refresh, max_days=30)
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
         print(f"Amazon sales sync: {since} to {today}")
-        count = fetch_flat_file_orders(conn, since_date=since, until_date=today)
+        count = fetch_sales_report(conn, since_date=since, until_date=today)
         log_sync(conn, "amazon", today, count)
 
     return count
@@ -193,6 +191,198 @@ def _get_since_date(conn, source, full_refresh, max_days=365 * 5):
         return (datetime.utcnow() - timedelta(days=max_days)).strftime("%Y-%m-%d")
 
 
-if __name__ == "__main__":
+def _date_chunks(start_date, end_date, chunk_months=3):
+    """Split a date range into chunks of N months. Returns list of (start, end) string tuples."""
+    chunks = []
+    current = datetime.strptime(start_date, '%Y-%m-%d')
+    end = datetime.strptime(end_date, '%Y-%m-%d')
+    while current < end:
+        chunk_end = current + timedelta(days=chunk_months * 30)
+        if chunk_end > end:
+            chunk_end = end
+        chunks.append((current.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')))
+        current = chunk_end + timedelta(days=1)
+    return chunks
+
+
+_print_lock = threading.Lock()
+
+
+def _tprint(msg):
+    """Thread-safe print."""
+    with _print_lock:
+        print(msg, flush=True)
+
+
+def _backfill_amazon_sales_chunk(since, until, chunk_label):
+    """Backfill Amazon sales for a single date chunk."""
+    from etl.amazon import fetch_sales_report
+    _tprint(f'[Amazon Sales {chunk_label}] {since} → {until}')
+    try:
+        with get_db() as conn:
+            count = fetch_sales_report(conn, since_date=since, until_date=until)
+        _tprint(f'[Amazon Sales {chunk_label}] Done: {count} records')
+        return ('amazon_sales', chunk_label, count)
+    except Exception as e:
+        _tprint(f'[Amazon Sales {chunk_label}] ERROR: {e}')
+        return ('amazon_sales', chunk_label, f'ERROR: {e}')
+
+
+def _backfill_amazon_retention_chunk(since, until, chunk_label):
+    """Backfill Amazon retention for a single date chunk."""
+    from etl.amazon import fetch_fulfillment_data
+    _tprint(f'[Amazon Retention {chunk_label}] {since} → {until}')
+    try:
+        with get_db() as conn:
+            count = fetch_fulfillment_data(conn, since_date=since, until_date=until)
+        _tprint(f'[Amazon Retention {chunk_label}] Done: {count} records')
+        return ('amazon_retention', chunk_label, count)
+    except Exception as e:
+        _tprint(f'[Amazon Retention {chunk_label}] ERROR: {e}')
+        return ('amazon_retention', chunk_label, f'ERROR: {e}')
+
+
+def _backfill_shopify_chunk(since, until, chunk_label):
+    """Backfill Shopify orders for a single date chunk, committing per page."""
+    from etl.shopify_client import fetch_orders
+
+    def _progress(orders_so_far, page_number):
+        _tprint(f'[Shopify {chunk_label}] {orders_so_far:,} orders (page {page_number})')
+
+    _tprint(f'[Shopify {chunk_label}] {since} → {until}')
+    try:
+        with get_db() as conn:
+            count = fetch_orders(conn, since_date=since, until_date=until,
+                                 on_progress=_progress, commit_per_page=True)
+        _tprint(f'[Shopify {chunk_label}] Done: {count} orders')
+        return ('shopify', chunk_label, count)
+    except Exception as e:
+        _tprint(f'[Shopify {chunk_label}] ERROR: {e}')
+        return ('shopify', chunk_label, f'ERROR: {e}')
+
+
+def run_parallel_backfill(shopify_years=4, amazon_months=6,
+                          amazon_workers=2, shopify_workers=3,
+                          chunk_months=3):
+    """
+    Parallel backfill of historical data.
+
+    Splits the date range into chunks and processes them concurrently:
+    - Amazon Sales: N workers, last amazon_months only (S&T data limited)
+    - Amazon Retention: N workers, last amazon_months
+    - Shopify: M workers, last shopify_years
+
+    Args:
+        shopify_years: How many years of Shopify data to backfill (default 4).
+        amazon_months: How many months of Amazon data to backfill (default 6).
+        amazon_workers: Max concurrent Amazon API threads (default 2).
+                       Keep <=3 to avoid SP-API QuotaExceeded errors.
+        shopify_workers: Max concurrent Shopify API threads (default 3).
+                        Keep <=4 to respect leaky bucket rate limit.
+        chunk_months: Size of each date chunk in months (default 3).
+    """
+    init_db()
+
+    end_date = datetime.utcnow().strftime('%Y-%m-%d')
+    shopify_start = (datetime.utcnow() - timedelta(days=shopify_years * 365)).strftime('%Y-%m-%d')
+    amazon_start = (datetime.utcnow() - timedelta(days=amazon_months * 30)).strftime('%Y-%m-%d')
+
+    shopify_chunks = _date_chunks(shopify_start, end_date, chunk_months)
+    amazon_chunks = _date_chunks(amazon_start, end_date, chunk_months)
+
+    print(f'\n{"="*60}')
+    print(f'PARALLEL BACKFILL')
+    print(f'  Amazon:  {amazon_start} → {end_date} ({len(amazon_chunks)} chunks)')
+    print(f'  Shopify: {shopify_start} → {end_date} ({len(shopify_chunks)} chunks)')
+    print(f'  Amazon workers: {amazon_workers}, Shopify workers: {shopify_workers}')
+    print(f'{"="*60}\n')
+
+    has_amazon = all(getattr(cfg, k, '') for k in [
+        'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
+    ])
+    has_shopify = bool(getattr(cfg, 'SHOPIFY_ACCESS_TOKEN', ''))
+
+    all_results = []
+    start_time = datetime.now()
+
+    # --- Shopify first (parallel chunks) ---
+    if has_shopify:
+        from etl.shopify_client import test_connection
+        ok, msg = test_connection()
+        if not ok:
+            print(f'Shopify connection failed: {msg}')
+        else:
+            print(f'\nShopify connection OK: {msg}')
+            print(f'Starting Shopify backfill ({len(shopify_chunks)} chunks, {shopify_workers} workers)...')
+            futures = []
+            with ThreadPoolExecutor(max_workers=shopify_workers, thread_name_prefix='shopify') as executor:
+                for i, (chunk_start, chunk_end) in enumerate(shopify_chunks):
+                    label = f'{i+1}/{len(shopify_chunks)}'
+                    futures.append(executor.submit(_backfill_shopify_chunk, chunk_start, chunk_end, label))
+
+                for future in as_completed(futures):
+                    all_results.append(future.result())
+    else:
+        print('Shopify not configured — skipping.')
+
+    # --- Amazon Sales (parallel chunks) ---
+    if has_amazon:
+        futures = []
+        print(f'\nStarting Amazon Sales backfill ({len(amazon_chunks)} chunks, {amazon_workers} workers)...')
+        with ThreadPoolExecutor(max_workers=amazon_workers, thread_name_prefix='amz-sales') as executor:
+            for i, (chunk_start, chunk_end) in enumerate(amazon_chunks):
+                label = f'{i+1}/{len(amazon_chunks)}'
+                futures.append(executor.submit(_backfill_amazon_sales_chunk, chunk_start, chunk_end, label))
+
+            for future in as_completed(futures):
+                all_results.append(future.result())
+
+        # --- Amazon Retention (parallel chunks) ---
+        futures = []
+        print(f'\nStarting Amazon Retention backfill ({len(amazon_chunks)} chunks, {amazon_workers} workers)...')
+        with ThreadPoolExecutor(max_workers=amazon_workers, thread_name_prefix='amz-ret') as executor:
+            for i, (chunk_start, chunk_end) in enumerate(amazon_chunks):
+                label = f'{i+1}/{len(amazon_chunks)}'
+                futures.append(executor.submit(_backfill_amazon_retention_chunk, chunk_start, chunk_end, label))
+
+            for future in as_completed(futures):
+                all_results.append(future.result())
+    else:
+        print('Amazon SP-API not configured — skipping.')
+
+    # --- Rebuild aggregates ---
+    print('\nRebuilding daily sales aggregates...')
+    with get_db() as conn:
+        rebuild_daily_sales(conn)
+        log_sync(conn, 'backfill', end_date, sum(
+            r[2] for r in all_results if isinstance(r[2], int)
+        ))
+
+    elapsed = datetime.now() - start_time
+
+    # --- Summary ---
+    print(f'\n{"="*60}')
+    print(f'BACKFILL COMPLETE in {elapsed}')
+    print(f'{"="*60}')
+
+    totals = {}
+    errors = []
+    for source, label, result in all_results:
+        if isinstance(result, int):
+            totals[source] = totals.get(source, 0) + result
+        else:
+            errors.append(f'{source} {label}: {result}')
+
+    for source, total in sorted(totals.items()):
+        print(f'  {source}: {total:,} records')
+    if errors:
+        print(f'\n  Errors ({len(errors)}):')
+        for err in errors:
+            print(f'    {err}')
+
+    return totals
+
+
+if __name__ == '__main__':
     results = run_daily_sync()
-    print(f"Sync results: {results}")
+    print(f'Sync results: {results}')
