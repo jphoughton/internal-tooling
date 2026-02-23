@@ -113,7 +113,7 @@ def get_amazon_sku_velocity(lookback_days=30):
                    SUM(units_sold) as total_units,
                    SUM(revenue) as total_revenue,
                    COUNT(DISTINCT sale_date) as days_of_data,
-                   ROUND(SUM(units_sold) * 1.0 / MAX(COUNT(DISTINCT sale_date), 1), 2) as avg_daily
+                   ROUND(SUM(units_sold) * 1.0 / GREATEST(COUNT(DISTINCT sale_date), 1), 2) as avg_daily
             FROM daily_sku_sales
             WHERE source = 'amazon'
             GROUP BY sku
@@ -123,13 +123,13 @@ def get_amazon_sku_velocity(lookback_days=30):
         trend_rows = conn.execute("""
             SELECT sku,
                    SUM(CASE WHEN sale_date >= date('now', '-7 days') THEN units_sold ELSE 0 END) * 1.0
-                       / MAX(1, COUNT(DISTINCT CASE WHEN sale_date >= date('now', '-7 days') THEN sale_date END)) as avg_7d,
+                       / GREATEST(COUNT(DISTINCT CASE WHEN sale_date >= date('now', '-7 days') THEN sale_date END), 1) as avg_7d,
                    SUM(units_sold) * 1.0
-                       / MAX(1, COUNT(DISTINCT sale_date)) as avg_30d,
+                       / GREATEST(COUNT(DISTINCT sale_date), 1) as avg_30d,
                    SUM(CASE WHEN sale_date >= date('now', '-7 days') THEN revenue ELSE 0 END) * 1.0
-                       / MAX(1, COUNT(DISTINCT CASE WHEN sale_date >= date('now', '-7 days') THEN sale_date END)) as avg_rev_7d,
+                       / GREATEST(COUNT(DISTINCT CASE WHEN sale_date >= date('now', '-7 days') THEN sale_date END), 1) as avg_rev_7d,
                    SUM(revenue) * 1.0
-                       / MAX(1, COUNT(DISTINCT sale_date)) as avg_rev_30d
+                       / GREATEST(COUNT(DISTINCT sale_date), 1) as avg_rev_30d
             FROM daily_sku_sales
             WHERE source = 'amazon'
             GROUP BY sku
