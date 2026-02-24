@@ -405,45 +405,89 @@ section[data-testid="stSidebar"] .nav-section {
 
 /* ── Sidebar Business Variables expander ── */
 section[data-testid="stSidebar"] [data-testid="stExpander"] {
-    background: rgba(255,255,255,0.07) !important;
+    background: rgba(255,255,255,0.05) !important;
     border: 1px solid rgba(255,255,255,0.12) !important;
     border-radius: 10px !important;
     box-shadow: none !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"]:hover {
     border-color: rgba(126,204,229,0.4) !important;
-    background: rgba(255,255,255,0.10) !important;
+    background: rgba(255,255,255,0.08) !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] summary p {
     font-size: 0.82rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.01em;
 }
+/* Tighten vertical spacing inside expander */
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput {
+    margin-bottom: -8px;
+}
+/* Number inputs — dark bg with bright white text */
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput input {
-    background: rgba(255,255,255,0.14) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-    border-radius: 6px !important;
+    background: rgba(0,0,0,0.25) !important;
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    border-radius: 8px !important;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
-    font-size: 0.82rem !important;
-    padding: 4px 8px !important;
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    padding: 6px 10px !important;
 }
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput input:focus {
+    border-color: #7ECCE5 !important;
+    box-shadow: 0 0 0 2px rgba(126,204,229,0.2) !important;
+}
+/* Stepper +/- buttons */
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput button {
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    color: rgba(255,255,255,0.7) !important;
+    -webkit-text-fill-color: rgba(255,255,255,0.7) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput button:hover {
+    background: rgba(255,255,255,0.15) !important;
+    border-color: rgba(255,255,255,0.25) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput button svg {
+    fill: rgba(255,255,255,0.7) !important;
+    stroke: rgba(255,255,255,0.7) !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput button:hover svg {
+    fill: #ffffff !important;
+    stroke: #ffffff !important;
+}
+/* Selectbox — dark bg with bright text */
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stSelectbox > div > div {
-    background: rgba(255,255,255,0.14) !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-    border-radius: 6px !important;
+    background: rgba(0,0,0,0.25) !important;
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    border-radius: 8px !important;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
+    font-weight: 600 !important;
 }
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stSelectbox svg {
+    fill: rgba(255,255,255,0.6) !important;
+}
+/* Labels — brighter */
 section[data-testid="stSidebar"] [data-testid="stExpander"] label {
-    font-size: 0.75rem !important;
-    color: rgba(255,255,255,0.75) !important;
-    -webkit-text-fill-color: rgba(255,255,255,0.75) !important;
+    font-size: 0.74rem !important;
+    color: rgba(255,255,255,0.85) !important;
+    -webkit-text-fill-color: rgba(255,255,255,0.85) !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.01em;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stCaption,
 section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] {
     color: rgba(255,255,255,0.5) !important;
     font-size: 0.7rem !important;
+}
+/* Toggle switch */
+section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stToggle"] label span {
+    color: rgba(255,255,255,0.85) !important;
+    -webkit-text-fill-color: rgba(255,255,255,0.85) !important;
 }
 /* Sidebar edit buttons (non-primary) */
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button:not([kind="primary"]):not([data-testid="stBaseButton-primary"]) {
