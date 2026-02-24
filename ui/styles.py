@@ -477,37 +477,70 @@ section[data-testid="stSidebar"] [data-testid="stExpander"] button[data-testid="
     background: #5dbdd8 !important;
 }
 
-/* ── Dialog data editor — ensure white background ── */
-[data-testid="stDialog"] [data-testid="stDataEditor"] {
-    background: #ffffff !important;
-    border: 1px solid #E8EDF3;
-    border-radius: 12px;
-    overflow: hidden;
-}
-[data-testid="stDialog"] [data-testid="stDataEditor"] > div,
-[data-testid="stDialog"] [data-testid="stDataEditor"] > div > div,
-[data-testid="stDialog"] [data-testid="stDataEditor"] div[style],
-[data-testid="stDialog"] [data-testid="stDataEditor"] canvas,
-[data-testid="stDialog"] [data-testid="stDataEditor"] [role="grid"],
-[data-testid="stDialog"] [data-testid="stDataEditor"] [role="gridcell"],
-[data-testid="stDialog"] [data-testid="stDataEditor"] [role="columnheader"] {
-    background: #ffffff !important;
-    background-color: #ffffff !important;
-}
-/* Dialog text should be dark */
+/* ── Dialog form grids — compact number inputs ── */
 [data-testid="stDialog"] * {
     color: #1e2d3d;
 }
 [data-testid="stDialog"] [data-testid="stCaptionContainer"] {
     color: #6b7c93 !important;
 }
+[data-testid="stDialog"] .stNumberInput {
+    margin-bottom: -10px;
+}
+[data-testid="stDialog"] .stNumberInput input {
+    padding: 5px 8px !important;
+    font-size: 0.84rem !important;
+    border-radius: 8px !important;
+    border-color: #D6DEE8 !important;
+    background: #ffffff !important;
+    color: #0F3557 !important;
+    text-align: right;
+}
+[data-testid="stDialog"] .stNumberInput input:focus {
+    border-color: #7ECCE5 !important;
+    box-shadow: 0 0 0 2px rgba(126,204,229,0.15) !important;
+}
+/* Tighten column gaps in dialog grids */
+[data-testid="stDialog"] [data-testid="stHorizontalBlock"] {
+    gap: 0.4rem !important;
+}
+/* Dialog tabs (for quarterly inbound) */
+[data-testid="stDialog"] .stTabs [data-baseweb="tab-list"] {
+    gap: 2px;
+    background: #F0F4F8;
+    border-radius: 10px;
+    padding: 3px;
+}
+[data-testid="stDialog"] .stTabs [data-baseweb="tab"] {
+    font-size: 0.78rem;
+    padding: 6px 14px;
+    border-radius: 8px;
+    color: #5a6f83 !important;
+}
+[data-testid="stDialog"] .stTabs [aria-selected="true"] {
+    background: #0F3557 !important;
+    color: #ffffff !important;
+}
+[data-testid="stDialog"] .stTabs [aria-selected="true"] * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+[data-testid="stDialog"] .stTabs [data-baseweb="tab-highlight"],
+[data-testid="stDialog"] .stTabs [data-baseweb="tab-border"] {
+    display: none !important;
+}
+/* Dialog primary button */
 [data-testid="stDialog"] button[kind="primary"],
-[data-testid="stDialog"] button[data-testid="stBaseButton-primary"] {
+[data-testid="stDialog"] button[data-testid="stBaseButton-primary"],
+[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button {
     background: linear-gradient(135deg, #7ECCE5, #5BB8D4) !important;
     border: none !important;
     color: #0F3557 !important;
+    -webkit-text-fill-color: #0F3557 !important;
     font-weight: 700 !important;
     border-radius: 10px !important;
+    font-size: 0.85rem !important;
+    padding: 8px 20px !important;
 }
 
 /* ── Styled dataframe (Pandas Styler) ── */
