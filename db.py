@@ -844,4 +844,4 @@ def update_klaviyo_flow_metrics(
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized (PostgreSQL: {DATABASE_URL[:30]}...)")
+    print(f"Database initialized (PostgreSQL: {os.environ.get('DATABASE_URL', '')[:30]}...)")
