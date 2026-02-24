@@ -1,13 +1,18 @@
-"""Lightweight HTTP server exposing a /health endpoint.
+"""Lightweight HTTP server exposing /health and /export/csv endpoints.
 
-Returns JSON with:
+/health returns JSON with:
   - uptime_seconds: seconds since this process started
   - version:        BUILD_VERSION from config.py
   - db_row_count:   total rows across core tables from db.py
 
+/export/csv streams all rows from daily_sku_sales as a CSV download with
+Content-Type text/csv and Content-Disposition attachment headers.
+
 Query parameters are sanitized on every request: whitespace is stripped,
 values are limited to 500 chars, and empty strings are rejected with 400.
 """
+import csv
+import io
 import json
 import os
 import time
@@ -20,6 +25,7 @@ from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from rate_limiter import RateLimiter
 from utils.constants import (
+    EXPORT_CSV_PATH,
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
     HEALTH_DEFAULT_PORT,
@@ -101,6 +107,16 @@ class HealthHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
 
+        if path == EXPORT_CSV_PATH:
+            if API_KEY:
+                raw_auth = self.headers.get('Authorization', '')
+                auth = _sanitize_input(raw_auth)
+                if auth is None or auth != f'Bearer {API_KEY}':
+                    self._send_json(401, {'error': 'Unauthorized'})
+                    return
+            self._handle_export_csv()
+            return
+
         if path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
             self.end_headers()
@@ -129,6 +145,52 @@ class HealthHandler(BaseHTTPRequestHandler):
             'debug': DEBUG,
         }
         self._send_json(200, payload)
+
+    def _handle_export_csv(self):
+        """Stream all rows from daily_sku_sales as a CSV download.
+
+        Sends a chunked transfer-encoded response so rows are written to the
+        socket incrementally rather than buffered as a single string in memory.
+        """
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        filename = f'inventory_{ts}.csv'
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv; charset=utf-8')
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
+
+        def _write_chunk(text):
+            data = text.encode('utf-8')
+            self.wfile.write(f'{len(data):x}\r\n'.encode('ascii'))
+            self.wfile.write(data)
+            self.wfile.write(b'\r\n')
+
+        try:
+            with get_db() as conn:
+                result = conn.execute(
+                    'SELECT sale_date, sku, source, units_sold, revenue, order_count '
+                    'FROM daily_sku_sales ORDER BY sale_date, sku, source'
+                )
+                columns = [desc.name for desc in result.description]
+                rows = result.fetchall()
+
+            buf = io.StringIO()
+            csv.writer(buf).writerow(columns)
+            _write_chunk(buf.getvalue())
+
+            for row in rows:
+                buf = io.StringIO()
+                csv.writer(buf).writerow([row[col] for col in columns])
+                _write_chunk(buf.getvalue())
+
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
+        except Exception:
+            # Headers already sent; terminate the chunked stream cleanly
+            self.wfile.write(b'0\r\n\r\n')
+            self.wfile.flush()
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
