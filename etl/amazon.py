@@ -11,6 +11,7 @@ Data strategy (two report types pulled daily):
    and pricing — enough to build Amazon-side retention cohorts.
 """
 import csv
+import logging
 import gzip
 import io
 import json
@@ -24,6 +25,8 @@ import config as cfg
 from db import upsert_sku, upsert_customer, upsert_order, upsert_order_item
 from etl.amazon_sku_map import map_amazon_sku
 from etl.retry import with_retry
+
+logger = logging.getLogger(__name__)
 
 
 def get_credentials():

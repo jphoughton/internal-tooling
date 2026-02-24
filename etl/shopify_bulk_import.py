@@ -7,11 +7,14 @@ by their line items (linked via __parentId). Line items follow their parent orde
 This is much faster than paginated REST API for large historical backfills.
 """
 import json
+import logging
 import requests
 import time
 import config as cfg
 from db import get_db, upsert_customer, upsert_order, upsert_order_item, upsert_sku, rebuild_daily_sales
 from etl.customer_id import generate_customer_id as _generate_customer_id
+
+logger = logging.getLogger(__name__)
 
 
 def poll_bulk_operation(timeout_minutes=30):
