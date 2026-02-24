@@ -12,6 +12,7 @@ from db import (
 from analytics.sku_flavors import get_flavor
 from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue, get_projected_new_repeat_summary
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
+from views.pacing import render_pacing
 import config
 
 
@@ -129,6 +130,10 @@ def render(ctx):
                     f'Limited history ({data_span_days} days). Request `read_all_orders` scope '
                     f'in your [Shopify Partner Dashboard](https://partners.shopify.com) for full access.'
                 )
+
+    # --- Pacing Dashboard (top of page) ---
+    render_pacing(ctx)
+    st.divider()
 
     # --- Date Filter ---
     with get_db() as conn:
