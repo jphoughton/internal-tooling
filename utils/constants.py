@@ -45,3 +45,15 @@ HEALTH_CONTENT_TYPE = 'application/json'
 HEALTH_DEFAULT_HOST = '0.0.0.0'
 HEALTH_DEFAULT_PORT = 8502
 HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
+
+# Export endpoint
+EXPORT_CSV_ENDPOINT_PATH = '/export/csv'
+EXPORT_CSV_CONTENT_TYPE = 'text/csv; charset=utf-8'
+EXPORT_CSV_DEFAULT_TABLE = 'daily_sku_sales'
+EXPORT_CSV_ALLOWED_TABLES = frozenset([
+    'customers',
+    'orders',
+    'order_items',
+    'daily_sku_sales',
+    'media_spend',
+])

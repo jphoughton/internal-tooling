@@ -839,6 +839,22 @@ def update_klaviyo_flow_metrics(
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Export helper
+# ---------------------------------------------------------------------------
+def fetch_table(conn: ConnectionWrapper, table: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    """Return (column_names, rows) for a full table scan.
+
+    The table name must be validated against an allowlist by the caller
+    before passing here -- it is interpolated directly into SQL.
+    """
+    cur = conn.execute(f'SELECT * FROM {table} ORDER BY 1')
+    columns = [d.name for d in cur.description]
+    rows = [tuple(row[col] for col in columns) for row in cur.fetchall()]
+    return columns, rows
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
