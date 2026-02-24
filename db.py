@@ -7,6 +7,7 @@ analytics/dashboard code (strftime, date('now'), julianday, ? placeholders).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import psycopg2
@@ -17,6 +18,20 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
 
 if TYPE_CHECKING:
     import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Custom exception
+# ---------------------------------------------------------------------------
+class DatabaseError(Exception):
+    """Raised when any database operation fails.
+
+    Wraps underlying psycopg2 and other DB errors so callers get a single
+    exception type to catch, with the original cause attached via __cause__.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Connection pool
@@ -33,17 +48,21 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         if url.startswith('postgres://'):
             url = url.replace('postgres://', 'postgresql://', 1)
         if not url:
-            raise RuntimeError(
+            raise DatabaseError(
                 'DATABASE_URL is not set. '
                 'Set it in .env or Railway service variables.'
             )
-        _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=20,
-            dsn=url,
-            connect_timeout=10,
-            options='-c statement_timeout=30000',  # 30s per statement
-        )
+        try:
+            _pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=20,
+                dsn=url,
+                connect_timeout=10,
+                options='-c statement_timeout=30000',  # 30s per statement
+            )
+        except Exception as exc:
+            logger.error('Failed to create connection pool: %s', exc)
+            raise DatabaseError(f'Failed to create connection pool: {exc}') from exc
     return _pool
 
 
@@ -156,13 +175,20 @@ class ConnectionWrapper:
         sql: str,
         params: Optional[Union[tuple[Any, ...], list[Any]]] = None,
     ) -> _CursorWrapper:
-        sql = _translate_sql(sql)
-        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
-        return _CursorWrapper(cur)
+        translated = _translate_sql(sql)
+        try:
+            cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            if params:
+                cur.execute(translated, params)
+            else:
+                cur.execute(translated)
+            return _CursorWrapper(cur)
+        except psycopg2.Error as exc:
+            logger.error('SQL execution failed: %s | SQL: %.200s', exc, translated)
+            raise DatabaseError(f'SQL execution failed: {exc}') from exc
+        except Exception as exc:
+            logger.error('Unexpected error during SQL execution: %s | SQL: %.200s', exc, translated)
+            raise DatabaseError(f'Unexpected error during SQL execution: {exc}') from exc
 
     def commit(self) -> None:
         self._conn.commit()
@@ -182,15 +208,26 @@ class ConnectionWrapper:
 @contextmanager
 def get_db() -> Iterator[ConnectionWrapper]:
     """Yield a ConnectionWrapper; auto-commit on success, rollback on error."""
-    pool = _get_pool()
-    raw = pool.getconn()
+    try:
+        pool = _get_pool()
+        raw = pool.getconn()
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('Failed to acquire database connection: %s', exc)
+        raise DatabaseError(f'Failed to acquire database connection: {exc}') from exc
+
     wrapped = ConnectionWrapper(raw)
     try:
         yield wrapped
         wrapped.commit()
-    except Exception:
+    except DatabaseError:
         wrapped.rollback()
         raise
+    except Exception as exc:
+        wrapped.rollback()
+        logger.error('Database transaction failed: %s', exc)
+        raise DatabaseError(f'Database transaction failed: {exc}') from exc
     finally:
         pool.putconn(raw)
 
@@ -211,7 +248,11 @@ def read_sql(
     """
     import pandas as pd
     translated = _translate_sql(sql)
-    return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
+    try:
+        return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
+    except Exception as exc:
+        logger.error('read_sql failed: %s | SQL: %.200s', exc, translated)
+        raise DatabaseError(f'read_sql failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -387,41 +428,47 @@ _SCHEMA_SQL = [
 
 def init_db() -> None:
     """Create all tables and indexes if they don't exist."""
-    print("  init_db: connecting...", flush=True)
-    with get_db() as conn:
-        # Kill stale connections from crashed deploys that may hold locks
-        print("  init_db: terminating stale connections...", flush=True)
-        conn.execute("""
-            SELECT pg_terminate_backend(pid)
-            FROM pg_stat_activity
-            WHERE pid <> pg_backend_pid()
-              AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
-              AND query_start < NOW() - INTERVAL '60 seconds'
-        """)
+    logger.info('init_db: connecting...')
+    try:
+        with get_db() as conn:
+            # Kill stale connections from crashed deploys that may hold locks
+            logger.info('init_db: terminating stale connections...')
+            conn.execute("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE pid <> pg_backend_pid()
+                  AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+                  AND query_start < NOW() - INTERVAL '60 seconds'
+            """)
 
-        for i, stmt in enumerate(_SCHEMA_SQL):
-            label = stmt.strip()[:60].replace('\n', ' ')
-            print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
-            conn.execute(stmt)
+            for i, stmt in enumerate(_SCHEMA_SQL):
+                label = stmt.strip()[:60].replace('\n', ' ')
+                logger.info('init_db: [%d/%d] %s...', i + 1, len(_SCHEMA_SQL), label)
+                conn.execute(stmt)
 
-        print("  init_db: seeding seasonal indices...", flush=True)
-        # Seed default seasonal indices if table is empty
-        existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
-        if existing['cnt'] == 0:
-            defaults = {
-                1: 0.95, 2: 0.92, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10,
-                7: 1.12, 8: 1.08, 9: 1.02, 10: 0.98, 11: 0.92, 12: 0.88,
-            }
-            for m, v in defaults.items():
-                conn.execute(
-                    "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
-                    (m, v),
-                )
+            logger.info('init_db: seeding seasonal indices...')
+            # Seed default seasonal indices if table is empty
+            existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
+            if existing['cnt'] == 0:
+                defaults = {
+                    1: 0.95, 2: 0.92, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10,
+                    7: 1.12, 8: 1.08, 9: 1.02, 10: 0.98, 11: 0.92, 12: 0.88,
+                }
+                for m, v in defaults.items():
+                    conn.execute(
+                        "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
+                        (m, v),
+                    )
 
-        # Migrate legacy media_spend source='all' to 'All Sources'
-        print("  init_db: migrating media_spend source values...", flush=True)
-        conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
-        print("  init_db: done.", flush=True)
+            # Migrate legacy media_spend source='all' to 'All Sources'
+            logger.info('init_db: migrating media_spend source values...')
+            conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
+            logger.info('init_db: done.')
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('init_db failed: %s', exc)
+        raise DatabaseError(f'init_db failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -434,13 +481,19 @@ def upsert_customer(
     source: str,
     first_order_date: Optional[str],
 ) -> None:
-    conn.execute("""
-        INSERT INTO customers (customer_id, email, source, first_order_date)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT(customer_id) DO UPDATE SET
-            email = COALESCE(excluded.email, customers.email),
-            first_order_date = LEAST(customers.first_order_date, excluded.first_order_date)
-    """, (customer_id, email, source, first_order_date))
+    try:
+        conn.execute("""
+            INSERT INTO customers (customer_id, email, source, first_order_date)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(customer_id) DO UPDATE SET
+                email = COALESCE(excluded.email, customers.email),
+                first_order_date = LEAST(customers.first_order_date, excluded.first_order_date)
+        """, (customer_id, email, source, first_order_date))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_customer failed for customer_id=%s: %s', customer_id, exc)
+        raise DatabaseError(f'upsert_customer failed: {exc}') from exc
 
 
 def upsert_order(
@@ -453,13 +506,19 @@ def upsert_order(
     total_amount: float,
     currency: str = "USD",
 ) -> None:
-    conn.execute("""
-        INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT(order_id) DO UPDATE SET
-            total_amount = excluded.total_amount,
-            status = 'completed'
-    """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
+    try:
+        conn.execute("""
+            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(order_id) DO UPDATE SET
+                total_amount = excluded.total_amount,
+                status = 'completed'
+        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_order failed for order_id=%s: %s', order_id, exc)
+        raise DatabaseError(f'upsert_order failed: {exc}') from exc
 
 
 def upsert_order_item(
@@ -470,14 +529,20 @@ def upsert_order_item(
     quantity: int,
     unit_price: float,
 ) -> None:
-    conn.execute("""
-        INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT(order_id, sku) DO UPDATE SET
-            quantity = excluded.quantity,
-            unit_price = excluded.unit_price,
-            total_price = excluded.total_price
-    """, (order_id, sku, product_name, quantity, unit_price, quantity * unit_price))
+    try:
+        conn.execute("""
+            INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(order_id, sku) DO UPDATE SET
+                quantity = excluded.quantity,
+                unit_price = excluded.unit_price,
+                total_price = excluded.total_price
+        """, (order_id, sku, product_name, quantity, unit_price, quantity * unit_price))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_order_item failed for order_id=%s sku=%s: %s', order_id, sku, exc)
+        raise DatabaseError(f'upsert_order_item failed: {exc}') from exc
 
 
 def upsert_sku(
@@ -488,23 +553,29 @@ def upsert_sku(
     first_sale_date: Optional[str],
     source: str,
 ) -> None:
-    row = conn.execute("SELECT sources FROM sku_master WHERE sku = %s", (sku,)).fetchone()
-    if row and row["sources"]:
-        existing = set(row["sources"].split(","))
-        existing.add(source)
-        sources = ",".join(sorted(existing))
-    else:
-        sources = source
+    try:
+        row = conn.execute("SELECT sources FROM sku_master WHERE sku = %s", (sku,)).fetchone()
+        if row and row["sources"]:
+            existing = set(row["sources"].split(","))
+            existing.add(source)
+            sources = ",".join(sorted(existing))
+        else:
+            sources = source
 
-    conn.execute("""
-        INSERT INTO sku_master (sku, product_name, category, first_sale_date, sources)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(sku) DO UPDATE SET
-            product_name = COALESCE(excluded.product_name, sku_master.product_name),
-            first_sale_date = LEAST(sku_master.first_sale_date, excluded.first_sale_date),
-            sources = %s,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (sku, product_name, category, first_sale_date, sources, sources))
+        conn.execute("""
+            INSERT INTO sku_master (sku, product_name, category, first_sale_date, sources)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT(sku) DO UPDATE SET
+                product_name = COALESCE(excluded.product_name, sku_master.product_name),
+                first_sale_date = LEAST(sku_master.first_sale_date, excluded.first_sale_date),
+                sources = %s,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (sku, product_name, category, first_sale_date, sources, sources))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_sku failed for sku=%s: %s', sku, exc)
+        raise DatabaseError(f'upsert_sku failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -517,32 +588,44 @@ def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
     Amazon data is inserted directly into daily_sku_sales by the Amazon ETL
     and must NOT be deleted here.
     """
-    conn.execute("DELETE FROM daily_sku_sales WHERE source = 'shopify'")
-    conn.execute("""
-        INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
-        SELECT
-            o.order_date::date::text as sale_date,
-            oi.sku,
-            o.source,
-            SUM(oi.quantity) as units_sold,
-            SUM(oi.total_price) as revenue,
-            COUNT(DISTINCT o.order_id) as order_count
-        FROM order_items oi
-        JOIN orders o ON oi.order_id = o.order_id
-        WHERE o.status = 'completed' AND o.source = 'shopify'
-        GROUP BY o.order_date::date, oi.sku, o.source
-    """)
+    try:
+        conn.execute("DELETE FROM daily_sku_sales WHERE source = 'shopify'")
+        conn.execute("""
+            INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
+            SELECT
+                o.order_date::date::text as sale_date,
+                oi.sku,
+                o.source,
+                SUM(oi.quantity) as units_sold,
+                SUM(oi.total_price) as revenue,
+                COUNT(DISTINCT o.order_id) as order_count
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE o.status = 'completed' AND o.source = 'shopify'
+            GROUP BY o.order_date::date, oi.sku, o.source
+        """)
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('rebuild_daily_sales failed: %s', exc)
+        raise DatabaseError(f'rebuild_daily_sales failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
 # Sync helpers
 # ---------------------------------------------------------------------------
 def get_last_sync_date(conn: ConnectionWrapper, source: str) -> Optional[str]:
-    row = conn.execute(
-        "SELECT MAX(sync_date) as last_date FROM sync_log WHERE source = %s AND status = 'success'",
-        (source,)
-    ).fetchone()
-    return row["last_date"] if row and row["last_date"] else None
+    try:
+        row = conn.execute(
+            "SELECT MAX(sync_date) as last_date FROM sync_log WHERE source = %s AND status = 'success'",
+            (source,)
+        ).fetchone()
+        return row["last_date"] if row and row["last_date"] else None
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_last_sync_date failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'get_last_sync_date failed: {exc}') from exc
 
 
 def log_sync(
@@ -553,10 +636,16 @@ def log_sync(
     status: str = "success",
     error_message: Optional[str] = None,
 ) -> None:
-    conn.execute("""
-        INSERT INTO sync_log (source, sync_date, records_fetched, status, error_message)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (source, sync_date, records_fetched, status, error_message))
+    try:
+        conn.execute("""
+            INSERT INTO sync_log (source, sync_date, records_fetched, status, error_message)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (source, sync_date, records_fetched, status, error_message))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('log_sync failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'log_sync failed: {exc}') from exc
 
 
 def get_last_sync_timestamp(conn: ConnectionWrapper, sources: list[str]) -> Optional[str]:
@@ -843,5 +932,6 @@ def update_klaviyo_flow_metrics(
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     init_db()
-    print(f"Database initialized (PostgreSQL: {DATABASE_URL[:30]}...)")
+    logger.info("Database initialized (PostgreSQL: %s...)", os.environ.get("DATABASE_URL", "")[:30])
