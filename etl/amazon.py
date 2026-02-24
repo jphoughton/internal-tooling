@@ -129,7 +129,7 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
 
     while current <= end:
         day_str = current.strftime("%Y-%m-%d")
-        print(f"  Requesting S&T for {day_str}...", flush=True)
+        logger.info('Requesting S&T for %s', day_str)
 
         try:
             report_response = _create_report(
@@ -147,7 +147,7 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
             report_id = report_response.payload["reportId"]
             document_id = _wait_for_report(reports_api, report_id)
             if not document_id:
-                print(f"  Skipping {day_str} — report failed", flush=True)
+                logger.warning('Skipping %s — report failed', day_str)
                 current += timedelta(days=1)
                 continue
 
@@ -178,15 +178,15 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
                 day_count += 1
 
             record_count += day_count
-            print(f"  {day_str}: {day_count} SKUs, done", flush=True)
+            logger.info('%s: %d SKUs, done', day_str, day_count)
 
         except Exception as e:
             err_str = str(e)
             if 'QuotaExceeded' in err_str:
-                print(f"  {day_str}: Rate limited — waiting 60s...", flush=True)
+                logger.warning('%s: Rate limited — waiting 60s', day_str)
                 time.sleep(60)
                 continue  # Retry same day
-            print(f"  {day_str}: ERROR — {e}", flush=True)
+            logger.error('%s: ERROR — %s', day_str, e)
 
         current += timedelta(days=1)
 
@@ -224,7 +224,7 @@ def fetch_fulfillment_data(conn, since_date=None, until_date=None):
     )
 
     report_id = report_response.payload["reportId"]
-    print(f"Amazon fulfillment report requested: {report_id}")
+    logger.info('Amazon fulfillment report requested: %s', report_id)
 
     document_id = _wait_for_report(reports_api, report_id)
     if not document_id:
@@ -292,15 +292,15 @@ def _wait_for_report(reports_api, report_id, timeout_minutes=20):
         status = status_response.payload.get("processingStatus")
         poll_count += 1
         elapsed = int(time.time() - (deadline - timeout_minutes * 60))
-        print(f"  Report {report_id}: {status} ({elapsed}s elapsed)", flush=True)
+        logger.info('Report %s: %s (%ds elapsed)', report_id, status, elapsed)
 
         if status == "DONE":
             return status_response.payload.get("reportDocumentId")
         elif status in ("CANCELLED", "FATAL"):
-            print(f"Report {report_id} failed: {status}")
+            logger.error('Report %s failed: %s', report_id, status)
             return None
 
         time.sleep(30)
 
-    print(f"Report {report_id} timed out after {timeout_minutes}m")
+    logger.warning('Report %s timed out after %dm', report_id, timeout_minutes)
     return None
