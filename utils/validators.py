@@ -7,10 +7,10 @@ _EMAIL_PATTERN = re.compile(
 )
 
 _URL_PATTERN = re.compile(
-    r'^https?://'                          # scheme
-    r'(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}'  # domain
-    r'(?::\d{1,5})?'                       # optional port
-    r'(?:[/?#][^\s]*)?$'                   # optional path/query/fragment
+    r'^https?://'                                              # scheme
+    r'(?:(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}|localhost)'       # domain or localhost
+    r'(?::\d{1,5})?'                                          # optional port
+    r'(?:[/?#][^\s]*)?$'                                      # optional path/query/fragment
 )
 
 
