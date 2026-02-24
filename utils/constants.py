@@ -46,6 +46,12 @@ HEALTH_DEFAULT_HOST = '0.0.0.0'
 HEALTH_DEFAULT_PORT = 8502
 HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
 
+# Items list endpoint (paginated)
+ITEMS_ENDPOINT_PATH = '/items'
+ITEMS_DEFAULT_PAGE = 1
+ITEMS_DEFAULT_PER_PAGE = 20
+ITEMS_MAX_PER_PAGE = 100
+
 # Export endpoint
 EXPORT_CSV_ENDPOINT_PATH = '/export/csv'
 EXPORT_CSV_CONTENT_TYPE = 'text/csv; charset=utf-8'
