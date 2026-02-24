@@ -226,8 +226,8 @@ def get_db() -> Iterator[ConnectionWrapper]:
 def read_sql(
     sql: str,
     conn_wrapper: ConnectionWrapper,
-    params: Optional[Any] = None,
-) -> Any:
+    params: Optional[Union[list[Any], tuple[Any, ...], dict[str, Any]]] = None,
+) -> pd.DataFrame:
     """Execute a SQL query through pandas with automatic SQL translation.
 
     Usage:
