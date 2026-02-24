@@ -840,6 +840,37 @@ def update_klaviyo_flow_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Paginated list query
+# ---------------------------------------------------------------------------
+def get_items_page(
+    conn: ConnectionWrapper,
+    page: int = 1,
+    per_page: int = 20,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return a page of orders and the total count.
+
+    Args:
+        conn: Active database connection.
+        page: 1-based page number.
+        per_page: Number of rows per page.
+
+    Returns:
+        Tuple of (rows, total_count) where rows is a list of dicts and
+        total_count is the total number of matching rows.
+    """
+    offset = (page - 1) * per_page
+    count_row = conn.execute("SELECT COUNT(*) AS cnt FROM orders").fetchone()
+    total_count = int(count_row["cnt"]) if count_row else 0
+    rows = conn.execute(
+        "SELECT order_id, source, order_date, total_amount, currency, status "
+        "FROM orders ORDER BY order_date DESC, order_id "
+        "LIMIT %s OFFSET %s",
+        (per_page, offset),
+    ).fetchall()
+    return [dict(r) for r in rows], total_count
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
