@@ -37,6 +37,9 @@ PACING_ON_TRACK_HIGH = 1.05
 # FBA transfer default lead time
 FBA_TRANSFER_LEAD_TIME_WEEKS = 4
 
+# Input sanitization
+MAX_INPUT_LENGTH = 500
+
 # Health check server
 HEALTH_ENDPOINT_PATH = '/health'
 HEALTH_STATUS_OK = 'ok'

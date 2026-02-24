@@ -19,9 +19,19 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
+    MAX_INPUT_LENGTH,
 )
 
 _START_TIME = time.monotonic()
+
+
+def _sanitize_input(value: str) -> str | None:
+    """Strip whitespace and enforce max length. Returns None if empty after stripping."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()[:MAX_INPUT_LENGTH]
+    return value if value else None
+
 
 _CORE_TABLES = [
     'customers',
@@ -44,13 +54,18 @@ def _get_db_row_count():
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != HEALTH_ENDPOINT_PATH:
+        path = _sanitize_input(self.path)
+        if path is None:
+            self.send_response(400)
+            self.end_headers()
+            return
+        if path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
             self.end_headers()
             return
 
         if API_KEY:
-            auth = self.headers.get('Authorization', '')
+            auth = _sanitize_input(self.headers.get('Authorization', '')) or ''
             if auth != f'Bearer {API_KEY}':
                 self.send_response(401)
                 self.end_headers()
