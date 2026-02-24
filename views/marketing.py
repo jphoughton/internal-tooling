@@ -280,7 +280,18 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            _chan_sel = "All"  # default; overridden by widget below when goals are present
+            # ============================================================
+            # CHANNEL FILTER — toggle between All / Roll Up / DTC / Amazon
+            # ============================================================
+            _chan_sel = st.segmented_control(
+                "Channel",
+                options=["All", "Roll Up", "DTC", "Amazon"],
+                default="All",
+                key="_mkt_channel",
+                label_visibility="collapsed",
+            )
+            if _chan_sel is None:
+                _chan_sel = "All"
 
             if _has_goals:
                 # Build pacing row helper
@@ -477,19 +488,6 @@ def render(ctx):
                 _amz_spend_plan = [m for m in _mkt_amz_media if m.get("month") == _cur_month]
                 if _amz_spend_plan:
                     _goal_amz_spend = float(_amz_spend_plan[0].get("spend", 0))
-
-                # ============================================================
-                # CHANNEL FILTER — toggle between All / Roll Up / DTC / Amazon
-                # ============================================================
-                _chan_sel = st.segmented_control(
-                    "Channel",
-                    options=["All", "Roll Up", "DTC", "Amazon"],
-                    default="All",
-                    key="_mkt_channel",
-                    label_visibility="collapsed",
-                )
-                if _chan_sel is None:
-                    _chan_sel = "All"
 
                 # ============================================================
                 # ROLL UP — DTC + Amazon combined
