@@ -7,6 +7,7 @@ by their line items (linked via __parentId). Line items follow their parent orde
 This is much faster than paginated REST API for large historical backfills.
 """
 import json
+import logging
 import requests
 import time
 import config as cfg
