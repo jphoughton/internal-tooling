@@ -105,7 +105,7 @@ def _translate_sql(sql: str) -> str:
 # ---------------------------------------------------------------------------
 # Connection wrapper for dict-like row access
 # ---------------------------------------------------------------------------
-class _Row(dict):
+class _Row(dict[str, Any]):
     """Dict subclass that also supports positional indexing (row[0]).
 
     psycopg2's RealDictRow supports row["col"] but not row[0].
@@ -131,10 +131,10 @@ class _CursorWrapper:
 
     def fetchone(self) -> Optional[_Row]:
         row = self._cur.fetchone()
-        return _Row(row) if row is not None else None
+        return _Row(dict(row)) if row is not None else None
 
     def fetchall(self) -> list[_Row]:
-        return [_Row(r) for r in self._cur.fetchall()]
+        return [_Row(dict(r)) for r in self._cur.fetchall()]
 
     @property
     def description(self) -> Any:
@@ -202,7 +202,7 @@ def read_sql(
     sql: str,
     conn_wrapper: ConnectionWrapper,
     params: Optional[Any] = None,
-) -> Any:
+) -> "pd.DataFrame":
     """Execute a SQL query through pandas with automatic SQL translation.
 
     Usage:
@@ -407,7 +407,7 @@ def init_db() -> None:
         print("  init_db: seeding seasonal indices...", flush=True)
         # Seed default seasonal indices if table is empty
         existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
-        if existing['cnt'] == 0:
+        if existing is not None and existing['cnt'] == 0:
             defaults = {
                 1: 0.95, 2: 0.92, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10,
                 7: 1.12, 8: 1.08, 9: 1.02, 10: 0.98, 11: 0.92, 12: 0.88,
@@ -579,7 +579,7 @@ def get_new_rows_since_yesterday(conn: ConnectionWrapper, sources: list[str]) ->
         f"AND sync_date = CURRENT_DATE::text AND status = 'success'",
         sources
     ).fetchone()
-    return row['total']
+    return int(row['total']) if row is not None else 0
 
 
 def get_synced_sources(conn: ConnectionWrapper, sources: list[str]) -> list[str]:
@@ -860,4 +860,4 @@ def fetch_table(conn: ConnectionWrapper, table: str) -> tuple[list[str], list[tu
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized (PostgreSQL: {DATABASE_URL[:30]}...)")
+    print(f"Database initialized (PostgreSQL: {os.environ.get('DATABASE_URL', '')[:30]}...)")
