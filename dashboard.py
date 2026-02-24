@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from db import (
     get_db, read_sql,
-    get_media_spend,
+    get_media_spend, get_amazon_revenue_forecast,
     get_seasonal_indices,
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
@@ -685,6 +685,9 @@ if _all_urgent:
 # ================================================================
 # Build shared context for page modules
 _biz_vars = get_business_vars()
+with get_db() as _ctx_conn:
+    _ctx_media_spend = get_media_spend(_ctx_conn, source='All Sources')
+    _ctx_amz_rev_forecast = get_amazon_revenue_forecast(_ctx_conn)
 _ctx = {
     'forecast_skus': FORECAST_SKUS,
     'cached_waterfall': _cached_waterfall,
@@ -695,6 +698,8 @@ _ctx = {
     'active_sources': active_sources,
     'configured_sources': configured_sources,
     'biz_vars': _biz_vars,
+    'media_spend': _ctx_media_spend,
+    'amazon_revenue_forecast': _ctx_amz_rev_forecast,
 }
 
 if page == "Overview":
