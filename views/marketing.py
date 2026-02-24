@@ -276,6 +276,8 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
+            _chan_sel = "All"  # default; overridden by widget below when goals are present
+
             if _has_goals:
                 # Build pacing row helper
                 # --- Color helpers ---
