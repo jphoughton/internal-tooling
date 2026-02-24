@@ -71,26 +71,35 @@ def _get_db_row_count():
     return total
 
 _EXPORT_COLUMNS = ['sale_date', 'sku', 'source', 'units_sold', 'revenue', 'order_count']
+_EXPORT_BATCH_SIZE = 1000
 
 
-def _build_inventory_csv() -> bytes:
-    """Query daily_sku_sales and return the full CSV as UTF-8 bytes.
+def _stream_inventory_csv(wfile) -> None:
+    """Stream daily_sku_sales as CSV rows directly to wfile in 1 000-row batches.
 
-    Columns are fetched in _EXPORT_COLUMNS order so positional row access
-    is safe. db.py uses psycopg2 RealDictCursor wrapped in _Row (a dict
-    subclass), so both row['col'] and list(row.values()) work correctly.
+    Writing in batches avoids holding the entire result set in memory.
+    db.py uses psycopg2 RealDictCursor wrapped in _Row (a dict subclass),
+    so both row['col'] and list(row.values()) access work correctly.
     """
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(_EXPORT_COLUMNS)
+    wfile.write(buf.getvalue().encode('utf-8'))
+
     with get_db() as conn:
-        rows = conn.execute(
+        cursor = conn.execute(
             'SELECT sale_date, sku, source, units_sold, revenue, order_count '
             'FROM daily_sku_sales ORDER BY sale_date, sku, source'
-        ).fetchall()
-    for row in rows:
-        writer.writerow([row[col] for col in _EXPORT_COLUMNS])
-    return buf.getvalue().encode('utf-8')
+        )
+        while True:
+            rows = cursor.fetchmany(_EXPORT_BATCH_SIZE)
+            if not rows:
+                break
+            buf.seek(0)
+            buf.truncate(0)
+            for row in rows:
+                writer.writerow([row[col] for col in _EXPORT_COLUMNS])
+            wfile.write(buf.getvalue().encode('utf-8'))
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -153,7 +162,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def _handle_export_csv(self):
-        """Handle GET /export/csv — stream daily_sku_sales as a CSV download."""
+        """Handle GET /export/csv — stream daily_sku_sales as a CSV download.
+
+        Rows are written in batches of _EXPORT_BATCH_SIZE to avoid loading
+        the full result set into memory. Content-Length is omitted because
+        the total size is not known before streaming begins.
+        """
         if API_KEY:
             raw_auth = self.headers.get('Authorization', '')
             auth = _sanitize_input(raw_auth)
@@ -161,21 +175,19 @@ class HealthHandler(BaseHTTPRequestHandler):
                 self._send_json(401, {'error': 'Unauthorized'})
                 return
 
-        try:
-            csv_data = _build_inventory_csv()
-        except Exception as exc:
-            self._send_json(500, {'error': f'Export failed: {exc}'})
-            return
-
         date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         filename = f'inventory_export_{date_str}.csv'
 
         self.send_response(200)
         self.send_header('Content-Type', f'{EXPORT_CSV_CONTENT_TYPE}; charset=utf-8')
         self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
-        self.send_header('Content-Length', str(len(csv_data)))
         self.end_headers()
-        self.wfile.write(csv_data)
+
+        try:
+            _stream_inventory_csv(self.wfile)
+        except Exception as exc:
+            # Headers already sent; log the error but cannot send an HTTP error response.
+            print(json.dumps({'event': 'export_error', 'error': str(exc)}), flush=True)
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
