@@ -2,6 +2,8 @@
 Streamlit Dashboard for Inventory Demand Forecasting.
 Thin router: dispatches to page modules in pages/.
 """
+import logging
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -58,6 +60,132 @@ def _cached_sku_forecast(waterfall_json, source_filter):
 
 from utils.constants import FORECAST_SKUS
 
+# ---------------------------------------------------------------------------
+# Startup validation — runs once per process on first Streamlit boot
+# ---------------------------------------------------------------------------
+_STARTUP_DONE = False
+
+# Env vars that MUST be present for production operation.
+# If running on Railway (RAILWAY_ENVIRONMENT is set), DATABASE_URL is required —
+# falling back to SQLite is not appropriate in a deployed environment.
+_REQUIRED_ENV_VARS: list[str] = (
+    ["DATABASE_URL"] if os.environ.get("RAILWAY_ENVIRONMENT") else []
+)
+
+# Env vars that are notable but not fatal if missing — they can all be
+# configured post-boot via the Settings page and are stored in the DB.
+_NOTABLE_ENV_VARS = [
+    "SHOPIFY_ACCESS_TOKEN",
+    "SHOPIFY_STORE_URL",
+    "AMAZON_REFRESH_TOKEN",
+    "AMAZON_LWA_CLIENT_ID",
+    "AMAZON_LWA_CLIENT_SECRET",
+]
+
+_log = logging.getLogger(__name__)
+
+
+def _run_startup_validation() -> dict:
+    """Validate DB connection, env vars, and log a startup banner.
+
+    Returns a dict with keys:
+        db_ok (bool), missing_required (list[str]), missing_notable (list[str]),
+        warnings (list[str])
+    """
+    import config as _cfg
+
+    # --- Startup banner ---
+    _log.info("=" * 60)
+    _log.info("  Hydrant Command Center  v%s", _cfg.BUILD_VERSION)
+    _log.info("  %s", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    _log.info("=" * 60)
+
+    # --- Config summary ---
+    db_url = os.environ.get("DATABASE_URL", "")
+    _log.info("[config] DATABASE_URL   : %s", "set" if db_url else "NOT SET (SQLite fallback)")
+    _log.info("[config] DEBUG          : %s", _cfg.DEBUG)
+    _log.info("[config] SYNC_HOUR      : %s:00 %s", _cfg.SYNC_HOUR, _cfg.SYNC_TIMEZONE)
+    _log.info("[config] FORECAST_HORIZON: %d days", _cfg.FORECAST_HORIZON_DAYS)
+    shopify_set = bool(_cfg.SHOPIFY_STORE_URL and _cfg.SHOPIFY_ACCESS_TOKEN)
+    amazon_set = bool(_cfg.AMAZON_REFRESH_TOKEN and _cfg.AMAZON_LWA_CLIENT_ID)
+    _log.info("[config] Shopify creds  : %s", "configured" if shopify_set else "missing")
+    _log.info("[config] Amazon creds   : %s", "configured" if amazon_set else "missing")
+
+    # --- Required env var check (fatal) ---
+    missing_required = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing_required:
+        _log.error("[startup] MISSING required env vars: %s", ", ".join(missing_required))
+    else:
+        if _REQUIRED_ENV_VARS:
+            _log.info("[startup] All required env vars are set")
+
+    # --- Notable env var check (warnings only — configurable via Settings UI) ---
+    missing_notable = [v for v in _NOTABLE_ENV_VARS if not os.environ.get(v)]
+    if missing_notable:
+        _log.warning("[startup] Missing API credential vars (configure via Settings): %s", ", ".join(missing_notable))
+    else:
+        _log.info("[startup] All notable env vars are set")
+
+    # --- DB connection check (fatal) ---
+    db_ok = False
+    warnings = []
+    try:
+        from db import get_db
+        with get_db() as conn:
+            conn.execute("SELECT 1")
+        db_ok = True
+        _log.info("[startup] Database connection: OK")
+    except Exception as exc:
+        msg = f"Database connection failed: {exc}"
+        _log.error("[startup] %s", msg)
+        warnings.append(msg)
+
+    _log.info("=" * 60)
+    return {
+        "db_ok": db_ok,
+        "missing_required": missing_required,
+        "missing_notable": missing_notable,
+        "warnings": warnings,
+    }
+
+
+def _maybe_run_startup() -> None:
+    """Run startup validation exactly once per process; surface critical errors in UI."""
+    global _STARTUP_DONE
+    if _STARTUP_DONE:
+        return
+    _STARTUP_DONE = True
+
+    # Ensure logging is configured (Streamlit may not set up a handler)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+    result = _run_startup_validation()
+
+    # --- Fail fast: missing required env vars ---
+    if result["missing_required"]:
+        st.error(
+            "**Missing required environment variables:** "
+            + ", ".join(f"`{v}`" for v in result["missing_required"])
+            + ". Set these in your Railway environment and redeploy.",
+            icon="🚨",
+        )
+        st.stop()
+
+    # --- Fail fast: DB unreachable ---
+    if not result["db_ok"]:
+        st.error(
+            "**Database connection failed at startup.** "
+            "Check `DATABASE_URL` in your environment variables. "
+            f"Detail: {result['warnings'][0] if result['warnings'] else 'unknown error'}",
+            icon="🚨",
+        )
+        st.stop()
+
+
 def _load_seasonal_json():
     """Load seasonal indices from DB and return as JSON string for cache key, or None if disabled."""
     import json as _json_s
@@ -77,6 +205,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Run once per process after page config is set (st.error is now safe to call)
+_maybe_run_startup()
 
 # --- Password protection (Railway / production) ---
 if not check_password():
