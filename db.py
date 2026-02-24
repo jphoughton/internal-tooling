@@ -202,7 +202,7 @@ def read_sql(
     sql: str,
     conn_wrapper: ConnectionWrapper,
     params: Optional[Any] = None,
-) -> Any:
+) -> pd.DataFrame:
     """Execute a SQL query through pandas with automatic SQL translation.
 
     Usage:
