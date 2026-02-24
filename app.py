@@ -19,6 +19,7 @@ from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from rate_limiter import RateLimiter
+from rate_limiter import RateLimiter
 from utils.constants import (
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
@@ -36,6 +37,7 @@ from utils.constants import (
 
 _START_TIME = time.monotonic()
 _cache = Cache(default_ttl=30)
+_rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RATE_LIMIT_WINDOW_SECONDS)
 _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RATE_LIMIT_WINDOW_SECONDS)
 
 _CORE_TABLES = [
