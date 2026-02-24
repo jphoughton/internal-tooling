@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
+from rate_limiter import RateLimiter
 from utils.constants import (
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
@@ -27,12 +28,15 @@ from utils.constants import (
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
     MAX_INPUT_LENGTH,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW_SECONDS,
     STARTUP_OPTIONAL_INTEGRATIONS,
     STARTUP_REQUIRED_ENV_VARS,
 )
 
 _START_TIME = time.monotonic()
 _cache = Cache(default_ttl=30)
+_rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RATE_LIMIT_WINDOW_SECONDS)
 
 _CORE_TABLES = [
     'customers',
@@ -81,6 +85,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         print(json.dumps(entry), flush=True)
 
     def do_GET(self):
+        # Rate limit: 60 requests per minute per IP
+        client_ip = self.client_address[0]
+        if not _rate_limiter.is_allowed(client_ip):
+            self._send_json(429, {'error': 'Too Many Requests'})
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
