@@ -1049,14 +1049,14 @@ def update_klaviyo_flow_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Paginated list query
+# Pagination
 # ---------------------------------------------------------------------------
 def get_items_page(
     conn: ConnectionWrapper,
-    page: int = 1,
-    per_page: int = 20,
+    page: int,
+    per_page: int,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return a page of orders and the total count.
+    """Return a page of order_items rows and the total row count.
 
     Args:
         conn: Active database connection.
@@ -1064,19 +1064,24 @@ def get_items_page(
         per_page: Number of rows per page.
 
     Returns:
-        Tuple of (rows, total_count) where rows is a list of dicts and
-        total_count is the total number of matching rows.
+        Tuple of (items, total_count) where items is a list of dicts
+        and total_count is the total number of rows in order_items.
     """
-    offset = (page - 1) * per_page
-    count_row = conn.execute("SELECT COUNT(*) AS cnt FROM orders").fetchone()
-    total_count = int(count_row["cnt"]) if count_row else 0
-    rows = conn.execute(
-        "SELECT order_id, source, order_date, total_amount, currency, status "
-        "FROM orders ORDER BY order_date DESC, order_id "
-        "LIMIT %s OFFSET %s",
-        (per_page, offset),
-    ).fetchall()
-    return [dict(r) for r in rows], total_count
+    try:
+        offset = (page - 1) * per_page
+        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM order_items").fetchone()
+        total_count: int = total_row['cnt'] if total_row else 0
+        rows = conn.execute(
+            "SELECT id, order_id, sku, quantity, unit_price FROM order_items "
+            "ORDER BY id LIMIT %s OFFSET %s",
+            (per_page, offset),
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        return items, total_count
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        raise DatabaseError(f'get_items_page failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------

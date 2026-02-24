@@ -4,11 +4,13 @@ ETL orchestration: coordinates daily sync from all sources.
 Supports parallel backfill via run_parallel_backfill() which splits
 date ranges into chunks and processes them concurrently.
 """
-import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync
 import config as cfg
+
+logger = logging.getLogger(__name__)
 
 
 def run_daily_sync(full_refresh=False, on_status=None):
@@ -50,7 +52,7 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["amazon_sales"] = _sync_amazon(full_refresh)
         except Exception as e:
             results["amazon_sales"] = f"ERROR: {e}"
-            print(f"Amazon sales sync failed: {e}")
+            logger.error("Amazon sales sync failed: %s", e)
         step_idx += 1
 
         _report(step_idx, "Syncing Amazon retention data...")
@@ -58,10 +60,10 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["amazon_retention"] = _sync_amazon_retention(full_refresh)
         except Exception as e:
             results["amazon_retention"] = f"ERROR: {e}"
-            print(f"Amazon retention sync failed: {e}")
+            logger.error("Amazon retention sync failed: %s", e)
         step_idx += 1
     else:
-        print("Amazon SP-API not configured — skipping.")
+        logger.warning("Amazon SP-API not configured — skipping.")
 
     # --- Shopify (only if configured) ---
     if has_shopify:
@@ -70,24 +72,24 @@ def run_daily_sync(full_refresh=False, on_status=None):
         ok, msg = test_connection()
         if not ok:
             results["shopify"] = f"ERROR: {msg}"
-            print(f"Shopify connection failed: {msg}")
+            logger.error("Shopify connection failed: %s", msg)
             with get_db() as conn:
                 log_sync(conn, "shopify", datetime.utcnow().strftime("%Y-%m-%d"),
                          0, status="error", error_message=msg)
         else:
-            print(f"Shopify connection OK: {msg}")
+            logger.info("Shopify connection OK: %s", msg)
             _report(step_idx, "Syncing Shopify orders...")
             try:
                 results["shopify"] = _sync_shopify(full_refresh, on_status=on_status, step_idx=step_idx, total_steps=total_steps)
             except Exception as e:
                 results["shopify"] = f"ERROR: {e}"
-                print(f"Shopify sync failed: {e}")
+                logger.error("Shopify sync failed: %s", e)
                 with get_db() as conn:
                     log_sync(conn, "shopify", datetime.utcnow().strftime("%Y-%m-%d"),
                              0, status="error", error_message=str(e))
         step_idx += 1
     else:
-        print("Shopify not configured — skipping.")
+        logger.warning("Shopify not configured — skipping.")
 
     # --- Klaviyo (only if configured) ---
     with get_db() as conn:
@@ -99,13 +101,13 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["klaviyo"] = _sync_klaviyo(_klaviyo_key)
         except Exception as e:
             results["klaviyo"] = f"ERROR: {e}"
-            print(f"Klaviyo sync failed: {e}")
+            logger.error("Klaviyo sync failed: %s", e)
             with get_db() as conn:
                 log_sync(conn, "klaviyo", datetime.utcnow().strftime("%Y-%m-%d"),
                          0, status="error", error_message=str(e))
         step_idx += 1
     else:
-        print("Klaviyo not configured — skipping.")
+        logger.warning("Klaviyo not configured — skipping.")
 
     # --- Google Sheet (if configured) ---
     _report(step_idx, "Syncing Google Sheet...")
@@ -123,21 +125,21 @@ def run_daily_sync(full_refresh=False, on_status=None):
                     set_setting(conn, "google_sheet_last_sync",
                                 datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
                 results["google_sheet"] = gs_count
-                print(f"Google Sheet: synced {gs_count} rows")
+                logger.info("Google Sheet: synced %d rows", gs_count)
         else:
-            print("Google Sheet not configured — skipping.")
+            logger.warning("Google Sheet not configured — skipping.")
     except Exception as e:
         results["google_sheet"] = f"ERROR: {e}"
-        print(f"Google Sheet sync failed: {e}")
+        logger.error("Google Sheet sync failed: %s", e)
 
     # --- Rebuild aggregates ---
     _report(step_idx, "Rebuilding sales aggregates...")
-    print("Rebuilding daily sales aggregates...")
+    logger.info("Rebuilding daily sales aggregates...")
     with get_db() as conn:
         rebuild_daily_sales(conn)
 
     _report(total_steps, "Sync complete!")
-    print(f"\nSync complete: {results}")
+    logger.info("Sync complete: %s", results)
     return results
 
 
