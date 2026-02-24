@@ -1,13 +1,17 @@
-"""Lightweight HTTP server exposing a /health endpoint.
+"""Lightweight HTTP server exposing /health and /export/csv endpoints.
 
 Returns JSON with:
   - uptime_seconds: seconds since this process started
   - version:        BUILD_VERSION from config.py
   - db_row_count:   total rows across core tables from db.py
 
+GET /export/csv streams all daily_sku_sales rows as a CSV download.
+
 Query parameters are sanitized on every request: whitespace is stripped,
 values are limited to 500 chars, and empty strings are rejected with 400.
 """
+import csv
+import io
 import json
 import os
 import time
@@ -19,6 +23,8 @@ from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from utils.constants import (
+    EXPORT_CSV_CONTENT_TYPE,
+    EXPORT_CSV_ENDPOINT_PATH,
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
     HEALTH_DEFAULT_PORT,
@@ -64,6 +70,23 @@ def _get_db_row_count():
     _cache.set('db_row_count', total)
     return total
 
+_EXPORT_COLUMNS = ['sale_date', 'sku', 'source', 'units_sold', 'revenue', 'order_count']
+
+
+def _build_inventory_csv() -> bytes:
+    """Query daily_sku_sales and return the full CSV as UTF-8 bytes."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_EXPORT_COLUMNS)
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT sale_date, sku, source, units_sold, revenue, order_count '
+            'FROM daily_sku_sales ORDER BY sale_date, sku, source'
+        ).fetchall()
+    for row in rows:
+        writer.writerow([row[col] for col in _EXPORT_COLUMNS])
+    return buf.getvalue().encode('utf-8')
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def handle_one_request(self):
@@ -90,6 +113,10 @@ class HealthHandler(BaseHTTPRequestHandler):
                 if _sanitize_input(v) is None:
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
+
+        if path == EXPORT_CSV_ENDPOINT_PATH:
+            self._handle_export_csv()
+            return
 
         if path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
@@ -119,6 +146,31 @@ class HealthHandler(BaseHTTPRequestHandler):
             'debug': DEBUG,
         }
         self._send_json(200, payload)
+
+    def _handle_export_csv(self):
+        """Handle GET /export/csv — stream daily_sku_sales as a CSV download."""
+        if API_KEY:
+            raw_auth = self.headers.get('Authorization', '')
+            auth = _sanitize_input(raw_auth)
+            if auth is None or auth != f'Bearer {API_KEY}':
+                self._send_json(401, {'error': 'Unauthorized'})
+                return
+
+        try:
+            csv_data = _build_inventory_csv()
+        except Exception as exc:
+            self._send_json(500, {'error': f'Export failed: {exc}'})
+            return
+
+        date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        filename = f'inventory_export_{date_str}.csv'
+
+        self.send_response(200)
+        self.send_header('Content-Type', f'{EXPORT_CSV_CONTENT_TYPE}; charset=utf-8')
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Content-Length', str(len(csv_data)))
+        self.end_headers()
+        self.wfile.write(csv_data)
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
