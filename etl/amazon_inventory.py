@@ -12,6 +12,7 @@ from sp_api.base import Marketplaces
 from etl.amazon import get_credentials, get_marketplace
 from etl.amazon_sku_map import map_amazon_sku, register_seller_sku, ASIN_TO_MASTER_SKU
 import config as cfg
+from etl.retry import with_retry
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,12 @@ def _parse_summary(item):
     }
 
 
+@with_retry
+def _get_inventory_page(inv_api, **kwargs):
+    """Single paginated call to the FBA Inventory Summaries endpoint."""
+    return inv_api.get_inventory_summary_marketplace(**kwargs)
+
+
 def get_inventory():
     """
     Fetch FBA inventory summaries from Amazon.
@@ -114,7 +121,7 @@ def get_inventory():
         if next_token:
             kwargs["nextToken"] = next_token
 
-        resp = inv_api.get_inventory_summary_marketplace(**kwargs)
+        resp = _get_inventory_page(inv_api, **kwargs)
         payload = resp.payload if resp else {}
 
         summaries = payload.get("inventorySummaries", [])
@@ -202,7 +209,7 @@ def _fetch_with_start_date(inv_api, inventory, already_fetched_asins):
             kwargs["nextToken"] = next_token
 
         try:
-            resp = inv_api.get_inventory_summary_marketplace(**kwargs)
+            resp = _get_inventory_page(inv_api, **kwargs)
         except Exception as e:
             log.warning("startDateTime query page %d failed: %s", page, e)
             break
@@ -258,7 +265,8 @@ def _fetch_missing_by_sku(inv_api, missing_asins, inventory):
         for sku in seller_skus:
             try:
                 time.sleep(0.5)  # Rate limit: SP-API allows ~2 req/s for inventory
-                resp = inv_api.get_inventory_summary_marketplace(
+                resp = _get_inventory_page(
+                    inv_api,
                     details=True,
                     granularityType="Marketplace",
                     granularityId=cfg.AMAZON_MARKETPLACE_ID,
@@ -287,7 +295,8 @@ def _fetch_missing_by_sku(inv_api, missing_asins, inventory):
         if not found:
             try:
                 time.sleep(0.5)
-                resp = inv_api.get_inventory_summary_marketplace(
+                resp = _get_inventory_page(
+                    inv_api,
                     details=False,
                     granularityType="Marketplace",
                     granularityId=cfg.AMAZON_MARKETPLACE_ID,
