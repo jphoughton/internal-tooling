@@ -201,7 +201,7 @@ def fetch_fulfillment_data(conn, since_date=None, until_date=None):
     buyer-email (hashed marketplace alias, stable per buyer), order IDs,
     SKUs, and pricing — enough to build Amazon-side retention cohorts.
 
-    Inserts into orders, order_items, and customers tables for cohort analysis.
+    Inserts into orders, inventory_items, and customers tables for cohort analysis.
     Returns number of records processed.
     """
     credentials = get_credentials()

@@ -276,7 +276,7 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
         # Mix from recent data
         rows = conn.execute(f"""
             SELECT oi.sku, SUM(oi.quantity) as qty
-            FROM order_items oi
+            FROM inventory_items oi
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
@@ -289,7 +289,7 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
         upc_data = conn.execute("""
             SELECT SUM(oi.quantity) as total_units,
                    COUNT(DISTINCT o.customer_id) as customers
-            FROM order_items oi
+            FROM inventory_items oi
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
@@ -385,7 +385,7 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
         # Mix from recent data
         rows = conn.execute(f"""
             SELECT oi.sku, SUM(oi.quantity) as qty
-            FROM order_items oi
+            FROM inventory_items oi
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
@@ -400,7 +400,7 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
                 SELECT strftime('%Y-%m', o.order_date) as month,
                        CAST(SUM(oi.quantity) AS REAL) / COUNT(DISTINCT o.customer_id) as monthly_upc
                 FROM orders o
-                JOIN order_items oi ON o.order_id = oi.order_id
+                JOIN inventory_items oi ON o.order_id = oi.order_id
                 JOIN customers c ON o.customer_id = c.customer_id
                 WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
                   AND o.order_date >= date('now', '-12 months')

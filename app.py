@@ -41,7 +41,7 @@ _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RAT
 _CORE_TABLES = [
     'customers',
     'orders',
-    'order_items',
+    'inventory_items',
     'daily_sku_sales',
     'media_spend',
 ]

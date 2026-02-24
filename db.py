@@ -268,7 +268,7 @@ _SCHEMA_SQL = [
         FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
     )""",
 
-    """CREATE TABLE IF NOT EXISTS order_items (
+    """CREATE TABLE IF NOT EXISTS inventory_items (
         id SERIAL PRIMARY KEY,
         order_id TEXT NOT NULL,
         sku TEXT NOT NULL,
@@ -377,7 +377,7 @@ _SCHEMA_SQL = [
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
-    "CREATE INDEX IF NOT EXISTS idx_order_items_sku ON order_items(sku)",
+    "CREATE INDEX IF NOT EXISTS idx_inventory_items_sku ON inventory_items(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_sku ON daily_sku_sales(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sku_sales(sale_date)",
 
@@ -519,7 +519,7 @@ def upsert_order_item(
 ) -> None:
     try:
         conn.execute("""
-            INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
+            INSERT INTO inventory_items (order_id, sku, product_name, quantity, unit_price, total_price)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT(order_id, sku) DO UPDATE SET
                 quantity = excluded.quantity,
@@ -570,9 +570,9 @@ def upsert_sku(
 # Rebuild aggregate table
 # ---------------------------------------------------------------------------
 def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
-    """Rebuild the daily_sku_sales aggregate table from order_items.
+    """Rebuild the daily_sku_sales aggregate table from inventory_items.
 
-    IMPORTANT: Only rebuilds Shopify data (from order_items/orders tables).
+    IMPORTANT: Only rebuilds Shopify data (from inventory_items/orders tables).
     Amazon data is inserted directly into daily_sku_sales by the Amazon ETL
     and must NOT be deleted here.
     """
@@ -587,7 +587,7 @@ def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
                 SUM(oi.quantity) as units_sold,
                 SUM(oi.total_price) as revenue,
                 COUNT(DISTINCT o.order_id) as order_count
-            FROM order_items oi
+            FROM inventory_items oi
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.status = 'completed' AND o.source = 'shopify'
             GROUP BY o.order_date::date, oi.sku, o.source
@@ -1056,7 +1056,7 @@ def get_inventory_items_page(
     page: int,
     per_page: int,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return a page of order_items rows and the total row count.
+    """Return a page of inventory_items rows and the total row count.
 
     Args:
         conn: Active database connection.
@@ -1065,14 +1065,14 @@ def get_inventory_items_page(
 
     Returns:
         Tuple of (items, total_count) where items is a list of dicts
-        and total_count is the total number of rows in order_items.
+        and total_count is the total number of rows in inventory_items.
     """
     try:
         offset = (page - 1) * per_page
-        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM order_items").fetchone()
+        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM inventory_items").fetchone()
         total_count: int = total_row['cnt'] if total_row else 0
         rows = conn.execute(
-            "SELECT id, order_id, sku, quantity, unit_price FROM order_items "
+            "SELECT id, order_id, sku, quantity, unit_price FROM inventory_items "
             "ORDER BY id LIMIT %s OFFSET %s",
             (per_page, offset),
         ).fetchall()

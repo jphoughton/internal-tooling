@@ -57,7 +57,7 @@ def _load_overview_stats(date_start=None, date_end=None):
             SELECT oi.sku, sm.product_name, sm.category,
                    SUM(oi.quantity) as total_units,
                    SUM(oi.total_price) as total_revenue
-            FROM order_items oi
+            FROM inventory_items oi
             JOIN sku_master sm ON oi.sku = sm.sku
             JOIN orders o ON oi.order_id = o.order_id
             WHERE 1=1 {date_clause_orders.replace('order_date', 'o.order_date')}
