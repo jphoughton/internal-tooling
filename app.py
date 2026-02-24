@@ -74,7 +74,12 @@ _EXPORT_COLUMNS = ['sale_date', 'sku', 'source', 'units_sold', 'revenue', 'order
 
 
 def _build_inventory_csv() -> bytes:
-    """Query daily_sku_sales and return the full CSV as UTF-8 bytes."""
+    """Query daily_sku_sales and return the full CSV as UTF-8 bytes.
+
+    Columns are fetched in _EXPORT_COLUMNS order so positional row access
+    is safe. db.py uses psycopg2 RealDictCursor wrapped in _Row (a dict
+    subclass), so both row['col'] and list(row.values()) work correctly.
+    """
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(_EXPORT_COLUMNS)
