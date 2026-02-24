@@ -175,7 +175,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         if response.status_code == 429:
             # Rate limited — Shopify uses leaky bucket
             retry_after = float(response.headers.get("Retry-After", 2))
-            print(f"Shopify rate limit hit, waiting {retry_after}s...")
+            logger.warning('Shopify rate limit hit, waiting %ss', retry_after)
             time.sleep(retry_after)
             continue
 
@@ -256,9 +256,10 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                 requested_days = (actual_end - requested_start).days
                 actual_days = (actual_end - actual_start).days
                 if requested_days > 90 and actual_days < 70:
-                    print(
-                        f"WARNING: Requested orders from {since_date} but oldest is "
-                        f"{oldest} (~{actual_days} days). App may lack 'read_all_orders' scope."
+                    logger.warning(
+                        'Requested orders from %s but oldest is %s (~%d days). '
+                        "App may lack 'read_all_orders' scope.",
+                        since_date, oldest, actual_days,
                     )
         except Exception:
             pass

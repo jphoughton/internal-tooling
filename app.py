@@ -9,6 +9,7 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from utils.constants import (
@@ -22,6 +23,7 @@ from utils.constants import (
 )
 
 _START_TIME = time.monotonic()
+_cache = Cache(default_ttl=30)
 
 _CORE_TABLES = [
     'customers',
@@ -33,12 +35,16 @@ _CORE_TABLES = [
 
 
 def _get_db_row_count():
+    cached = _cache.get('db_row_count')
+    if cached is not None:
+        return cached
     total = 0
     with get_db() as conn:
         for table in _CORE_TABLES:
             row = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
             if row:
                 total += row[0]
+    _cache.set('db_row_count', total)
     return total
 
 
