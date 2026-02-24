@@ -5,20 +5,26 @@ Uses psycopg2 with a connection pool. All SQL uses PostgreSQL syntax natively.
 The _translate_sql() helper converts any remaining SQLite-style SQL found in
 analytics/dashboard code (strftime, date('now'), julianday, ? placeholders).
 """
+from __future__ import annotations
+
 import os
 import re
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Connection pool
 # ---------------------------------------------------------------------------
-_pool = None
+_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
 
 
-def _get_pool():
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     """Lazy-init the connection pool (avoids import-time errors)."""
     global _pool
     if _pool is None:
@@ -44,7 +50,7 @@ def _get_pool():
 # ---------------------------------------------------------------------------
 # SQL translation (SQLite idioms -> PostgreSQL)
 # ---------------------------------------------------------------------------
-def _translate_sql(sql):
+def _translate_sql(sql: str) -> str:
     """Convert SQLite-specific SQL patterns to PostgreSQL equivalents.
 
     Applied automatically to every query so that analytics/dashboard code
@@ -65,7 +71,7 @@ def _translate_sql(sql):
     )
 
     # 3. date('now', '-N days/months/years') -> CURRENT_DATE - INTERVAL 'N ...'
-    def _date_offset(m):
+    def _date_offset(m: re.Match[str]) -> str:
         sign = '-' if m.group(1).startswith('-') else '+'
         num = m.group(1).lstrip('-+')
         unit = m.group(2)
@@ -107,11 +113,11 @@ class _Row(dict):
     relies on positional access, so this wrapper adds it.
     """
 
-    def __init__(self, data):
+    def __init__(self, data: dict[str, Any]) -> None:
         super().__init__(data)
         self._keys = list(data.keys())
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: Union[int, str]) -> Any:
         if isinstance(key, int):
             return super().__getitem__(self._keys[key])
         return super().__getitem__(key)
@@ -120,32 +126,36 @@ class _Row(dict):
 class _CursorWrapper:
     """Wraps a psycopg2 RealDictCursor to match the interface used by callers."""
 
-    def __init__(self, cursor):
+    def __init__(self, cursor: psycopg2.extensions.cursor) -> None:
         self._cur = cursor
 
-    def fetchone(self):
+    def fetchone(self) -> Optional[_Row]:
         row = self._cur.fetchone()
         return _Row(row) if row is not None else None
 
-    def fetchall(self):
+    def fetchall(self) -> list[_Row]:
         return [_Row(r) for r in self._cur.fetchall()]
 
     @property
-    def description(self):
+    def description(self) -> Any:
         return self._cur.description
 
     @property
-    def rowcount(self):
+    def rowcount(self) -> int:
         return self._cur.rowcount
 
 
 class ConnectionWrapper:
     """Unified database connection that translates SQL and provides dict rows."""
 
-    def __init__(self, raw_conn):
+    def __init__(self, raw_conn: psycopg2.extensions.connection) -> None:
         self._conn = raw_conn
 
-    def execute(self, sql, params=None):
+    def execute(
+        self,
+        sql: str,
+        params: Optional[Union[tuple[Any, ...], list[Any]]] = None,
+    ) -> _CursorWrapper:
         sql = _translate_sql(sql)
         cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         if params:
@@ -154,14 +164,14 @@ class ConnectionWrapper:
             cur.execute(sql)
         return _CursorWrapper(cur)
 
-    def commit(self):
+    def commit(self) -> None:
         self._conn.commit()
 
-    def rollback(self):
+    def rollback(self) -> None:
         self._conn.rollback()
 
     @property
-    def raw(self):
+    def raw(self) -> psycopg2.extensions.connection:
         """Raw psycopg2 connection for pd.read_sql_query()."""
         return self._conn
 
@@ -170,7 +180,7 @@ class ConnectionWrapper:
 # Context manager
 # ---------------------------------------------------------------------------
 @contextmanager
-def get_db():
+def get_db() -> Iterator[ConnectionWrapper]:
     """Yield a ConnectionWrapper; auto-commit on success, rollback on error."""
     pool = _get_pool()
     raw = pool.getconn()
@@ -188,7 +198,11 @@ def get_db():
 # ---------------------------------------------------------------------------
 # pd.read_sql_query helper
 # ---------------------------------------------------------------------------
-def read_sql(sql, conn_wrapper, params=None):
+def read_sql(
+    sql: str,
+    conn_wrapper: ConnectionWrapper,
+    params: Optional[Any] = None,
+) -> Any:
     """Execute a SQL query through pandas with automatic SQL translation.
 
     Usage:
@@ -371,7 +385,7 @@ _SCHEMA_SQL = [
 ]
 
 
-def init_db():
+def init_db() -> None:
     """Create all tables and indexes if they don't exist."""
     print("  init_db: connecting...", flush=True)
     with get_db() as conn:
@@ -413,7 +427,13 @@ def init_db():
 # ---------------------------------------------------------------------------
 # Upsert helpers
 # ---------------------------------------------------------------------------
-def upsert_customer(conn, customer_id, email, source, first_order_date):
+def upsert_customer(
+    conn: ConnectionWrapper,
+    customer_id: str,
+    email: Optional[str],
+    source: str,
+    first_order_date: Optional[str],
+) -> None:
     conn.execute("""
         INSERT INTO customers (customer_id, email, source, first_order_date)
         VALUES (%s, %s, %s, %s)
@@ -423,7 +443,16 @@ def upsert_customer(conn, customer_id, email, source, first_order_date):
     """, (customer_id, email, source, first_order_date))
 
 
-def upsert_order(conn, order_id, source, source_order_id, customer_id, order_date, total_amount, currency="USD"):
+def upsert_order(
+    conn: ConnectionWrapper,
+    order_id: str,
+    source: str,
+    source_order_id: str,
+    customer_id: Optional[str],
+    order_date: str,
+    total_amount: float,
+    currency: str = "USD",
+) -> None:
     conn.execute("""
         INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -433,7 +462,14 @@ def upsert_order(conn, order_id, source, source_order_id, customer_id, order_dat
     """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
 
 
-def upsert_order_item(conn, order_id, sku, product_name, quantity, unit_price):
+def upsert_order_item(
+    conn: ConnectionWrapper,
+    order_id: str,
+    sku: str,
+    product_name: Optional[str],
+    quantity: int,
+    unit_price: float,
+) -> None:
     conn.execute("""
         INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
         VALUES (%s, %s, %s, %s, %s, %s)
@@ -444,7 +480,14 @@ def upsert_order_item(conn, order_id, sku, product_name, quantity, unit_price):
     """, (order_id, sku, product_name, quantity, unit_price, quantity * unit_price))
 
 
-def upsert_sku(conn, sku, product_name, category, first_sale_date, source):
+def upsert_sku(
+    conn: ConnectionWrapper,
+    sku: str,
+    product_name: Optional[str],
+    category: Optional[str],
+    first_sale_date: Optional[str],
+    source: str,
+) -> None:
     row = conn.execute("SELECT sources FROM sku_master WHERE sku = %s", (sku,)).fetchone()
     if row and row["sources"]:
         existing = set(row["sources"].split(","))
@@ -467,7 +510,7 @@ def upsert_sku(conn, sku, product_name, category, first_sale_date, source):
 # ---------------------------------------------------------------------------
 # Rebuild aggregate table
 # ---------------------------------------------------------------------------
-def rebuild_daily_sales(conn):
+def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
     """Rebuild the daily_sku_sales aggregate table from order_items.
 
     IMPORTANT: Only rebuilds Shopify data (from order_items/orders tables).
@@ -494,7 +537,7 @@ def rebuild_daily_sales(conn):
 # ---------------------------------------------------------------------------
 # Sync helpers
 # ---------------------------------------------------------------------------
-def get_last_sync_date(conn, source):
+def get_last_sync_date(conn: ConnectionWrapper, source: str) -> Optional[str]:
     row = conn.execute(
         "SELECT MAX(sync_date) as last_date FROM sync_log WHERE source = %s AND status = 'success'",
         (source,)
@@ -502,14 +545,21 @@ def get_last_sync_date(conn, source):
     return row["last_date"] if row and row["last_date"] else None
 
 
-def log_sync(conn, source, sync_date, records_fetched, status="success", error_message=None):
+def log_sync(
+    conn: ConnectionWrapper,
+    source: str,
+    sync_date: str,
+    records_fetched: int,
+    status: str = "success",
+    error_message: Optional[str] = None,
+) -> None:
     conn.execute("""
         INSERT INTO sync_log (source, sync_date, records_fetched, status, error_message)
         VALUES (%s, %s, %s, %s, %s)
     """, (source, sync_date, records_fetched, status, error_message))
 
 
-def get_last_sync_timestamp(conn, sources):
+def get_last_sync_timestamp(conn: ConnectionWrapper, sources: list[str]) -> Optional[str]:
     """Return created_at of the most recent successful sync across given sources."""
     placeholders = ','.join('%s' for _ in sources)
     row = conn.execute(
@@ -520,7 +570,7 @@ def get_last_sync_timestamp(conn, sources):
     return row['last_ts'] if row and row['last_ts'] else None
 
 
-def get_new_rows_since_yesterday(conn, sources):
+def get_new_rows_since_yesterday(conn: ConnectionWrapper, sources: list[str]) -> int:
     """Return total records_fetched for today's syncs across given sources."""
     placeholders = ','.join('%s' for _ in sources)
     row = conn.execute(
@@ -532,7 +582,7 @@ def get_new_rows_since_yesterday(conn, sources):
     return row['total']
 
 
-def get_synced_sources(conn, sources):
+def get_synced_sources(conn: ConnectionWrapper, sources: list[str]) -> list[str]:
     """Return list of source names that have at least one successful sync."""
     placeholders = ','.join('%s' for _ in sources)
     rows = conn.execute(
@@ -546,7 +596,13 @@ def get_synced_sources(conn, sources):
 # ---------------------------------------------------------------------------
 # Media spend & forecasts
 # ---------------------------------------------------------------------------
-def upsert_media_spend(conn, month, spend, roas, source="All Sources"):
+def upsert_media_spend(
+    conn: ConnectionWrapper,
+    month: str,
+    spend: float,
+    roas: float,
+    source: str = "All Sources",
+) -> None:
     conn.execute("""
         INSERT INTO media_spend (month, spend, new_customer_roas, source)
         VALUES (%s, %s, %s, %s)
@@ -557,7 +613,10 @@ def upsert_media_spend(conn, month, spend, roas, source="All Sources"):
     """, (month, spend, roas, source))
 
 
-def get_media_spend(conn, source="All Sources"):
+def get_media_spend(
+    conn: ConnectionWrapper,
+    source: str = "All Sources",
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT month, spend, new_customer_roas FROM media_spend WHERE source = %s ORDER BY month",
         (source,)
@@ -565,7 +624,11 @@ def get_media_spend(conn, source="All Sources"):
     return [{"month": r["month"], "spend": float(r["spend"] or 0), "new_customer_roas": float(r["new_customer_roas"] or 0)} for r in rows]
 
 
-def upsert_amazon_revenue_forecast(conn, month, revenue):
+def upsert_amazon_revenue_forecast(
+    conn: ConnectionWrapper,
+    month: str,
+    revenue: float,
+) -> None:
     conn.execute("""
         INSERT INTO amazon_revenue_forecast (month, revenue)
         VALUES (%s, %s)
@@ -575,14 +638,19 @@ def upsert_amazon_revenue_forecast(conn, month, revenue):
     """, (month, revenue))
 
 
-def get_amazon_revenue_forecast(conn):
+def get_amazon_revenue_forecast(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT month, revenue FROM amazon_revenue_forecast ORDER BY month"
     ).fetchall()
     return [{"month": r["month"], "revenue": float(r["revenue"] or 0)} for r in rows]
 
 
-def upsert_planned_inbound(conn, sku, month, units):
+def upsert_planned_inbound(
+    conn: ConnectionWrapper,
+    sku: str,
+    month: str,
+    units: int,
+) -> None:
     conn.execute("""
         INSERT INTO planned_inbound (sku, month, units)
         VALUES (%s, %s, %s)
@@ -592,7 +660,7 @@ def upsert_planned_inbound(conn, sku, month, units):
     """, (sku, month, units))
 
 
-def get_planned_inbound(conn):
+def get_planned_inbound(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     """Return all planned inbound entries as list of dicts."""
     rows = conn.execute(
         "SELECT sku, month, units FROM planned_inbound ORDER BY sku, month"
@@ -600,12 +668,12 @@ def get_planned_inbound(conn):
     return [{"sku": r["sku"], "month": r["month"], "units": int(r["units"] or 0)} for r in rows]
 
 
-def get_planned_inbound_dict(conn):
+def get_planned_inbound_dict(conn: ConnectionWrapper) -> dict[str, dict[str, int]]:
     """Return planned inbound as nested dict: {sku: {month: units}}."""
     rows = conn.execute(
         "SELECT sku, month, units FROM planned_inbound WHERE units > 0"
     ).fetchall()
-    result = {}
+    result: dict[str, dict[str, int]] = {}
     for r in rows:
         result.setdefault(r["sku"], {})[r["month"]] = int(r["units"] or 0)
     return result
@@ -614,7 +682,7 @@ def get_planned_inbound_dict(conn):
 # ---------------------------------------------------------------------------
 # Seasonal indices
 # ---------------------------------------------------------------------------
-def get_seasonal_indices(conn):
+def get_seasonal_indices(conn: ConnectionWrapper) -> dict[int, float]:
     """Return seasonal indices as dict {month_num: value}, e.g. {1: 0.95, ...}."""
     rows = conn.execute(
         "SELECT month_num, index_value FROM seasonal_indices ORDER BY month_num"
@@ -622,7 +690,11 @@ def get_seasonal_indices(conn):
     return {int(r["month_num"]): float(r["index_value"] or 1.0) for r in rows}
 
 
-def upsert_seasonal_index(conn, month_num, value):
+def upsert_seasonal_index(
+    conn: ConnectionWrapper,
+    month_num: int,
+    value: float,
+) -> None:
     conn.execute("""
         INSERT INTO seasonal_indices (month_num, index_value)
         VALUES (%s, %s)
@@ -635,7 +707,11 @@ def upsert_seasonal_index(conn, month_num, value):
 # ---------------------------------------------------------------------------
 # App settings
 # ---------------------------------------------------------------------------
-def get_setting(conn, key, default=None):
+def get_setting(
+    conn: ConnectionWrapper,
+    key: str,
+    default: Optional[str] = None,
+) -> Optional[str]:
     """Get an app setting by key, returning default if not found."""
     row = conn.execute(
         "SELECT value FROM app_settings WHERE key = %s", (key,)
@@ -643,7 +719,7 @@ def get_setting(conn, key, default=None):
     return row["value"] if row else default
 
 
-def set_setting(conn, key, value):
+def set_setting(conn: ConnectionWrapper, key: str, value: Any) -> None:
     conn.execute("""
         INSERT INTO app_settings (key, value)
         VALUES (%s, %s)
@@ -656,7 +732,10 @@ def set_setting(conn, key, value):
 # ---------------------------------------------------------------------------
 # Klaviyo
 # ---------------------------------------------------------------------------
-def upsert_klaviyo_campaign(conn, campaign):
+def upsert_klaviyo_campaign(
+    conn: ConnectionWrapper,
+    campaign: dict[str, Any],
+) -> None:
     conn.execute("""
         INSERT INTO klaviyo_campaigns (id, name, status, send_time, created_at, updated_at, synced_at)
         VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
@@ -668,7 +747,10 @@ def upsert_klaviyo_campaign(conn, campaign):
           campaign["send_time"], campaign["created_at"], campaign["updated_at"]))
 
 
-def upsert_klaviyo_flow(conn, flow):
+def upsert_klaviyo_flow(
+    conn: ConnectionWrapper,
+    flow: dict[str, Any],
+) -> None:
     conn.execute("""
         INSERT INTO klaviyo_flows (id, name, status, trigger_type, created, updated, synced_at)
         VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
@@ -680,7 +762,10 @@ def upsert_klaviyo_flow(conn, flow):
           flow["trigger_type"], flow["created"], flow["updated"]))
 
 
-def upsert_klaviyo_list(conn, lst):
+def upsert_klaviyo_list(
+    conn: ConnectionWrapper,
+    lst: dict[str, Any],
+) -> None:
     conn.execute("""
         INSERT INTO klaviyo_lists (id, name, created, updated, synced_at)
         VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP::text)
@@ -690,7 +775,7 @@ def upsert_klaviyo_list(conn, lst):
     """, (lst["id"], lst["name"], lst["created"], lst["updated"]))
 
 
-def get_klaviyo_campaigns(conn):
+def get_klaviyo_campaigns(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT id, name, status, send_time, created_at, updated_at, "
         "recipients, delivered, opens_unique, clicks_unique, "
@@ -702,7 +787,7 @@ def get_klaviyo_campaigns(conn):
     return [dict(r) for r in rows]
 
 
-def get_klaviyo_flows(conn):
+def get_klaviyo_flows(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT id, name, status, trigger_type, created, updated, "
         "recipients, delivered, opens_unique, clicks_unique, "
@@ -714,7 +799,7 @@ def get_klaviyo_flows(conn):
     return [dict(r) for r in rows]
 
 
-def get_klaviyo_lists(conn):
+def get_klaviyo_lists(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT id, name, created, updated "
         "FROM klaviyo_lists ORDER BY name"
@@ -730,7 +815,11 @@ _METRIC_COLS = [
 ]
 
 
-def update_klaviyo_campaign_metrics(conn, campaign_id, metrics):
+def update_klaviyo_campaign_metrics(
+    conn: ConnectionWrapper,
+    campaign_id: str,
+    metrics: dict[str, Any],
+) -> None:
     set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
     conn.execute(
         f"UPDATE klaviyo_campaigns SET {set_clause} WHERE id = %s",
@@ -738,7 +827,11 @@ def update_klaviyo_campaign_metrics(conn, campaign_id, metrics):
     )
 
 
-def update_klaviyo_flow_metrics(conn, flow_id, metrics):
+def update_klaviyo_flow_metrics(
+    conn: ConnectionWrapper,
+    flow_id: str,
+    metrics: dict[str, Any],
+) -> None:
     set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
     conn.execute(
         f"UPDATE klaviyo_flows SET {set_clause} WHERE id = %s",
