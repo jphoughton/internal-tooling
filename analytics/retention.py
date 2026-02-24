@@ -29,7 +29,7 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
                 c.first_order_date
             FROM orders o
             JOIN customers c ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id = oi.order_id
+            JOIN order_items oi ON o.order_id = oi.order_id
             WHERE 1=1
         """
         params = []
@@ -117,7 +117,7 @@ def build_cohort_matrices(sku_filter=None, source_filter=None):
                 SUM(oi.total_price) as revenue
             FROM orders o
             JOIN customers c ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id = oi.order_id
+            JOIN order_items oi ON o.order_id = oi.order_id
             WHERE 1=1
         """
         params = []
@@ -223,7 +223,7 @@ def get_cohort_summary(sku_filter=None, source_filter=None):
                 COUNT(DISTINCT o.order_id) as first_month_orders
             FROM orders o
             JOIN customers c ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id = oi.order_id
+            JOIN order_items oi ON o.order_id = oi.order_id
             WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
         """
         aov_params = []
@@ -297,7 +297,7 @@ def get_repeat_rate_summary(source_filter=None):
     """Compute per-cohort repeat purchase metrics.
 
     Groups customers by first-purchase month, counts how many placed 2+
-    distinct orders.  Revenue is derived from inventory_items.total_price
+    distinct orders.  Revenue is derived from order_items.total_price
     (not orders.total_amount) to handle multi-line-item Amazon orders.
 
     Returns DataFrame: cohort, total_customers, repeat_customers,
@@ -343,7 +343,7 @@ def get_repeat_rate_summary(source_filter=None):
                          THEN oi.total_price ELSE 0 END) AS repeat_revenue
             FROM orders o
             JOIN customers c    ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id    = oi.order_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
             WHERE 1=1
         """
         rev_params = []
@@ -513,7 +513,7 @@ def get_new_repeat_summary(start_date, end_date, source_filter=None):
                                     THEN o.order_id END) AS repeat_orders
             FROM orders o
             JOIN customers c    ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id    = oi.order_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
             WHERE o.order_date BETWEEN ? AND ?
             {source_clause}
         """, params_rev).fetchone()
@@ -563,7 +563,7 @@ def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
                          THEN oi.total_price ELSE 0 END) AS repeat_revenue
             FROM orders o
             JOIN customers c    ON o.customer_id = c.customer_id
-            JOIN inventory_items oi ON o.order_id    = oi.order_id
+            JOIN order_items oi ON o.order_id    = oi.order_id
             WHERE o.order_date BETWEEN ? AND ?
             {source_clause}
             GROUP BY o.order_date

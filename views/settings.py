@@ -335,7 +335,7 @@ def render(ctx):
                             # Aggregate into daily_sku_sales
                             _amz_progress.progress(0.95, text="Building daily sales aggregates...")
 
-                            # Build Amazon daily sales from the imported inventory_items
+                            # Build Amazon daily sales from the imported order_items
                             conn.execute("DELETE FROM daily_sku_sales WHERE source = 'amazon'")
                             conn.execute("""
                                 INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
@@ -346,7 +346,7 @@ def render(ctx):
                                     SUM(oi.quantity) as units_sold,
                                     SUM(oi.total_price) as revenue,
                                     COUNT(DISTINCT o.order_id) as order_count
-                                FROM inventory_items oi
+                                FROM order_items oi
                                 JOIN orders o ON oi.order_id = o.order_id
                                 WHERE o.source = 'amazon' AND o.status = 'completed'
                                 GROUP BY DATE(o.order_date), oi.sku

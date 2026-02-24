@@ -169,7 +169,7 @@ def migrate_orders(sq: sqlite3.Connection, pg: psycopg2.extensions.connection, d
 
 
 def migrate_inventory_items(sq: sqlite3.Connection, pg: psycopg2.extensions.connection, dry_run: bool) -> int:
-    """Migrate SQLite order_items → PostgreSQL inventory_items."""
+    """Migrate SQLite order_items → PostgreSQL order_items."""
     rows = [
         (r['order_id'], r['sku'], r['product_name'],
          int(r['quantity'] or 1), float(r['unit_price'] or 0), float(r['total_price'] or 0))
@@ -178,15 +178,15 @@ def migrate_inventory_items(sq: sqlite3.Connection, pg: psycopg2.extensions.conn
         )
     ]
     sql = """
-        INSERT INTO inventory_items (order_id, sku, product_name, quantity, unit_price, total_price)
+        INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
         VALUES %s
         ON CONFLICT (order_id, sku) DO UPDATE SET
             quantity = excluded.quantity,
             unit_price = excluded.unit_price,
             total_price = excluded.total_price
     """
-    log.info('inventory_items (from order_items): %d rows to migrate', len(rows))
-    return _batch_upsert(pg, sql, rows, dry_run, 'inventory_items')
+    log.info('order_items: %d rows to migrate', len(rows))
+    return _batch_upsert(pg, sql, rows, dry_run, 'order_items')
 
 
 def migrate_daily_sku_sales(sq: sqlite3.Connection, pg: psycopg2.extensions.connection, dry_run: bool) -> int:
@@ -450,7 +450,7 @@ def run(dry_run: bool) -> None:
         ('customers',               lambda: migrate_customers(sq, pg, dry_run)),
         ('sku_master',              lambda: migrate_sku_master(sq, pg, dry_run)),
         ('orders',                  lambda: migrate_orders(sq, pg, dry_run)),
-        ('inventory_items',         lambda: migrate_inventory_items(sq, pg, dry_run)),
+        ('order_items',             lambda: migrate_inventory_items(sq, pg, dry_run)),
         ('daily_sku_sales',         lambda: migrate_daily_sku_sales(sq, pg, dry_run)),
         ('media_spend',             lambda: migrate_media_spend(sq, pg, dry_run)),
         ('amazon_revenue_forecast', lambda: migrate_amazon_revenue_forecast(sq, pg, dry_run)),

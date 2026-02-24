@@ -199,14 +199,14 @@ class TestDateValidity:
 # ═══════════════════════════════════════════════════════════════════
 class TestReferentialIntegrity:
 
-    def test_no_orphaned_inventory_items(self, db):
-        skip_if_table_empty(db, 'inventory_items')
+    def test_no_orphaned_order_items(self, db):
+        skip_if_table_empty(db, 'order_items')
         count = scalar(db,
-            "SELECT COUNT(*) FROM inventory_items oi "
+            "SELECT COUNT(*) FROM order_items oi "
             "LEFT JOIN orders o ON oi.order_id = o.order_id "
             "WHERE o.order_id IS NULL"
         )
-        assert count == 0, f'{count} inventory_items reference non-existent orders'
+        assert count == 0, f'{count} order_items reference non-existent orders'
 
     def test_no_orders_referencing_missing_customers(self, db):
         skip_if_table_empty(db, 'orders')
@@ -229,16 +229,16 @@ class TestReferentialIntegrity:
             f'{len(orphans)} SKUs in daily_sku_sales missing from sku_master: ' + \
             ', '.join(r['sku'] for r in orphans[:10])
 
-    def test_inventory_items_skus_exist_in_sku_master(self, db):
-        skip_if_table_empty(db, 'inventory_items')
+    def test_order_items_skus_exist_in_sku_master(self, db):
+        skip_if_table_empty(db, 'order_items')
         skip_if_table_empty(db, 'sku_master')
         orphans = fetchall(db,
-            "SELECT DISTINCT oi.sku FROM inventory_items oi "
+            "SELECT DISTINCT oi.sku FROM order_items oi "
             "LEFT JOIN sku_master s ON oi.sku = s.sku "
             "WHERE s.sku IS NULL"
         )
         assert len(orphans) == 0, \
-            f'{len(orphans)} SKUs in inventory_items missing from sku_master: ' + \
+            f'{len(orphans)} SKUs in order_items missing from sku_master: ' + \
             ', '.join(r['sku'] for r in orphans[:10])
 
 
@@ -331,13 +331,13 @@ class TestCustomerCohortHealth:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 8. Cross-Table Consistency — Does daily_sku_sales match inventory_items?
+# 8. Cross-Table Consistency — Does daily_sku_sales match order_items?
 # ═══════════════════════════════════════════════════════════════════
 class TestCrossTableConsistency:
 
-    def test_shopify_revenue_matches_inventory_items_aggregation(self, db):
+    def test_shopify_revenue_matches_order_items_aggregation(self, db):
         skip_if_table_empty(db, 'daily_sku_sales')
-        skip_if_table_empty(db, 'inventory_items')
+        skip_if_table_empty(db, 'order_items')
         mismatches = fetchall(db, """
             SELECT
                 COALESCE(d.sale_date, oi_agg.order_date) AS dt,
@@ -349,7 +349,7 @@ class TestCrossTableConsistency:
                 SELECT o.order_date, oi.sku,
                        SUM(oi.total_price) AS rev
                 FROM orders o
-                JOIN inventory_items oi ON o.order_id = oi.order_id
+                JOIN order_items oi ON o.order_id = oi.order_id
                 WHERE o.source = 'shopify'
                 GROUP BY o.order_date, oi.sku
             ) oi_agg ON d.sale_date = oi_agg.order_date
@@ -360,11 +360,11 @@ class TestCrossTableConsistency:
             LIMIT 20
         """)
         assert len(mismatches) == 0, \
-            f'{len(mismatches)} date/SKU combos have revenue mismatch between daily_sku_sales and inventory_items'
+            f'{len(mismatches)} date/SKU combos have revenue mismatch between daily_sku_sales and order_items'
 
-    def test_shopify_units_match_inventory_items_aggregation(self, db):
+    def test_shopify_units_match_order_items_aggregation(self, db):
         skip_if_table_empty(db, 'daily_sku_sales')
-        skip_if_table_empty(db, 'inventory_items')
+        skip_if_table_empty(db, 'order_items')
         mismatches = fetchall(db, """
             SELECT
                 COALESCE(d.sale_date, oi_agg.order_date) AS dt,
@@ -376,7 +376,7 @@ class TestCrossTableConsistency:
                 SELECT o.order_date, oi.sku,
                        SUM(oi.quantity) AS qty
                 FROM orders o
-                JOIN inventory_items oi ON o.order_id = oi.order_id
+                JOIN order_items oi ON o.order_id = oi.order_id
                 WHERE o.source = 'shopify'
                 GROUP BY o.order_date, oi.sku
             ) oi_agg ON d.sale_date = oi_agg.order_date
@@ -387,7 +387,7 @@ class TestCrossTableConsistency:
             LIMIT 20
         """)
         assert len(mismatches) == 0, \
-            f'{len(mismatches)} date/SKU combos have units mismatch between daily_sku_sales and inventory_items'
+            f'{len(mismatches)} date/SKU combos have units mismatch between daily_sku_sales and order_items'
 
 
 # ═══════════════════════════════════════════════════════════════════

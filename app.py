@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
-from db import get_db, get_inventory_items_page
+from db import get_db, get_order_items_page
 from rate_limiter import RateLimiter
 from utils.constants import (
     EXPORT_CSV_PATH,
@@ -52,7 +52,7 @@ _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RAT
 _CORE_TABLES = [
     'customers',
     'orders',
-    'inventory_items',
+    'order_items',
     'daily_sku_sales',
     'media_spend',
 ]
@@ -211,10 +211,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         """Handle GET /items with page and per_page query params.
 
         Returns a JSON object with:
-          - items:       list of inventory_items rows for the requested page
+          - items:       list of order_items rows for the requested page
           - page:        current page number (1-based)
           - per_page:    number of items per page
-          - total_count: total number of rows in inventory_items
+          - total_count: total number of rows in order_items
           - total_pages: total number of pages
           - has_next:    whether a next page exists
           - has_prev:    whether a previous page exists
@@ -249,7 +249,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         try:
             with get_db() as conn:
-                items, total = get_inventory_items_page(conn, page, per_page)
+                items, total = get_order_items_page(conn, page, per_page)
         except Exception as exc:
             self._send_json(500, {'error': str(exc)})
             return
