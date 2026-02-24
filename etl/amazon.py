@@ -23,6 +23,7 @@ from sp_api.base import Marketplaces
 import config as cfg
 from db import upsert_sku, upsert_customer, upsert_order, upsert_order_item
 from etl.amazon_sku_map import map_amazon_sku
+from etl.retry import with_retry
 
 
 def get_credentials():
@@ -53,6 +54,7 @@ def get_marketplace():
     return marketplace_map.get(cfg.AMAZON_MARKETPLACE_ID, Marketplaces.US)
 
 
+@with_retry()
 def _download_report(reports_api, document_id):
     """
     Download and decompress an SP-API report document.
@@ -65,7 +67,8 @@ def _download_report(reports_api, document_id):
     report_url = payload["url"]
     compression = payload.get("compressionAlgorithm", "")
 
-    raw = req.get(report_url)
+    raw = req.get(report_url, timeout=120)
+    raw.raise_for_status()
 
     if compression == "GZIP" or raw.content[:2] == b"\x1f\x8b":
         return gzip.decompress(raw.content).decode("utf-8")
