@@ -7,11 +7,10 @@ sidebar expander accessible from every page.
 
 Layout:
   - Sidebar expander: scalar variables inline + summary cards with Edit buttons
-  - Media Spend dialog: full-width st.data_editor (months x 4 columns)
-  - Planned Inbound dialog: full-width st.data_editor (SKUs x months)
+  - Media Spend dialog: form grid with st.columns + st.number_input
+  - Planned Inbound dialog: quarterly-tabbed form grid
 """
 import streamlit as st
-import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import (
@@ -274,11 +273,11 @@ def _render_orders_summary(forecast_skus):
 
 
 # ---------------------------------------------------------------------------
-# Media Spend dialog
+# Media Spend dialog — form grid (DOM-based, no canvas)
 # ---------------------------------------------------------------------------
 @st.dialog("Media Spend Plan", width="large")
 def _media_spend_dialog():
-    """Full-screen dialog with a single data_editor for all media spend data."""
+    """Full-screen dialog with a form grid for media spend data."""
     current = get_business_vars()
     horizon = current.get("forecast_horizon", 12)
     months = _month_list(horizon)
@@ -292,61 +291,66 @@ def _media_spend_dialog():
     amz_spend_lookup = {r["month"]: r["spend"] for r in amz_spend_rows}
     amz_rev_lookup = {r["month"]: r["revenue"] for r in amz_rev_rows}
 
-    # Build a single DataFrame: one row per month, 4 editable columns
-    rows = []
-    for m in months:
-        existing = dtc_lookup.get(m, {"spend": 5000.0, "new_customer_roas": 2.0})
-        rows.append({
-            "Month": _month_label(m),
-            "DTC Spend ($)": float(existing.get("spend", 5000.0)),
-            "ROAS": float(existing.get("new_customer_roas", 2.0)),
-            "AMZ Ad Spend ($)": float(amz_spend_lookup.get(m, 0.0)),
-            "AMZ Revenue ($)": float(amz_rev_lookup.get(m, 0.0)),
-        })
-
-    df = pd.DataFrame(rows)
-
     st.caption("Edit monthly media spend across all channels. AMZ Revenue $0 = use velocity-based projection.")
 
-    col_config = {
-        "Month": st.column_config.TextColumn("Month", disabled=True, width="small"),
-        "DTC Spend ($)": st.column_config.NumberColumn(
-            "DTC Spend ($)", min_value=0.0, step=500.0, format="$%.0f",
-        ),
-        "ROAS": st.column_config.NumberColumn(
-            "ROAS", min_value=0.1, step=0.1, format="%.1f", width="small",
-        ),
-        "AMZ Ad Spend ($)": st.column_config.NumberColumn(
-            "AMZ Ad Spend ($)", min_value=0.0, step=500.0, format="$%.0f",
-        ),
-        "AMZ Revenue ($)": st.column_config.NumberColumn(
-            "AMZ Revenue ($)", min_value=0.0, step=5000.0, format="$%.0f",
-        ),
-    }
+    # Header row
+    hdr = st.columns([1.2, 1, 0.7, 1, 1])
+    hdr[0].markdown("**Month**")
+    hdr[1].markdown("**DTC Spend**")
+    hdr[2].markdown("**ROAS**")
+    hdr[3].markdown("**AMZ Spend**")
+    hdr[4].markdown("**AMZ Revenue**")
 
-    edited_df = st.data_editor(
-        df, column_config=col_config, hide_index=True,
-        use_container_width=True, key="bv_media_editor",
-    )
+    results = []
+    with st.form("media_spend_form"):
+        for i, m in enumerate(months):
+            existing = dtc_lookup.get(m, {"spend": 5000.0, "new_customer_roas": 2.0})
+            cols = st.columns([1.2, 1, 0.7, 1, 1])
 
-    if st.button("Save Media Spend", type="primary", key="bv_media_save",
-                  use_container_width=True):
-        with get_db() as conn:
-            for i, m in enumerate(months):
-                row = edited_df.iloc[i]
-                upsert_media_spend(conn, m, row["DTC Spend ($)"], row["ROAS"], source="All Sources")
-                upsert_media_spend(conn, m, row["AMZ Ad Spend ($)"], 0.0, source="Amazon")
-                upsert_amazon_revenue_forecast(conn, m, row["AMZ Revenue ($)"])
-        st.session_state["_bv_media_saved"] = True
-        st.rerun()
+            cols[0].markdown(
+                f'<div style="padding:8px 0;font-weight:600;font-size:0.85rem;">'
+                f'{_month_label(m)}</div>',
+                unsafe_allow_html=True,
+            )
+            dtc = cols[1].number_input(
+                "DTC $", value=float(existing.get("spend", 5000.0)),
+                min_value=0.0, step=500.0, format="%.0f",
+                key=f"ms_dtc_{i}", label_visibility="collapsed",
+            )
+            roas = cols[2].number_input(
+                "ROAS", value=float(existing.get("new_customer_roas", 2.0)),
+                min_value=0.1, step=0.1, format="%.1f",
+                key=f"ms_roas_{i}", label_visibility="collapsed",
+            )
+            amz_s = cols[3].number_input(
+                "AMZ $", value=float(amz_spend_lookup.get(m, 0.0)),
+                min_value=0.0, step=500.0, format="%.0f",
+                key=f"ms_amzs_{i}", label_visibility="collapsed",
+            )
+            amz_r = cols[4].number_input(
+                "AMZ Rev", value=float(amz_rev_lookup.get(m, 0.0)),
+                min_value=0.0, step=5000.0, format="%.0f",
+                key=f"ms_amzr_{i}", label_visibility="collapsed",
+            )
+            results.append((m, dtc, roas, amz_s, amz_r))
+
+        if st.form_submit_button("Save Media Spend", type="primary",
+                                  use_container_width=True):
+            with get_db() as conn:
+                for m, dtc, roas, amz_s, amz_r in results:
+                    upsert_media_spend(conn, m, dtc, roas, source="All Sources")
+                    upsert_media_spend(conn, m, amz_s, 0.0, source="Amazon")
+                    upsert_amazon_revenue_forecast(conn, m, amz_r)
+            st.session_state["_bv_media_saved"] = True
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Planned Inbound Orders dialog
+# Planned Inbound Orders dialog — quarterly form grid (DOM-based, no canvas)
 # ---------------------------------------------------------------------------
 @st.dialog("Planned Inbound Orders", width="large")
 def _orders_dialog(forecast_skus):
-    """Full-screen dialog with a data_editor for per-SKU per-month inbound."""
+    """Full-screen dialog with quarterly-tabbed form for per-SKU inbound."""
     from analytics.sku_flavors import get_flavor
 
     current = get_business_vars()
@@ -356,45 +360,61 @@ def _orders_dialog(forecast_skus):
     with get_db() as conn:
         existing = get_planned_inbound_dict(conn)
 
-    rows = []
-    for sku in sorted(forecast_skus):
-        flavor = get_flavor(sku)
-        row = {"SKU": sku, "Flavor": flavor}
-        sku_data = existing.get(sku, {})
-        for m in months:
-            row[_month_label(m)] = int(sku_data.get(m, 0))
-        rows.append(row)
+    st.caption("Units arriving per SKU per month. Edit one quarter at a time.")
 
-    df = pd.DataFrame(rows)
+    # Split months into quarters of 3
+    quarters = []
+    for qi in range(0, len(months), 3):
+        chunk = months[qi:qi + 3]
+        q_label = f"{_month_label(chunk[0])} \u2013 {_month_label(chunk[-1])}"
+        quarters.append((q_label, chunk))
 
-    st.caption("Units arriving per SKU per month.")
+    q_labels = [q[0] for q in quarters]
+    q_tabs = st.tabs(q_labels)
 
-    col_config = {
-        "SKU": st.column_config.TextColumn("SKU", disabled=True, width="small"),
-        "Flavor": st.column_config.TextColumn("Flavor", disabled=True, width="small"),
-    }
-    for m in months:
-        lbl = _month_label(m)
-        col_config[lbl] = st.column_config.NumberColumn(
-            lbl, min_value=0, step=100, width="small",
-        )
+    sorted_skus = sorted(forecast_skus)
 
-    edited_df = st.data_editor(
-        df, column_config=col_config, hide_index=True,
-        use_container_width=True, key="bv_inbound_editor",
-    )
+    for q_idx, (q_label, q_months) in enumerate(quarters):
+        with q_tabs[q_idx]:
+            n_cols = len(q_months)
+            widths = [2.0] + [1.0] * n_cols
 
-    if st.button("Save Orders", type="primary", key="bv_orders_save",
-                  use_container_width=True):
-        label_to_month = {_month_label(m): m for m in months}
-        with get_db() as conn:
-            for _, row in edited_df.iterrows():
-                sku = row["SKU"]
-                for col, month_str in label_to_month.items():
-                    units = int(row.get(col, 0) or 0)
-                    upsert_planned_inbound(conn, sku, month_str, units)
-        st.session_state["_bv_orders_saved"] = True
-        st.rerun()
+            # Header
+            hdr = st.columns(widths)
+            hdr[0].markdown("**Flavor**")
+            for j, m in enumerate(q_months):
+                hdr[j + 1].markdown(f"**{_month_label(m)}**")
+
+            with st.form(f"inbound_q{q_idx}_form"):
+                q_results = {}
+                for i, sku in enumerate(sorted_skus):
+                    flavor = get_flavor(sku)
+                    sku_data = existing.get(sku, {})
+                    cols = st.columns(widths)
+
+                    cols[0].markdown(
+                        f'<div style="padding:6px 0;font-size:0.8rem;font-weight:600;">'
+                        f'{flavor}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    sku_vals = {}
+                    for j, m in enumerate(q_months):
+                        val = cols[j + 1].number_input(
+                            f"{sku}_{m}", value=int(sku_data.get(m, 0)),
+                            min_value=0, step=100,
+                            key=f"io_{q_idx}_{i}_{j}", label_visibility="collapsed",
+                        )
+                        sku_vals[m] = val
+                    q_results[sku] = sku_vals
+
+                if st.form_submit_button(f"Save {q_label}", type="primary",
+                                          use_container_width=True):
+                    with get_db() as conn:
+                        for sku, month_vals in q_results.items():
+                            for month_str, units in month_vals.items():
+                                upsert_planned_inbound(conn, sku, month_str, int(units))
+                    st.session_state["_bv_orders_saved"] = True
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------
