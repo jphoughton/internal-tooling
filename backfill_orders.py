@@ -39,13 +39,16 @@ Notes:
       proportionally longer to fill.
     - After a Shopify backfill, `daily_sku_sales` is automatically rebuilt
       from the updated orders/order_items tables.
+    - All writes use ON CONFLICT ... DO UPDATE (upsert) semantics, so this
+      script is safe to re-run — existing records are updated in place and
+      no duplicates are created.
 """
 
 import argparse
 import logging
 import sys
-from datetime import date, timedelta
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Optional, Union
 
 # config must be imported first — loads .env and overlays DB credentials
 import config  # noqa: F401
@@ -66,6 +69,22 @@ _SHOPIFY_SCOPE_LIMIT_DAYS = 60
 # ---------------------------------------------------------------------------
 # Date utilities
 # ---------------------------------------------------------------------------
+
+def _to_date_str(val: Union[str, date, datetime]) -> str:
+    """Normalise a DB date value to a YYYY-MM-DD string.
+
+    SQLite returns date columns as plain strings; PostgreSQL returns
+    ``datetime.date`` (or occasionally ``datetime.datetime``) objects.
+    Both representations are handled explicitly rather than relying on
+    string-slicing assumptions.
+    """
+    if isinstance(val, datetime):
+        return val.date().isoformat()
+    if isinstance(val, date):
+        return val.isoformat()
+    # Remaining case: string already in ISO format from the DB driver
+    return str(val)[:10]
+
 
 def _date_range(start: date, end: date) -> list[date]:
     """Return every calendar date from start to end inclusive."""
@@ -89,8 +108,8 @@ def find_shopify_gaps(conn: db.ConnectionWrapper, start: date, end: date) -> lis
         (start.isoformat(), end.isoformat()),
     ).fetchall()
 
-    # Normalise to plain YYYY-MM-DD strings (Postgres may return date objects)
-    covered = {str(row['order_date'])[:10] for row in rows}
+    # _to_date_str handles both string (SQLite) and date/datetime (PostgreSQL)
+    covered = {_to_date_str(row['order_date']) for row in rows}
     return [d for d in _date_range(start, end) if d.isoformat() not in covered]
 
 
@@ -107,7 +126,7 @@ def find_amazon_gaps(conn: db.ConnectionWrapper, start: date, end: date) -> list
         (start.isoformat(), end.isoformat()),
     ).fetchall()
 
-    covered = {str(row['sale_date'])[:10] for row in rows}
+    covered = {_to_date_str(row['sale_date']) for row in rows}
     return [d for d in _date_range(start, end) if d.isoformat() not in covered]
 
 
@@ -172,11 +191,27 @@ def _print_gap_table(ranges: list[tuple[date, date]], source: str) -> None:
 def _backfill_shopify(
     gap_ranges: list[tuple[date, date]],
     dry_run: bool = False,
-) -> int:
-    """Fetch Shopify orders for each gap range. Returns total orders inserted."""
+) -> tuple[int, list[str]]:
+    """Fetch Shopify orders for each gap range.
+
+    Duplicate protection: ``fetch_orders`` writes via ``upsert_order``,
+    ``upsert_order_item``, and ``upsert_customer`` in db.py, each of which
+    uses ``ON CONFLICT(...) DO UPDATE`` so re-fetching an already-stored
+    order is safe and idempotent.
+
+    Partial-failure resilience: ``commit_per_page=True`` persists each
+    Shopify page immediately, so a mid-run failure still preserves all
+    pages fetched up to that point.  A failure on one gap range leaves
+    previously completed ranges intact.
+
+    Returns:
+        (total_orders_fetched, list_of_error_messages)
+    """
     from etl.shopify_client import fetch_orders
 
     total = 0
+    errors: list[str] = []
+
     for i, (start, end) in enumerate(gap_ranges, 1):
         days = (end - start).days + 1
         label = f'[{i}/{len(gap_ranges)}] Shopify {start} → {end} ({days}d)'
@@ -194,28 +229,47 @@ def _backfill_shopify(
                 _SHOPIFY_SCOPE_LIMIT_DAYS,
             )
 
-        with db.get_db() as conn:
-            fetched = fetch_orders(
-                conn,
-                since_date=start.isoformat(),
-                until_date=end.isoformat(),
-                commit_per_page=True,  # persist each page immediately for resilience
-            )
+        try:
+            with db.get_db() as conn:
+                fetched = fetch_orders(
+                    conn,
+                    since_date=start.isoformat(),
+                    until_date=end.isoformat(),
+                    commit_per_page=True,  # persist each page immediately for resilience
+                )
+            print(f' {fetched:,} orders')
+            total += fetched
+        except Exception as exc:
+            msg = f'Shopify {start} → {end}: {exc}'
+            logger.error('Backfill failed for range %s → %s: %s', start, end, exc)
+            print(f' ERROR: {exc}')
+            errors.append(msg)
 
-        print(f' {fetched:,} orders')
-        total += fetched
-
-    return total
+    return total, errors
 
 
 def _backfill_amazon(
     gap_ranges: list[tuple[date, date]],
     dry_run: bool = False,
-) -> int:
-    """Fetch Amazon S&T sales data for each gap range. Returns total records inserted."""
+) -> tuple[int, list[str]]:
+    """Fetch Amazon S&T sales data for each gap range.
+
+    Duplicate protection: the insert in ``etl/amazon.py`` uses
+    ``ON CONFLICT(sale_date, sku, source) DO UPDATE`` so re-fetching
+    an already-stored day is safe and idempotent.
+
+    Each gap range is fetched within its own DB connection context manager,
+    so a failure on one range rolls back only that range and leaves
+    previously completed ranges intact.
+
+    Returns:
+        (total_records_fetched, list_of_error_messages)
+    """
     from etl.amazon import fetch_sales_report
 
     total = 0
+    errors: list[str] = []
+
     for i, (start, end) in enumerate(gap_ranges, 1):
         days = (end - start).days + 1
         label = f'[{i}/{len(gap_ranges)}] Amazon {start} → {end} ({days}d)'
@@ -225,17 +279,22 @@ def _backfill_amazon(
             print(' (dry run)')
             continue
 
-        with db.get_db() as conn:
-            fetched = fetch_sales_report(
-                conn,
-                since_date=start.isoformat(),
-                until_date=end.isoformat(),
-            )
+        try:
+            with db.get_db() as conn:
+                fetched = fetch_sales_report(
+                    conn,
+                    since_date=start.isoformat(),
+                    until_date=end.isoformat(),
+                )
+            print(f' {fetched:,} records')
+            total += fetched
+        except Exception as exc:
+            msg = f'Amazon {start} → {end}: {exc}'
+            logger.error('Backfill failed for range %s → %s: %s', start, end, exc)
+            print(f' ERROR: {exc}')
+            errors.append(msg)
 
-        print(f' {fetched:,} records')
-        total += fetched
-
-    return total
+    return total, errors
 
 
 # ---------------------------------------------------------------------------
@@ -359,12 +418,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print()
 
     # --- Backfill -----------------------------------------------------------
+    all_errors: list[str] = []
     total_fetched = 0
 
     if shopify_gaps:
         print(f'Backfilling {len(shopify_gaps)} Shopify gap(s)...')
-        fetched = _backfill_shopify(shopify_gaps)
+        fetched, errs = _backfill_shopify(shopify_gaps)
         total_fetched += fetched
+        all_errors.extend(errs)
         print(f'  → {fetched:,} Shopify orders fetched')
 
         print()
@@ -377,12 +438,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         if shopify_gaps:
             print()
         print(f'Backfilling {len(amazon_gaps)} Amazon gap(s)...')
-        fetched = _backfill_amazon(amazon_gaps)
+        fetched, errs = _backfill_amazon(amazon_gaps)
         total_fetched += fetched
+        all_errors.extend(errs)
         print(f'  → {fetched:,} Amazon records fetched')
 
     print()
     print(f'Backfill complete — {total_fetched:,} total records fetched.')
+
+    if all_errors:
+        print(f'\n  {len(all_errors)} range(s) failed — check logs above:')
+        for err in all_errors:
+            print(f'    • {err}')
+        return 1
+
     return 0
 
 
