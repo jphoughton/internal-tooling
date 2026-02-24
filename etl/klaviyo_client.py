@@ -10,7 +10,23 @@ import logging
 import requests as _requests
 from klaviyo_api import KlaviyoAPI
 
+from etl.retry import with_retry
+
 logger = logging.getLogger(__name__)
+
+
+@with_retry
+def _http_get(url, headers, params=None, timeout=15):
+    """GET request with retry on transient errors."""
+    resp = _requests.get(url, headers=headers, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp
+
+
+@with_retry
+def _http_post(url, headers, json_body, timeout=30):
+    """POST request with retry on transient errors (retries on 5xx only)."""
+    return _requests.post(url, headers=headers, json=json_body, timeout=timeout)
 
 
 def get_client(api_key):
@@ -177,13 +193,11 @@ def fetch_placed_order_metric_id(api_key):
     Returns metric ID string, or None if not found.
     """
     try:
-        resp = _requests.get(
+        resp = _http_get(
             f"{_KLAVIYO_API}/metrics",
             headers=_klaviyo_headers(api_key),
             params={"filter": "equals(name,'Placed Order')"},
-            timeout=15,
         )
-        resp.raise_for_status()
         data = resp.json().get("data", [])
         if data:
             metric_id = data[0]["id"]
@@ -205,12 +219,10 @@ def fetch_any_metric_id(api_key):
     Returns metric ID string, or None if no metrics exist.
     """
     try:
-        resp = _requests.get(
+        resp = _http_get(
             f"{_KLAVIYO_API}/metrics",
             headers=_klaviyo_headers(api_key),
-            timeout=15,
         )
-        resp.raise_for_status()
         data = resp.json().get("data", [])
         if data:
             metric_id = data[0]["id"]
@@ -253,11 +265,10 @@ def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
 
     body = _build_report_body("campaign-values-report", stats, conversion_metric_id)
 
-    resp = _requests.post(
+    resp = _http_post(
         f"{_KLAVIYO_API}/campaign-values-reports",
         headers=_klaviyo_headers(api_key),
-        json=body,
-        timeout=30,
+        json_body=body,
     )
     if not resp.ok:
         error_detail = resp.text[:1000]
@@ -293,11 +304,10 @@ def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
 
     body = _build_report_body("flow-values-report", stats, conversion_metric_id)
 
-    resp = _requests.post(
+    resp = _http_post(
         f"{_KLAVIYO_API}/flow-values-reports",
         headers=_klaviyo_headers(api_key),
-        json=body,
-        timeout=30,
+        json_body=body,
     )
     if not resp.ok:
         error_detail = resp.text[:1000]
