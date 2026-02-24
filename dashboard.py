@@ -65,10 +65,16 @@ from utils.constants import FORECAST_SKUS
 # ---------------------------------------------------------------------------
 _STARTUP_DONE = False
 
-# Required env vars: at least one data source must be configured to be useful,
-# but we warn (not fatal) so the app still loads for Settings page access.
-_OPTIONAL_BUT_NOTABLE_VARS = [
-    "DATABASE_URL",
+# Env vars that MUST be present for production operation.
+# If running on Railway (RAILWAY_ENVIRONMENT is set), DATABASE_URL is required —
+# falling back to SQLite is not appropriate in a deployed environment.
+_REQUIRED_ENV_VARS: list[str] = (
+    ["DATABASE_URL"] if os.environ.get("RAILWAY_ENVIRONMENT") else []
+)
+
+# Env vars that are notable but not fatal if missing — they can all be
+# configured post-boot via the Settings page and are stored in the DB.
+_NOTABLE_ENV_VARS = [
     "SHOPIFY_ACCESS_TOKEN",
     "SHOPIFY_STORE_URL",
     "AMAZON_REFRESH_TOKEN",
@@ -83,7 +89,8 @@ def _run_startup_validation() -> dict:
     """Validate DB connection, env vars, and log a startup banner.
 
     Returns a dict with keys:
-        db_ok (bool), missing_vars (list[str]), warnings (list[str])
+        db_ok (bool), missing_required (list[str]), missing_notable (list[str]),
+        warnings (list[str])
     """
     import config as _cfg
 
@@ -104,14 +111,22 @@ def _run_startup_validation() -> dict:
     _log.info("[config] Shopify creds  : %s", "configured" if shopify_set else "missing")
     _log.info("[config] Amazon creds   : %s", "configured" if amazon_set else "missing")
 
-    # --- Env var check ---
-    missing = [v for v in _OPTIONAL_BUT_NOTABLE_VARS if not os.environ.get(v)]
-    if missing:
-        _log.warning("[startup] Missing env vars: %s", ", ".join(missing))
+    # --- Required env var check (fatal) ---
+    missing_required = [v for v in _REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing_required:
+        _log.error("[startup] MISSING required env vars: %s", ", ".join(missing_required))
+    else:
+        if _REQUIRED_ENV_VARS:
+            _log.info("[startup] All required env vars are set")
+
+    # --- Notable env var check (warnings only — configurable via Settings UI) ---
+    missing_notable = [v for v in _NOTABLE_ENV_VARS if not os.environ.get(v)]
+    if missing_notable:
+        _log.warning("[startup] Missing API credential vars (configure via Settings): %s", ", ".join(missing_notable))
     else:
         _log.info("[startup] All notable env vars are set")
 
-    # --- DB connection check ---
+    # --- DB connection check (fatal) ---
     db_ok = False
     warnings = []
     try:
@@ -126,7 +141,12 @@ def _run_startup_validation() -> dict:
         warnings.append(msg)
 
     _log.info("=" * 60)
-    return {"db_ok": db_ok, "missing_vars": missing, "warnings": warnings}
+    return {
+        "db_ok": db_ok,
+        "missing_required": missing_required,
+        "missing_notable": missing_notable,
+        "warnings": warnings,
+    }
 
 
 def _maybe_run_startup() -> None:
@@ -145,7 +165,17 @@ def _maybe_run_startup() -> None:
 
     result = _run_startup_validation()
 
-    # Surface critical DB failure in Streamlit UI so operators notice immediately
+    # --- Fail fast: missing required env vars ---
+    if result["missing_required"]:
+        st.error(
+            "**Missing required environment variables:** "
+            + ", ".join(f"`{v}`" for v in result["missing_required"])
+            + ". Set these in your Railway environment and redeploy.",
+            icon="🚨",
+        )
+        st.stop()
+
+    # --- Fail fast: DB unreachable ---
     if not result["db_ok"]:
         st.error(
             "**Database connection failed at startup.** "
@@ -153,6 +183,7 @@ def _maybe_run_startup() -> None:
             f"Detail: {result['warnings'][0] if result['warnings'] else 'unknown error'}",
             icon="🚨",
         )
+        st.stop()
 
 
 def _load_seasonal_json():
