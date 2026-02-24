@@ -7,7 +7,6 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql,
-    get_media_spend, get_amazon_revenue_forecast,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.forecast import forecast_sku
@@ -146,10 +145,12 @@ def render(ctx):
 
     st.divider()
 
-    # --- Load media spend and Amazon revenue from DB (edited in sidebar) ---
-    with get_db() as conn:
-        _db_spend = get_media_spend(conn, source='All Sources')
-        _db_amz_rev = get_amazon_revenue_forecast(conn)
+    # --- Media spend and Amazon revenue — set via sidebar Business Variables panel ---
+    # These come from ctx (pre-loaded by the router from the same DB tables the
+    # Business Variables panel writes to), so the binding is:
+    #   Business Variables panel → media_spend / amazon_revenue_forecast tables → ctx → here
+    _db_spend = ctx.get('media_spend', [])
+    _db_amz_rev = ctx.get('amazon_revenue_forecast', [])
 
     if not _db_spend:
         st.info(
