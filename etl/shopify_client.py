@@ -2,15 +2,12 @@
 Shopify Admin API integration.
 Fetches orders and line items, normalizes to common schema.
 """
-import logging
 import requests
 import time
 from datetime import datetime, timedelta
 import config as cfg
 from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
 from etl.customer_id import generate_customer_id
-
-logger = logging.getLogger(__name__)
 
 
 def get_base_url():
@@ -174,10 +171,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 if attempt < max_retries - 1:
                     wait = 2 ** (attempt + 1)
-                    logger.warning(
-                        'Request failed (%s), retrying in %ds... (attempt %d/%d)',
-                        e, wait, attempt + 1, max_retries,
-                    )
+                    print(f"Request failed ({e}), retrying in {wait}s... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait)
                 else:
                     raise
@@ -185,7 +179,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         if response.status_code == 429:
             # Rate limited — Shopify uses leaky bucket
             retry_after = float(response.headers.get("Retry-After", 2))
-            logger.warning('Shopify rate limit hit, waiting %gs...', retry_after)
+            print(f"Shopify rate limit hit, waiting {retry_after}s...")
             time.sleep(retry_after)
             continue
 
@@ -266,10 +260,9 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                 requested_days = (actual_end - requested_start).days
                 actual_days = (actual_end - actual_start).days
                 if requested_days > 90 and actual_days < 70:
-                    logger.warning(
-                        'Requested orders from %s but oldest is %s (~%d days). '
-                        "App may lack 'read_all_orders' scope.",
-                        since_date, oldest, actual_days,
+                    print(
+                        f"WARNING: Requested orders from {since_date} but oldest is "
+                        f"{oldest} (~{actual_days} days). App may lack 'read_all_orders' scope."
                     )
         except Exception:
             pass

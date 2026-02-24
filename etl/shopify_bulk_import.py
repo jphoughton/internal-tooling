@@ -7,14 +7,11 @@ by their line items (linked via __parentId). Line items follow their parent orde
 This is much faster than paginated REST API for large historical backfills.
 """
 import json
-import logging
 import requests
 import time
 import config as cfg
 from db import get_db, upsert_customer, upsert_order, upsert_order_item, upsert_sku, rebuild_daily_sales
 from etl.customer_id import generate_customer_id as _generate_customer_id
-
-logger = logging.getLogger(__name__)
 
 
 def poll_bulk_operation(timeout_minutes=30):
@@ -60,13 +57,13 @@ def poll_bulk_operation(timeout_minutes=30):
         if status == "COMPLETED":
             url = data.get("url")
             file_size = data.get("fileSize")
-            logger.info('Bulk operation complete: %s objects, %s bytes', obj_count, file_size)
+            print(f"Bulk operation complete: {obj_count} objects, {file_size} bytes")
             return url
 
         if status in ("FAILED", "CANCELED"):
             raise RuntimeError(f"Bulk operation {status}: {data.get('errorCode')}")
 
-        logger.info('Bulk op status: %s (%s objects processed...)', status, obj_count)
+        print(f"  Bulk op status: {status} ({obj_count} objects processed...)")
         time.sleep(10)
 
     raise TimeoutError(f"Bulk operation did not complete within {timeout_minutes} minutes")
@@ -74,7 +71,7 @@ def poll_bulk_operation(timeout_minutes=30):
 
 def download_and_import(url, on_progress=None):
     """Download the JSONL file and import into database."""
-    logger.info('Downloading JSONL file...')
+    print("Downloading JSONL file...")
     resp = requests.get(url, stream=True, timeout=60)
     resp.raise_for_status()
 
@@ -99,9 +96,9 @@ def download_and_import(url, on_progress=None):
             line_items.append((parent_id, obj))
 
         if line_count % 50000 == 0:
-            logger.info('Parsed %d lines (%d orders)...', line_count, len(orders))
+            print(f"  Parsed {line_count:,} lines ({len(orders):,} orders)...")
 
-    logger.info('Parse complete: %d orders, %d line items', len(orders), len(line_items))
+    print(f"Parsed complete: {len(orders):,} orders, {len(line_items):,} line items")
 
     # Now insert into database
     imported = 0
@@ -138,10 +135,10 @@ def download_and_import(url, on_progress=None):
                 conn.commit()
                 if on_progress:
                     on_progress(imported, len(orders))
-                logger.info('Imported %d / %d orders...', imported, len(orders))
+                print(f"  Imported {imported:,} / {len(orders):,} orders...")
 
         # Now insert line items
-        logger.info('Inserting %d line items...', len(line_items))
+        print(f"Inserting {len(line_items):,} line items...")
         for parent_gid, item in line_items:
             order = orders.get(parent_gid)
             if not order:
@@ -170,10 +167,10 @@ def download_and_import(url, on_progress=None):
             upsert_sku(conn, sku, product_name, None, order_date, "shopify")
 
         conn.commit()
-        logger.info('Imported %d orders, skipped %d refunded/voided', imported, skipped)
+        print(f"Imported {imported:,} orders, skipped {skipped:,} refunded/voided")
 
         # Rebuild daily sales aggregates
-        logger.info('Rebuilding daily sales aggregates...')
+        print("Rebuilding daily sales aggregates...")
         rebuild_daily_sales(conn)
 
     return imported
@@ -212,11 +209,11 @@ def run_bulk_backfill(on_progress=None):
     current = resp.json()["data"]["currentBulkOperation"]
 
     if current and current["status"] == "COMPLETED" and current.get("url"):
-        logger.info('Found completed bulk operation, importing...')
+        print("Found completed bulk operation, importing...")
         return download_and_import(current["url"], on_progress=on_progress)
 
     if current and current["status"] == "RUNNING":
-        logger.info('Bulk operation already running, waiting for completion...')
+        print("Bulk operation already running, waiting for completion...")
         url = poll_bulk_operation(timeout_minutes=30)
         if url:
             return download_and_import(url, on_progress=on_progress)
@@ -277,7 +274,7 @@ def run_bulk_backfill(on_progress=None):
     }
     '''
 
-    logger.info('Starting bulk export from Shopify...')
+    print("Starting bulk export from Shopify...")
     resp = requests.post(
         f"{store}/admin/api/{cfg.SHOPIFY_API_VERSION}/graphql.json",
         headers=headers,
@@ -290,7 +287,7 @@ def run_bulk_backfill(on_progress=None):
         raise RuntimeError(f"Bulk operation failed: {errors}")
 
     op = result["data"]["bulkOperationRunQuery"]["bulkOperation"]
-    logger.info("Bulk operation %s status: %s", op['id'], op['status'])
+    print(f"Bulk operation {op['id']} status: {op['status']}")
 
     # Poll for completion
     url = poll_bulk_operation(timeout_minutes=30)
@@ -303,4 +300,4 @@ if __name__ == "__main__":
     from db import init_db
     init_db()
     count = run_bulk_backfill()
-    logger.info('Done! Imported %d orders', count)
+    print(f"\nDone! Imported {count:,} orders")

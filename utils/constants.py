@@ -36,11 +36,3 @@ PACING_ON_TRACK_HIGH = 1.05
 
 # FBA transfer default lead time
 FBA_TRANSFER_LEAD_TIME_WEEKS = 4
-
-# Health check server
-HEALTH_ENDPOINT_PATH = '/health'
-HEALTH_STATUS_OK = 'ok'
-HEALTH_STATUS_DB_ERROR = 'db_error'
-HEALTH_CONTENT_TYPE = 'application/json'
-HEALTH_DEFAULT_HOST = '0.0.0.0'
-HEALTH_DEFAULT_PORT = 8502
