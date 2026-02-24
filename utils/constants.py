@@ -48,3 +48,25 @@ HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
 
 # Input validation
 MAX_INPUT_LENGTH = 500
+
+# Items list endpoint
+ITEMS_ENDPOINT_PATH = '/items'
+ITEMS_DEFAULT_PAGE = 1
+ITEMS_DEFAULT_PER_PAGE = 20
+ITEMS_MAX_PER_PAGE = 100
+
+# CSV export endpoint
+EXPORT_CSV_PATH = '/export/csv'
+
+# Rate limiting
+RATE_LIMIT_REQUESTS = 60        # max requests per IP per window
+RATE_LIMIT_WINDOW_SECONDS = 60  # window duration in seconds
+
+# Startup validation
+STARTUP_REQUIRED_ENV_VARS = ['DATABASE_URL']
+STARTUP_OPTIONAL_INTEGRATIONS = {
+    'Amazon': 'AMAZON_REFRESH_TOKEN',
+    'Shopify': 'SHOPIFY_ACCESS_TOKEN',
+    'Packiyo': 'PACKIYO_API_TOKEN',
+    'Klaviyo': 'KLAVIYO_API_KEY',
+}

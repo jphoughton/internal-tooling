@@ -8,6 +8,8 @@ Returns JSON with:
 Query parameters are sanitized on every request: whitespace is stripped,
 values are limited to 500 chars, and empty strings are rejected with 400.
 """
+import csv
+import io
 import json
 import os
 import time
@@ -20,6 +22,7 @@ from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from rate_limiter import RateLimiter
 from utils.constants import (
+    EXPORT_CSV_PATH,
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
     HEALTH_DEFAULT_PORT,
@@ -69,6 +72,23 @@ def _get_db_row_count():
     return total
 
 
+_INVENTORY_CSV_COLUMNS = ['sale_date', 'sku', 'source', 'units_sold', 'revenue', 'order_count']
+
+
+def _get_inventory_rows():
+    """Fetch all daily_sku_sales rows ordered by date/sku/source, cached 60s."""
+    cached = _cache.get('inventory_csv_rows')
+    if cached is not None:
+        return cached
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT sale_date, sku, source, units_sold, revenue, order_count '
+            'FROM daily_sku_sales ORDER BY sale_date, sku, source'
+        ).fetchall()
+    _cache.set('inventory_csv_rows', rows, ttl_seconds=60)
+    return rows
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Rate limit: 60 requests per minute per IP
@@ -87,34 +107,61 @@ class HealthHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
 
-        if path != HEALTH_ENDPOINT_PATH:
+        if path == HEALTH_ENDPOINT_PATH:
+            if API_KEY:
+                raw_auth = self.headers.get('Authorization', '')
+                auth = _sanitize_input(raw_auth)
+                if auth is None or auth != f'Bearer {API_KEY}':
+                    self._send_json(401, {'error': 'Unauthorized'})
+                    return
+            try:
+                db_row_count = _get_db_row_count()
+                status = HEALTH_STATUS_OK
+            except Exception as exc:
+                db_row_count = None
+                status = f'{HEALTH_STATUS_DB_ERROR}: {exc}'
+            payload = {
+                'status': status,
+                'version': BUILD_VERSION,
+                'uptime_seconds': round(time.monotonic() - _START_TIME, 2),
+                'db_row_count': db_row_count,
+                'database_url_set': bool(DATABASE_URL),
+                'debug': DEBUG,
+            }
+            self._send_json(200, payload)
+
+        elif path == EXPORT_CSV_PATH:
+            if API_KEY:
+                raw_auth = self.headers.get('Authorization', '')
+                auth = _sanitize_input(raw_auth)
+                if auth is None or auth != f'Bearer {API_KEY}':
+                    self._send_json(401, {'error': 'Unauthorized'})
+                    return
+            self._send_inventory_csv()
+
+        else:
             self.send_response(404)
             self.end_headers()
-            return
 
-        if API_KEY:
-            raw_auth = self.headers.get('Authorization', '')
-            auth = _sanitize_input(raw_auth)
-            if auth is None or auth != f'Bearer {API_KEY}':
-                self._send_json(401, {'error': 'Unauthorized'})
-                return
-
+    def _send_inventory_csv(self):
+        """Query daily_sku_sales and respond with a streaming CSV download."""
         try:
-            db_row_count = _get_db_row_count()
-            status = HEALTH_STATUS_OK
+            rows = _get_inventory_rows()
         except Exception as exc:
-            db_row_count = None
-            status = f'{HEALTH_STATUS_DB_ERROR}: {exc}'
-
-        payload = {
-            'status': status,
-            'version': BUILD_VERSION,
-            'uptime_seconds': round(time.monotonic() - _START_TIME, 2),
-            'db_row_count': db_row_count,
-            'database_url_set': bool(DATABASE_URL),
-            'debug': DEBUG,
-        }
-        self._send_json(200, payload)
+            self._send_json(500, {'error': f'Failed to export data: {exc}'})
+            return
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_INVENTORY_CSV_COLUMNS)
+        for row in rows:
+            writer.writerow([row[col] for col in _INVENTORY_CSV_COLUMNS])
+        body = buf.getvalue().encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv; charset=utf-8')
+        self.send_header('Content-Disposition', 'attachment; filename="inventory.csv"')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
