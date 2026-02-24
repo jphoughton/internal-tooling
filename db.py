@@ -840,6 +840,41 @@ def update_klaviyo_flow_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+def get_items_page(
+    conn: ConnectionWrapper,
+    page: int,
+    per_page: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return a page of order_items rows and the total row count.
+
+    Args:
+        conn: Active database connection.
+        page: 1-based page number.
+        per_page: Number of rows per page.
+
+    Returns:
+        Tuple of (items, total_count) where items is a list of dicts
+        and total_count is the total number of rows in order_items.
+    """
+    try:
+        offset = (page - 1) * per_page
+        total_row = conn.execute("SELECT COUNT(*) AS cnt FROM order_items").fetchone()
+        total_count: int = int(total_row["cnt"]) if total_row else 0
+        rows = conn.execute(
+            "SELECT id, order_id, sku, quantity, unit_price FROM order_items "
+            "ORDER BY id LIMIT %s OFFSET %s",
+            (per_page, offset),
+        ).fetchall()
+        return [dict(row) for row in rows], total_count
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        raise DatabaseError(f'get_items_page failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

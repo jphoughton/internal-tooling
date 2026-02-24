@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
-from db import get_db
+from db import get_db, get_items_page
 from rate_limiter import RateLimiter
 from utils.constants import (
     EXPORT_CSV_PATH,
@@ -30,6 +30,10 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
+    ITEMS_DEFAULT_PAGE,
+    ITEMS_DEFAULT_PER_PAGE,
+    ITEMS_ENDPOINT_PATH,
+    ITEMS_MAX_PER_PAGE,
     MAX_INPUT_LENGTH,
     RATE_LIMIT_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
@@ -107,7 +111,42 @@ class HealthHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
 
-        if path == HEALTH_ENDPOINT_PATH:
+        if path == ITEMS_ENDPOINT_PATH:
+            if API_KEY:
+                raw_auth = self.headers.get('Authorization', '')
+                auth = _sanitize_input(raw_auth)
+                if auth is None or auth != f'Bearer {API_KEY}':
+                    self._send_json(401, {'error': 'Unauthorized'})
+                    return
+            qs = parse_qs(parsed.query, keep_blank_values=False)
+            try:
+                page = int(qs.get('page', [str(ITEMS_DEFAULT_PAGE)])[0])
+                per_page = int(qs.get('per_page', [str(ITEMS_DEFAULT_PER_PAGE)])[0])
+            except ValueError:
+                self._send_json(400, {'error': 'page and per_page must be integers'})
+                return
+            if page < 1:
+                self._send_json(400, {'error': 'page must be >= 1'})
+                return
+            if per_page < 1 or per_page > ITEMS_MAX_PER_PAGE:
+                self._send_json(400, {'error': f'per_page must be between 1 and {ITEMS_MAX_PER_PAGE}'})
+                return
+            try:
+                with get_db() as conn:
+                    items, total_count = get_items_page(conn, page=page, per_page=per_page)
+            except Exception as exc:
+                self._send_json(500, {'error': f'Database error: {exc}'})
+                return
+            total_pages = max(1, -(-total_count // per_page))  # ceiling division
+            self._send_json(200, {
+                'items': items,
+                'page': page,
+                'per_page': per_page,
+                'total_count': total_count,
+                'total_pages': total_pages,
+            })
+
+        elif path == HEALTH_ENDPOINT_PATH:
             if API_KEY:
                 raw_auth = self.headers.get('Authorization', '')
                 auth = _sanitize_input(raw_auth)
