@@ -48,21 +48,28 @@ def fetch_campaigns(api_key, status="sent", limit=50):
     try:
         client = get_client(api_key)
         campaigns = []
-        resp = client.Campaigns.get_campaigns(
-            filter="equals(messages.channel,'email')",
-        )
+        _filter = "equals(messages.channel,'email')"
+        resp = client.Campaigns.get_campaigns(filter=_filter)
 
-        if resp and hasattr(resp, "data"):
-            for c in resp.data:
-                attrs = c.attributes
-                campaigns.append({
-                    "id": c.id,
-                    "name": getattr(attrs, "name", ""),
-                    "status": getattr(attrs, "status", ""),
-                    "send_time": getattr(attrs, "send_time", ""),
-                    "created_at": getattr(attrs, "created_at", ""),
-                    "updated_at": getattr(attrs, "updated_at", ""),
-                })
+        while resp:
+            if hasattr(resp, "data") and resp.data:
+                for c in resp.data:
+                    attrs = c.attributes
+                    campaigns.append({
+                        "id": c.id,
+                        "name": getattr(attrs, "name", ""),
+                        "status": getattr(attrs, "status", ""),
+                        "send_time": getattr(attrs, "send_time", ""),
+                        "created_at": getattr(attrs, "created_at", ""),
+                        "updated_at": getattr(attrs, "updated_at", ""),
+                    })
+            # Follow cursor to next page
+            if hasattr(resp, "links") and resp.links and resp.links.next:
+                resp = client.Campaigns.get_campaigns(
+                    filter=_filter, page_cursor=resp.links.next,
+                )
+            else:
+                break
 
         logger.info(f"Fetched {len(campaigns)} Klaviyo campaigns")
         return campaigns
@@ -81,22 +88,27 @@ def fetch_flows(api_key, status="live"):
     try:
         client = get_client(api_key)
         flows = []
-        resp = client.Flows.get_flows(
-            filter=f"equals(status,'{status}')",
-            sort="name",
-        )
+        _filter = f"equals(status,'{status}')"
+        resp = client.Flows.get_flows(filter=_filter, sort="name")
 
-        if resp and hasattr(resp, "data"):
-            for f in resp.data:
-                attrs = f.attributes
-                flows.append({
-                    "id": f.id,
-                    "name": getattr(attrs, "name", ""),
-                    "status": getattr(attrs, "status", ""),
-                    "created": getattr(attrs, "created", ""),
-                    "updated": getattr(attrs, "updated", ""),
-                    "trigger_type": getattr(attrs, "trigger_type", ""),
-                })
+        while resp:
+            if hasattr(resp, "data") and resp.data:
+                for f in resp.data:
+                    attrs = f.attributes
+                    flows.append({
+                        "id": f.id,
+                        "name": getattr(attrs, "name", ""),
+                        "status": getattr(attrs, "status", ""),
+                        "created": getattr(attrs, "created", ""),
+                        "updated": getattr(attrs, "updated", ""),
+                        "trigger_type": getattr(attrs, "trigger_type", ""),
+                    })
+            if hasattr(resp, "links") and resp.links and resp.links.next:
+                resp = client.Flows.get_flows(
+                    filter=_filter, sort="name", page_cursor=resp.links.next,
+                )
+            else:
+                break
 
         logger.info(f"Fetched {len(flows)} Klaviyo flows")
         return flows
@@ -112,15 +124,20 @@ def fetch_lists(api_key):
         lists = []
         resp = client.Lists.get_lists()
 
-        if resp and hasattr(resp, "data"):
-            for l in resp.data:
-                attrs = l.attributes
-                lists.append({
-                    "id": l.id,
-                    "name": getattr(attrs, "name", ""),
-                    "created": getattr(attrs, "created", ""),
-                    "updated": getattr(attrs, "updated", ""),
-                })
+        while resp:
+            if hasattr(resp, "data") and resp.data:
+                for l in resp.data:
+                    attrs = l.attributes
+                    lists.append({
+                        "id": l.id,
+                        "name": getattr(attrs, "name", ""),
+                        "created": getattr(attrs, "created", ""),
+                        "updated": getattr(attrs, "updated", ""),
+                    })
+            if hasattr(resp, "links") and resp.links and resp.links.next:
+                resp = client.Lists.get_lists(page_cursor=resp.links.next)
+            else:
+                break
 
         logger.info(f"Fetched {len(lists)} Klaviyo lists")
         return lists
@@ -211,7 +228,7 @@ def _build_report_body(report_type, stats, conversion_metric_id):
     """Build the JSON:API body for a Klaviyo reporting endpoint."""
     attrs = {
         "statistics": stats,
-        "timeframe": {"key": "last_12_months"},
+        "timeframe": {"key": "last_365_days"},
         "conversion_metric_id": conversion_metric_id,
         "filter": "equals(send_channel,'email')",
     }
