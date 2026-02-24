@@ -3,6 +3,7 @@ Configuration for Inventory Demand Forecasting System.
 Reads API credentials from .env file, then overlays any values
 persisted in the app_settings DB table (which survives Railway redeploys).
 """
+BUILD_VERSION = "1.0.0"
 import os
 from pathlib import Path
 from dotenv import load_dotenv
