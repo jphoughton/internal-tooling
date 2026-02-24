@@ -1,4 +1,4 @@
-"""Tests for GET /inventory_items paginated endpoint in app.py."""
+"""Tests for GET /items paginated endpoint in app.py."""
 import json
 import threading
 import unittest

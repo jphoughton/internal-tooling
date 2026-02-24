@@ -1,11 +1,11 @@
-"""Lightweight HTTP server exposing /health and /inventory_items endpoints.
+"""Lightweight HTTP server exposing /health and /items endpoints.
 
 /health returns JSON with:
   - uptime_seconds: seconds since this process started
   - version:        BUILD_VERSION from config.py
   - db_row_count:   total rows across core tables from db.py
 
-/inventory_items returns a paginated list of inventory items:
+/items returns a paginated list of inventory items:
   - items:        list of inventory_item records for the requested page
   - page:         current 1-based page number
   - per_page:     number of items per page (default 20, max 100)
@@ -52,7 +52,7 @@ _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RAT
 _CORE_TABLES = [
     'customers',
     'orders',
-    'inventory_items',
+    'order_items',
     'daily_sku_sales',
     'media_spend',
 ]
