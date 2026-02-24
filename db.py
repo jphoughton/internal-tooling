@@ -7,6 +7,7 @@ analytics/dashboard code (strftime, date('now'), julianday, ? placeholders).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import psycopg2
@@ -17,6 +18,14 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
 
 if TYPE_CHECKING:
     import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+class DatabaseError(Exception):
+    """Raised when a database operation fails."""
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Connection pool
@@ -33,17 +42,21 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         if url.startswith('postgres://'):
             url = url.replace('postgres://', 'postgresql://', 1)
         if not url:
-            raise RuntimeError(
+            raise DatabaseError(
                 'DATABASE_URL is not set. '
                 'Set it in .env or Railway service variables.'
             )
-        _pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1,
-            maxconn=20,
-            dsn=url,
-            connect_timeout=10,
-            options='-c statement_timeout=30000',  # 30s per statement
-        )
+        try:
+            _pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=20,
+                dsn=url,
+                connect_timeout=10,
+                options='-c statement_timeout=30000',  # 30s per statement
+            )
+        except psycopg2.Error as exc:
+            logger.error('Failed to create connection pool: %s', exc)
+            raise DatabaseError(f'Failed to create connection pool: {exc}') from exc
     return _pool
 
 
@@ -157,12 +170,16 @@ class ConnectionWrapper:
         params: Optional[Union[tuple[Any, ...], list[Any]]] = None,
     ) -> _CursorWrapper:
         sql = _translate_sql(sql)
-        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        if params:
-            cur.execute(sql, params)
-        else:
-            cur.execute(sql)
-        return _CursorWrapper(cur)
+        try:
+            cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            if params:
+                cur.execute(sql, params)
+            else:
+                cur.execute(sql)
+            return _CursorWrapper(cur)
+        except psycopg2.Error as exc:
+            logger.error('Database query failed: %s | SQL: %.200s', exc, sql)
+            raise DatabaseError(f'Database query failed: {exc}') from exc
 
     def commit(self) -> None:
         self._conn.commit()
@@ -183,14 +200,22 @@ class ConnectionWrapper:
 def get_db() -> Iterator[ConnectionWrapper]:
     """Yield a ConnectionWrapper; auto-commit on success, rollback on error."""
     pool = _get_pool()
-    raw = pool.getconn()
+    try:
+        raw = pool.getconn()
+    except psycopg2.Error as exc:
+        logger.error('Failed to acquire connection from pool: %s', exc)
+        raise DatabaseError(f'Failed to acquire connection from pool: {exc}') from exc
     wrapped = ConnectionWrapper(raw)
     try:
         yield wrapped
         wrapped.commit()
-    except Exception:
+    except DatabaseError:
         wrapped.rollback()
         raise
+    except Exception as exc:
+        wrapped.rollback()
+        logger.error('Transaction failed, rolling back: %s', exc)
+        raise DatabaseError(f'Transaction failed: {exc}') from exc
     finally:
         pool.putconn(raw)
 
@@ -211,7 +236,11 @@ def read_sql(
     """
     import pandas as pd
     translated = _translate_sql(sql)
-    return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
+    try:
+        return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
+    except Exception as exc:
+        logger.error('read_sql failed: %s | SQL: %.200s', exc, translated)
+        raise DatabaseError(f'read_sql failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -388,40 +417,46 @@ _SCHEMA_SQL = [
 def init_db() -> None:
     """Create all tables and indexes if they don't exist."""
     print("  init_db: connecting...", flush=True)
-    with get_db() as conn:
-        # Kill stale connections from crashed deploys that may hold locks
-        print("  init_db: terminating stale connections...", flush=True)
-        conn.execute("""
-            SELECT pg_terminate_backend(pid)
-            FROM pg_stat_activity
-            WHERE pid <> pg_backend_pid()
-              AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
-              AND query_start < NOW() - INTERVAL '60 seconds'
-        """)
+    try:
+        with get_db() as conn:
+            # Kill stale connections from crashed deploys that may hold locks
+            print("  init_db: terminating stale connections...", flush=True)
+            conn.execute("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE pid <> pg_backend_pid()
+                  AND state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+                  AND query_start < NOW() - INTERVAL '60 seconds'
+            """)
 
-        for i, stmt in enumerate(_SCHEMA_SQL):
-            label = stmt.strip()[:60].replace('\n', ' ')
-            print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
-            conn.execute(stmt)
+            for i, stmt in enumerate(_SCHEMA_SQL):
+                label = stmt.strip()[:60].replace('\n', ' ')
+                print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
+                conn.execute(stmt)
 
-        print("  init_db: seeding seasonal indices...", flush=True)
-        # Seed default seasonal indices if table is empty
-        existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
-        if existing is not None and existing['cnt'] == 0:
-            defaults = {
-                1: 0.95, 2: 0.92, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10,
-                7: 1.12, 8: 1.08, 9: 1.02, 10: 0.98, 11: 0.92, 12: 0.88,
-            }
-            for m, v in defaults.items():
-                conn.execute(
-                    "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
-                    (m, v),
-                )
+            print("  init_db: seeding seasonal indices...", flush=True)
+            # Seed default seasonal indices if table is empty
+            existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
+            if existing is not None and existing['cnt'] == 0:
+                defaults = {
+                    1: 0.95, 2: 0.92, 3: 0.98, 4: 1.02, 5: 1.05, 6: 1.10,
+                    7: 1.12, 8: 1.08, 9: 1.02, 10: 0.98, 11: 0.92, 12: 0.88,
+                }
+                for m, v in defaults.items():
+                    conn.execute(
+                        "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
+                        (m, v),
+                    )
 
-        # Migrate legacy media_spend source='all' to 'All Sources'
-        print("  init_db: migrating media_spend source values...", flush=True)
-        conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
-        print("  init_db: done.", flush=True)
+            # Migrate legacy media_spend source='all' to 'All Sources'
+            print("  init_db: migrating media_spend source values...", flush=True)
+            conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
+            print("  init_db: done.", flush=True)
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('init_db failed: %s', exc)
+        raise DatabaseError(f'init_db failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -434,13 +469,19 @@ def upsert_customer(
     source: str,
     first_order_date: Optional[str],
 ) -> None:
-    conn.execute("""
-        INSERT INTO customers (customer_id, email, source, first_order_date)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT(customer_id) DO UPDATE SET
-            email = COALESCE(excluded.email, customers.email),
-            first_order_date = LEAST(customers.first_order_date, excluded.first_order_date)
-    """, (customer_id, email, source, first_order_date))
+    try:
+        conn.execute("""
+            INSERT INTO customers (customer_id, email, source, first_order_date)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(customer_id) DO UPDATE SET
+                email = COALESCE(excluded.email, customers.email),
+                first_order_date = LEAST(customers.first_order_date, excluded.first_order_date)
+        """, (customer_id, email, source, first_order_date))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_customer failed for customer_id=%s: %s', customer_id, exc)
+        raise DatabaseError(f'upsert_customer failed: {exc}') from exc
 
 
 def upsert_order(
@@ -453,13 +494,19 @@ def upsert_order(
     total_amount: float,
     currency: str = "USD",
 ) -> None:
-    conn.execute("""
-        INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT(order_id) DO UPDATE SET
-            total_amount = excluded.total_amount,
-            status = 'completed'
-    """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
+    try:
+        conn.execute("""
+            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(order_id) DO UPDATE SET
+                total_amount = excluded.total_amount,
+                status = 'completed'
+        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_order failed for order_id=%s: %s', order_id, exc)
+        raise DatabaseError(f'upsert_order failed: {exc}') from exc
 
 
 def upsert_order_item(
@@ -470,14 +517,20 @@ def upsert_order_item(
     quantity: int,
     unit_price: float,
 ) -> None:
-    conn.execute("""
-        INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT(order_id, sku) DO UPDATE SET
-            quantity = excluded.quantity,
-            unit_price = excluded.unit_price,
-            total_price = excluded.total_price
-    """, (order_id, sku, product_name, quantity, unit_price, quantity * unit_price))
+    try:
+        conn.execute("""
+            INSERT INTO order_items (order_id, sku, product_name, quantity, unit_price, total_price)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(order_id, sku) DO UPDATE SET
+                quantity = excluded.quantity,
+                unit_price = excluded.unit_price,
+                total_price = excluded.total_price
+        """, (order_id, sku, product_name, quantity, unit_price, quantity * unit_price))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_order_item failed for order_id=%s sku=%s: %s', order_id, sku, exc)
+        raise DatabaseError(f'upsert_order_item failed: {exc}') from exc
 
 
 def upsert_sku(
@@ -488,23 +541,29 @@ def upsert_sku(
     first_sale_date: Optional[str],
     source: str,
 ) -> None:
-    row = conn.execute("SELECT sources FROM sku_master WHERE sku = %s", (sku,)).fetchone()
-    if row and row["sources"]:
-        existing = set(row["sources"].split(","))
-        existing.add(source)
-        sources = ",".join(sorted(existing))
-    else:
-        sources = source
+    try:
+        row = conn.execute("SELECT sources FROM sku_master WHERE sku = %s", (sku,)).fetchone()
+        if row and row["sources"]:
+            existing = set(row["sources"].split(","))
+            existing.add(source)
+            sources = ",".join(sorted(existing))
+        else:
+            sources = source
 
-    conn.execute("""
-        INSERT INTO sku_master (sku, product_name, category, first_sale_date, sources)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT(sku) DO UPDATE SET
-            product_name = COALESCE(excluded.product_name, sku_master.product_name),
-            first_sale_date = LEAST(sku_master.first_sale_date, excluded.first_sale_date),
-            sources = %s,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (sku, product_name, category, first_sale_date, sources, sources))
+        conn.execute("""
+            INSERT INTO sku_master (sku, product_name, category, first_sale_date, sources)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT(sku) DO UPDATE SET
+                product_name = COALESCE(excluded.product_name, sku_master.product_name),
+                first_sale_date = LEAST(sku_master.first_sale_date, excluded.first_sale_date),
+                sources = %s,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (sku, product_name, category, first_sale_date, sources, sources))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_sku failed for sku=%s: %s', sku, exc)
+        raise DatabaseError(f'upsert_sku failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -517,32 +576,44 @@ def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
     Amazon data is inserted directly into daily_sku_sales by the Amazon ETL
     and must NOT be deleted here.
     """
-    conn.execute("DELETE FROM daily_sku_sales WHERE source = 'shopify'")
-    conn.execute("""
-        INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
-        SELECT
-            o.order_date::date::text as sale_date,
-            oi.sku,
-            o.source,
-            SUM(oi.quantity) as units_sold,
-            SUM(oi.total_price) as revenue,
-            COUNT(DISTINCT o.order_id) as order_count
-        FROM order_items oi
-        JOIN orders o ON oi.order_id = o.order_id
-        WHERE o.status = 'completed' AND o.source = 'shopify'
-        GROUP BY o.order_date::date, oi.sku, o.source
-    """)
+    try:
+        conn.execute("DELETE FROM daily_sku_sales WHERE source = 'shopify'")
+        conn.execute("""
+            INSERT INTO daily_sku_sales (sale_date, sku, source, units_sold, revenue, order_count)
+            SELECT
+                o.order_date::date::text as sale_date,
+                oi.sku,
+                o.source,
+                SUM(oi.quantity) as units_sold,
+                SUM(oi.total_price) as revenue,
+                COUNT(DISTINCT o.order_id) as order_count
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE o.status = 'completed' AND o.source = 'shopify'
+            GROUP BY o.order_date::date, oi.sku, o.source
+        """)
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('rebuild_daily_sales failed: %s', exc)
+        raise DatabaseError(f'rebuild_daily_sales failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
 # Sync helpers
 # ---------------------------------------------------------------------------
 def get_last_sync_date(conn: ConnectionWrapper, source: str) -> Optional[str]:
-    row = conn.execute(
-        "SELECT MAX(sync_date) as last_date FROM sync_log WHERE source = %s AND status = 'success'",
-        (source,)
-    ).fetchone()
-    return row["last_date"] if row and row["last_date"] else None
+    try:
+        row = conn.execute(
+            "SELECT MAX(sync_date) as last_date FROM sync_log WHERE source = %s AND status = 'success'",
+            (source,)
+        ).fetchone()
+        return row["last_date"] if row and row["last_date"] else None
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_last_sync_date failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'get_last_sync_date failed: {exc}') from exc
 
 
 def log_sync(
@@ -553,44 +624,68 @@ def log_sync(
     status: str = "success",
     error_message: Optional[str] = None,
 ) -> None:
-    conn.execute("""
-        INSERT INTO sync_log (source, sync_date, records_fetched, status, error_message)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (source, sync_date, records_fetched, status, error_message))
+    try:
+        conn.execute("""
+            INSERT INTO sync_log (source, sync_date, records_fetched, status, error_message)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (source, sync_date, records_fetched, status, error_message))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('log_sync failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'log_sync failed: {exc}') from exc
 
 
 def get_last_sync_timestamp(conn: ConnectionWrapper, sources: list[str]) -> Optional[str]:
     """Return created_at of the most recent successful sync across given sources."""
-    placeholders = ','.join('%s' for _ in sources)
-    row = conn.execute(
-        f"SELECT MAX(created_at) as last_ts FROM sync_log "
-        f"WHERE source IN ({placeholders}) AND status = 'success'",
-        sources
-    ).fetchone()
-    return row['last_ts'] if row and row['last_ts'] else None
+    try:
+        placeholders = ','.join('%s' for _ in sources)
+        row = conn.execute(
+            f"SELECT MAX(created_at) as last_ts FROM sync_log "
+            f"WHERE source IN ({placeholders}) AND status = 'success'",
+            sources
+        ).fetchone()
+        return row['last_ts'] if row and row['last_ts'] else None
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_last_sync_timestamp failed: %s', exc)
+        raise DatabaseError(f'get_last_sync_timestamp failed: {exc}') from exc
 
 
 def get_new_rows_since_yesterday(conn: ConnectionWrapper, sources: list[str]) -> int:
     """Return total records_fetched for today's syncs across given sources."""
-    placeholders = ','.join('%s' for _ in sources)
-    row = conn.execute(
-        f"SELECT COALESCE(SUM(records_fetched), 0) as total "
-        f"FROM sync_log WHERE source IN ({placeholders}) "
-        f"AND sync_date = CURRENT_DATE::text AND status = 'success'",
-        sources
-    ).fetchone()
-    return int(row['total']) if row is not None else 0
+    try:
+        placeholders = ','.join('%s' for _ in sources)
+        row = conn.execute(
+            f"SELECT COALESCE(SUM(records_fetched), 0) as total "
+            f"FROM sync_log WHERE source IN ({placeholders}) "
+            f"AND sync_date = CURRENT_DATE::text AND status = 'success'",
+            sources
+        ).fetchone()
+        return int(row['total']) if row is not None else 0
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_new_rows_since_yesterday failed: %s', exc)
+        raise DatabaseError(f'get_new_rows_since_yesterday failed: {exc}') from exc
 
 
 def get_synced_sources(conn: ConnectionWrapper, sources: list[str]) -> list[str]:
     """Return list of source names that have at least one successful sync."""
-    placeholders = ','.join('%s' for _ in sources)
-    rows = conn.execute(
-        f"SELECT DISTINCT source FROM sync_log "
-        f"WHERE source IN ({placeholders}) AND status = 'success'",
-        sources
-    ).fetchall()
-    return [r['source'] for r in rows]
+    try:
+        placeholders = ','.join('%s' for _ in sources)
+        rows = conn.execute(
+            f"SELECT DISTINCT source FROM sync_log "
+            f"WHERE source IN ({placeholders}) AND status = 'success'",
+            sources
+        ).fetchall()
+        return [r['source'] for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_synced_sources failed: %s', exc)
+        raise DatabaseError(f'get_synced_sources failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -603,25 +698,37 @@ def upsert_media_spend(
     roas: float,
     source: str = "All Sources",
 ) -> None:
-    conn.execute("""
-        INSERT INTO media_spend (month, spend, new_customer_roas, source)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT(month, source) DO UPDATE SET
-            spend = excluded.spend,
-            new_customer_roas = excluded.new_customer_roas,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (month, spend, roas, source))
+    try:
+        conn.execute("""
+            INSERT INTO media_spend (month, spend, new_customer_roas, source)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(month, source) DO UPDATE SET
+                spend = excluded.spend,
+                new_customer_roas = excluded.new_customer_roas,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (month, spend, roas, source))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_media_spend failed for month=%s source=%s: %s', month, source, exc)
+        raise DatabaseError(f'upsert_media_spend failed: {exc}') from exc
 
 
 def get_media_spend(
     conn: ConnectionWrapper,
     source: str = "All Sources",
 ) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT month, spend, new_customer_roas FROM media_spend WHERE source = %s ORDER BY month",
-        (source,)
-    ).fetchall()
-    return [{"month": r["month"], "spend": float(r["spend"] or 0), "new_customer_roas": float(r["new_customer_roas"] or 0)} for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT month, spend, new_customer_roas FROM media_spend WHERE source = %s ORDER BY month",
+            (source,)
+        ).fetchall()
+        return [{"month": r["month"], "spend": float(r["spend"] or 0), "new_customer_roas": float(r["new_customer_roas"] or 0)} for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_media_spend failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'get_media_spend failed: {exc}') from exc
 
 
 def upsert_amazon_revenue_forecast(
@@ -629,20 +736,32 @@ def upsert_amazon_revenue_forecast(
     month: str,
     revenue: float,
 ) -> None:
-    conn.execute("""
-        INSERT INTO amazon_revenue_forecast (month, revenue)
-        VALUES (%s, %s)
-        ON CONFLICT(month) DO UPDATE SET
-            revenue = excluded.revenue,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (month, revenue))
+    try:
+        conn.execute("""
+            INSERT INTO amazon_revenue_forecast (month, revenue)
+            VALUES (%s, %s)
+            ON CONFLICT(month) DO UPDATE SET
+                revenue = excluded.revenue,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (month, revenue))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_amazon_revenue_forecast failed for month=%s: %s', month, exc)
+        raise DatabaseError(f'upsert_amazon_revenue_forecast failed: {exc}') from exc
 
 
 def get_amazon_revenue_forecast(conn: ConnectionWrapper) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT month, revenue FROM amazon_revenue_forecast ORDER BY month"
-    ).fetchall()
-    return [{"month": r["month"], "revenue": float(r["revenue"] or 0)} for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT month, revenue FROM amazon_revenue_forecast ORDER BY month"
+        ).fetchall()
+        return [{"month": r["month"], "revenue": float(r["revenue"] or 0)} for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_amazon_revenue_forecast failed: %s', exc)
+        raise DatabaseError(f'get_amazon_revenue_forecast failed: {exc}') from exc
 
 
 def upsert_planned_inbound(
@@ -651,32 +770,50 @@ def upsert_planned_inbound(
     month: str,
     units: int,
 ) -> None:
-    conn.execute("""
-        INSERT INTO planned_inbound (sku, month, units)
-        VALUES (%s, %s, %s)
-        ON CONFLICT(sku, month) DO UPDATE SET
-            units = excluded.units,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (sku, month, units))
+    try:
+        conn.execute("""
+            INSERT INTO planned_inbound (sku, month, units)
+            VALUES (%s, %s, %s)
+            ON CONFLICT(sku, month) DO UPDATE SET
+                units = excluded.units,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (sku, month, units))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_planned_inbound failed for sku=%s month=%s: %s', sku, month, exc)
+        raise DatabaseError(f'upsert_planned_inbound failed: {exc}') from exc
 
 
 def get_planned_inbound(conn: ConnectionWrapper) -> list[dict[str, Any]]:
     """Return all planned inbound entries as list of dicts."""
-    rows = conn.execute(
-        "SELECT sku, month, units FROM planned_inbound ORDER BY sku, month"
-    ).fetchall()
-    return [{"sku": r["sku"], "month": r["month"], "units": int(r["units"] or 0)} for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT sku, month, units FROM planned_inbound ORDER BY sku, month"
+        ).fetchall()
+        return [{"sku": r["sku"], "month": r["month"], "units": int(r["units"] or 0)} for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_planned_inbound failed: %s', exc)
+        raise DatabaseError(f'get_planned_inbound failed: {exc}') from exc
 
 
 def get_planned_inbound_dict(conn: ConnectionWrapper) -> dict[str, dict[str, int]]:
     """Return planned inbound as nested dict: {sku: {month: units}}."""
-    rows = conn.execute(
-        "SELECT sku, month, units FROM planned_inbound WHERE units > 0"
-    ).fetchall()
-    result: dict[str, dict[str, int]] = {}
-    for r in rows:
-        result.setdefault(r["sku"], {})[r["month"]] = int(r["units"] or 0)
-    return result
+    try:
+        rows = conn.execute(
+            "SELECT sku, month, units FROM planned_inbound WHERE units > 0"
+        ).fetchall()
+        result: dict[str, dict[str, int]] = {}
+        for r in rows:
+            result.setdefault(r["sku"], {})[r["month"]] = int(r["units"] or 0)
+        return result
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_planned_inbound_dict failed: %s', exc)
+        raise DatabaseError(f'get_planned_inbound_dict failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -684,10 +821,16 @@ def get_planned_inbound_dict(conn: ConnectionWrapper) -> dict[str, dict[str, int
 # ---------------------------------------------------------------------------
 def get_seasonal_indices(conn: ConnectionWrapper) -> dict[int, float]:
     """Return seasonal indices as dict {month_num: value}, e.g. {1: 0.95, ...}."""
-    rows = conn.execute(
-        "SELECT month_num, index_value FROM seasonal_indices ORDER BY month_num"
-    ).fetchall()
-    return {int(r["month_num"]): float(r["index_value"] or 1.0) for r in rows}
+    try:
+        rows = conn.execute(
+            "SELECT month_num, index_value FROM seasonal_indices ORDER BY month_num"
+        ).fetchall()
+        return {int(r["month_num"]): float(r["index_value"] or 1.0) for r in rows}
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_seasonal_indices failed: %s', exc)
+        raise DatabaseError(f'get_seasonal_indices failed: {exc}') from exc
 
 
 def upsert_seasonal_index(
@@ -695,13 +838,19 @@ def upsert_seasonal_index(
     month_num: int,
     value: float,
 ) -> None:
-    conn.execute("""
-        INSERT INTO seasonal_indices (month_num, index_value)
-        VALUES (%s, %s)
-        ON CONFLICT(month_num) DO UPDATE SET
-            index_value = excluded.index_value,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (month_num, value))
+    try:
+        conn.execute("""
+            INSERT INTO seasonal_indices (month_num, index_value)
+            VALUES (%s, %s)
+            ON CONFLICT(month_num) DO UPDATE SET
+                index_value = excluded.index_value,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (month_num, value))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_seasonal_index failed for month_num=%s: %s', month_num, exc)
+        raise DatabaseError(f'upsert_seasonal_index failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -713,20 +862,32 @@ def get_setting(
     default: Optional[str] = None,
 ) -> Optional[str]:
     """Get an app setting by key, returning default if not found."""
-    row = conn.execute(
-        "SELECT value FROM app_settings WHERE key = %s", (key,)
-    ).fetchone()
-    return row["value"] if row else default
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (key,)
+        ).fetchone()
+        return row["value"] if row else default
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_setting failed for key=%s: %s', key, exc)
+        raise DatabaseError(f'get_setting failed: {exc}') from exc
 
 
 def set_setting(conn: ConnectionWrapper, key: str, value: Any) -> None:
-    conn.execute("""
-        INSERT INTO app_settings (key, value)
-        VALUES (%s, %s)
-        ON CONFLICT(key) DO UPDATE SET
-            value = excluded.value,
-            updated_at = CURRENT_TIMESTAMP::text
-    """, (key, str(value)))
+    try:
+        conn.execute("""
+            INSERT INTO app_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (key, str(value)))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('set_setting failed for key=%s: %s', key, exc)
+        raise DatabaseError(f'set_setting failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
@@ -736,75 +897,111 @@ def upsert_klaviyo_campaign(
     conn: ConnectionWrapper,
     campaign: dict[str, Any],
 ) -> None:
-    conn.execute("""
-        INSERT INTO klaviyo_campaigns (id, name, status, send_time, created_at, updated_at, synced_at)
-        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name, status = excluded.status,
-            send_time = excluded.send_time, created_at = excluded.created_at,
-            updated_at = excluded.updated_at, synced_at = CURRENT_TIMESTAMP::text
-    """, (campaign["id"], campaign["name"], campaign["status"],
-          campaign["send_time"], campaign["created_at"], campaign["updated_at"]))
+    try:
+        conn.execute("""
+            INSERT INTO klaviyo_campaigns (id, name, status, send_time, created_at, updated_at, synced_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name, status = excluded.status,
+                send_time = excluded.send_time, created_at = excluded.created_at,
+                updated_at = excluded.updated_at, synced_at = CURRENT_TIMESTAMP::text
+        """, (campaign["id"], campaign["name"], campaign["status"],
+              campaign["send_time"], campaign["created_at"], campaign["updated_at"]))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_klaviyo_campaign failed for id=%s: %s', campaign.get("id"), exc)
+        raise DatabaseError(f'upsert_klaviyo_campaign failed: {exc}') from exc
 
 
 def upsert_klaviyo_flow(
     conn: ConnectionWrapper,
     flow: dict[str, Any],
 ) -> None:
-    conn.execute("""
-        INSERT INTO klaviyo_flows (id, name, status, trigger_type, created, updated, synced_at)
-        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name, status = excluded.status,
-            trigger_type = excluded.trigger_type, created = excluded.created,
-            updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
-    """, (flow["id"], flow["name"], flow["status"],
-          flow["trigger_type"], flow["created"], flow["updated"]))
+    try:
+        conn.execute("""
+            INSERT INTO klaviyo_flows (id, name, status, trigger_type, created, updated, synced_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name, status = excluded.status,
+                trigger_type = excluded.trigger_type, created = excluded.created,
+                updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
+        """, (flow["id"], flow["name"], flow["status"],
+              flow["trigger_type"], flow["created"], flow["updated"]))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_klaviyo_flow failed for id=%s: %s', flow.get("id"), exc)
+        raise DatabaseError(f'upsert_klaviyo_flow failed: {exc}') from exc
 
 
 def upsert_klaviyo_list(
     conn: ConnectionWrapper,
     lst: dict[str, Any],
 ) -> None:
-    conn.execute("""
-        INSERT INTO klaviyo_lists (id, name, created, updated, synced_at)
-        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP::text)
-        ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name, created = excluded.created,
-            updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
-    """, (lst["id"], lst["name"], lst["created"], lst["updated"]))
+    try:
+        conn.execute("""
+            INSERT INTO klaviyo_lists (id, name, created, updated, synced_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name, created = excluded.created,
+                updated = excluded.updated, synced_at = CURRENT_TIMESTAMP::text
+        """, (lst["id"], lst["name"], lst["created"], lst["updated"]))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_klaviyo_list failed for id=%s: %s', lst.get("id"), exc)
+        raise DatabaseError(f'upsert_klaviyo_list failed: {exc}') from exc
 
 
 def get_klaviyo_campaigns(conn: ConnectionWrapper) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT id, name, status, send_time, created_at, updated_at, "
-        "recipients, delivered, opens_unique, clicks_unique, "
-        "open_rate, click_rate, click_to_open_rate, "
-        "unsubscribes, unsubscribe_rate, bounce_rate, "
-        "revenue, revenue_per_recipient, average_order_value, conversion_rate "
-        "FROM klaviyo_campaigns ORDER BY send_time DESC NULLS LAST"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT id, name, status, send_time, created_at, updated_at, "
+            "recipients, delivered, opens_unique, clicks_unique, "
+            "open_rate, click_rate, click_to_open_rate, "
+            "unsubscribes, unsubscribe_rate, bounce_rate, "
+            "revenue, revenue_per_recipient, average_order_value, conversion_rate "
+            "FROM klaviyo_campaigns ORDER BY send_time DESC NULLS LAST"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_klaviyo_campaigns failed: %s', exc)
+        raise DatabaseError(f'get_klaviyo_campaigns failed: {exc}') from exc
 
 
 def get_klaviyo_flows(conn: ConnectionWrapper) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT id, name, status, trigger_type, created, updated, "
-        "recipients, delivered, opens_unique, clicks_unique, "
-        "open_rate, click_rate, click_to_open_rate, "
-        "unsubscribes, unsubscribe_rate, bounce_rate, "
-        "revenue, revenue_per_recipient, average_order_value, conversion_rate "
-        "FROM klaviyo_flows ORDER BY name"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT id, name, status, trigger_type, created, updated, "
+            "recipients, delivered, opens_unique, clicks_unique, "
+            "open_rate, click_rate, click_to_open_rate, "
+            "unsubscribes, unsubscribe_rate, bounce_rate, "
+            "revenue, revenue_per_recipient, average_order_value, conversion_rate "
+            "FROM klaviyo_flows ORDER BY name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_klaviyo_flows failed: %s', exc)
+        raise DatabaseError(f'get_klaviyo_flows failed: {exc}') from exc
 
 
 def get_klaviyo_lists(conn: ConnectionWrapper) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT id, name, created, updated "
-        "FROM klaviyo_lists ORDER BY name"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT id, name, created, updated "
+            "FROM klaviyo_lists ORDER BY name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_klaviyo_lists failed: %s', exc)
+        raise DatabaseError(f'get_klaviyo_lists failed: {exc}') from exc
 
 
 _METRIC_COLS = [
@@ -820,11 +1017,17 @@ def update_klaviyo_campaign_metrics(
     campaign_id: str,
     metrics: dict[str, Any],
 ) -> None:
-    set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
-    conn.execute(
-        f"UPDATE klaviyo_campaigns SET {set_clause} WHERE id = %s",
-        tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (campaign_id,),
-    )
+    try:
+        set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
+        conn.execute(
+            f"UPDATE klaviyo_campaigns SET {set_clause} WHERE id = %s",
+            tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (campaign_id,),
+        )
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('update_klaviyo_campaign_metrics failed for id=%s: %s', campaign_id, exc)
+        raise DatabaseError(f'update_klaviyo_campaign_metrics failed: {exc}') from exc
 
 
 def update_klaviyo_flow_metrics(
@@ -832,11 +1035,17 @@ def update_klaviyo_flow_metrics(
     flow_id: str,
     metrics: dict[str, Any],
 ) -> None:
-    set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
-    conn.execute(
-        f"UPDATE klaviyo_flows SET {set_clause} WHERE id = %s",
-        tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (flow_id,),
-    )
+    try:
+        set_clause = ", ".join(f"{c} = %s" for c in _METRIC_COLS)
+        conn.execute(
+            f"UPDATE klaviyo_flows SET {set_clause} WHERE id = %s",
+            tuple(metrics.get(c, 0) or 0 for c in _METRIC_COLS) + (flow_id,),
+        )
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('update_klaviyo_flow_metrics failed for id=%s: %s', flow_id, exc)
+        raise DatabaseError(f'update_klaviyo_flow_metrics failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
