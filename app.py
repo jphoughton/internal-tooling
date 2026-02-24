@@ -14,6 +14,7 @@ values are limited to 500 chars, and empty strings are rejected with 400.
 import csv
 import io
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
-from db import get_db
+from db import get_db, get_inventory_items_page
 from rate_limiter import RateLimiter
 from utils.constants import (
     EXPORT_CSV_PATH,
@@ -33,6 +34,10 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
+    INVENTORY_ITEMS_DEFAULT_PAGE,
+    INVENTORY_ITEMS_DEFAULT_PER_PAGE,
+    INVENTORY_ITEMS_ENDPOINT_PATH,
+    INVENTORY_ITEMS_MAX_PER_PAGE,
     MAX_INPUT_LENGTH,
     RATE_LIMIT_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
@@ -117,6 +122,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._handle_export_csv()
             return
 
+        if path == INVENTORY_ITEMS_ENDPOINT_PATH:
+            if API_KEY:
+                raw_auth = self.headers.get('Authorization', '')
+                auth = _sanitize_input(raw_auth)
+                if auth is None or auth != f'Bearer {API_KEY}':
+                    self._send_json(401, {'error': 'Unauthorized'})
+                    return
+            self._handle_inventory_list(parsed.query)
+            return
+
         if path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
             self.end_headers()
@@ -191,6 +206,64 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Headers already sent; terminate the chunked stream cleanly
             self.wfile.write(b'0\r\n\r\n')
             self.wfile.flush()
+
+    def _handle_inventory_list(self, query_string):
+        """Handle GET /items with page and per_page query params.
+
+        Returns a JSON object with:
+          - items:       list of inventory_items rows for the requested page
+          - page:        current page number (1-based)
+          - per_page:    number of items per page
+          - total_count: total number of rows in inventory_items
+          - total_pages: total number of pages
+          - has_next:    whether a next page exists
+          - has_prev:    whether a previous page exists
+        """
+        params = parse_qs(query_string, keep_blank_values=False)
+
+        def _parse_int(name, default, min_val, max_val):
+            raw = params.get(name, [None])[0]
+            if raw is None:
+                return default, None
+            try:
+                val = int(raw)
+            except ValueError:
+                return None, f"'{name}' must be a positive integer"
+            if val < min_val:
+                return None, f"'{name}' must be >= {min_val}"
+            if val > max_val:
+                return None, f"'{name}' must be <= {max_val}"
+            return val, None
+
+        page, err = _parse_int('page', INVENTORY_ITEMS_DEFAULT_PAGE, 1, 10 ** 9)
+        if err:
+            self._send_json(400, {'error': err})
+            return
+
+        per_page, err = _parse_int(
+            'per_page', INVENTORY_ITEMS_DEFAULT_PER_PAGE, 1, INVENTORY_ITEMS_MAX_PER_PAGE
+        )
+        if err:
+            self._send_json(400, {'error': err})
+            return
+
+        try:
+            with get_db() as conn:
+                items, total = get_inventory_items_page(conn, page, per_page)
+        except Exception as exc:
+            self._send_json(500, {'error': str(exc)})
+            return
+
+        total_pages = math.ceil(total / per_page) if per_page else 0
+        self._send_json(200, {
+            'items': items,
+            'page': page,
+            'per_page': per_page,
+            'total_count': total,
+            'total_pages': total_pages,
+            'has_next': page < total_pages,
+            'has_prev': page > 1,
+        })
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
