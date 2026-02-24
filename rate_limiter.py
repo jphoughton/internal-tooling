@@ -33,6 +33,11 @@ class RateLimiter:
         # ip -> (request_count, window_start_monotonic)
         self._windows: dict[str, tuple[int, float]] = {}
 
+    @property
+    def window_seconds(self) -> float:
+        """Duration of each counting window in seconds."""
+        return self._window_seconds
+
     def is_allowed(self, ip: str) -> bool:
         """Check whether a request from *ip* is within the rate limit.
 
@@ -93,7 +98,7 @@ class RateLimitMiddleware:
         if not self._limiter.is_allowed(ip):
             headers = [
                 ('Content-Type', 'application/json'),
-                ('Retry-After', str(int(self._limiter._window_seconds))),
+                ('Retry-After', str(int(self._limiter.window_seconds))),
             ]
             start_response('429 Too Many Requests', headers)
             return [b'{"error":"Too Many Requests","detail":"Rate limit exceeded. Try again later."}']
