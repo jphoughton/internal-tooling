@@ -17,7 +17,8 @@ from urllib.parse import parse_qs, urlparse
 
 from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
-from db import get_db, get_items_page
+from db import get_db
+from rate_limiter import RateLimiter
 from utils.constants import (
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
@@ -26,17 +27,16 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
-    ITEMS_DEFAULT_PAGE,
-    ITEMS_DEFAULT_PER_PAGE,
-    ITEMS_ENDPOINT_PATH,
-    ITEMS_MAX_PER_PAGE,
     MAX_INPUT_LENGTH,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW_SECONDS,
     STARTUP_OPTIONAL_INTEGRATIONS,
     STARTUP_REQUIRED_ENV_VARS,
 )
 
 _START_TIME = time.monotonic()
 _cache = Cache(default_ttl=30)
+_rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RATE_LIMIT_WINDOW_SECONDS)
 
 _CORE_TABLES = [
     'customers',
@@ -71,6 +71,12 @@ def _get_db_row_count():
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # Rate limit: 60 requests per minute per IP
+        client_ip = self.client_address[0]
+        if not _rate_limiter.is_allowed(client_ip):
+            self._send_json(429, {'error': 'Too Many Requests'})
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -80,44 +86,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 if _sanitize_input(v) is None:
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
-
-        if path == ITEMS_ENDPOINT_PATH:
-            if API_KEY:
-                raw_auth = self.headers.get('Authorization', '')
-                auth = _sanitize_input(raw_auth)
-                if auth is None or auth != f'Bearer {API_KEY}':
-                    self._send_json(401, {'error': 'Unauthorized'})
-                    return
-            qs = parse_qs(parsed.query, keep_blank_values=False)
-            try:
-                page = int(qs.get('page', [str(ITEMS_DEFAULT_PAGE)])[0])
-                per_page = int(qs.get('per_page', [str(ITEMS_DEFAULT_PER_PAGE)])[0])
-            except ValueError:
-                self._send_json(400, {'error': 'page and per_page must be integers'})
-                return
-            if page < 1:
-                self._send_json(400, {'error': 'page must be >= 1'})
-                return
-            if per_page < 1 or per_page > ITEMS_MAX_PER_PAGE:
-                self._send_json(400, {'error': f'per_page must be between 1 and {ITEMS_MAX_PER_PAGE}'})
-                return
-            try:
-                with get_db() as conn:
-                    items, total = get_items_page(conn, page=page, per_page=per_page)
-            except Exception as exc:
-                self._send_json(500, {'error': f'Database error: {exc}'})
-                return
-            total_pages = max(1, -(-total // per_page))  # ceiling division
-            self._send_json(200, {
-                'items': items,
-                'pagination': {
-                    'page': page,
-                    'per_page': per_page,
-                    'total': total,
-                    'total_pages': total_pages,
-                },
-            })
-            return
 
         if path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
