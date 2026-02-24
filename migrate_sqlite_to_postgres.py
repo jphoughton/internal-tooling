@@ -10,8 +10,9 @@ unique key — that table is skipped if PostgreSQL already has rows.
 
 Tables migrated (in dependency order):
   customers, sku_master, orders, inventory_items (from SQLite order_items),
-  daily_sku_sales (Amazon rows only), media_spend, amazon_revenue_forecast,
-  planned_inbound, app_settings, bank_transactions
+  daily_sku_sales (Amazon rows only), media_spend (normalises source 'all' →
+  'All Sources'), amazon_revenue_forecast, planned_inbound, seasonal_indices,
+  app_settings, bank_transactions
 
 After orders + inventory_items are migrated, Shopify daily_sku_sales is
 rebuilt automatically via db.rebuild_daily_sales().
@@ -264,6 +265,7 @@ def migrate_amazon_daily_sales(sc: sqlite3.Connection, batch: int, dry_run: bool
 
 
 def migrate_media_spend(sc: sqlite3.Connection, batch: int, dry_run: bool) -> int:
+    """Migrate media_spend, normalising legacy source value 'all' → 'All Sources'."""
     rows = sc.execute(
         'SELECT month, spend, new_customer_roas, source, updated_at FROM media_spend'
     ).fetchall()
@@ -282,7 +284,42 @@ def migrate_media_spend(sc: sqlite3.Connection, batch: int, dry_run: bool) -> in
         for i in range(0, total, batch):
             chunk = rows[i:i + batch]
             _execute_values_batch(raw, sql, [
-                (r['month'], r['spend'], r['new_customer_roas'], r['source'], r['updated_at'])
+                (r['month'], r['spend'], r['new_customer_roas'],
+                 'All Sources' if r['source'] == 'all' else r['source'],
+                 r['updated_at'])
+                for r in chunk
+            ])
+    return total
+
+
+def migrate_seasonal_indices(sc: sqlite3.Connection, batch: int, dry_run: bool) -> int:
+    """Migrate seasonal_indices, preserving any user-customised values from SQLite."""
+    try:
+        rows = sc.execute(
+            'SELECT month_num, index_value, updated_at FROM seasonal_indices'
+        ).fetchall()
+    except sqlite3.OperationalError:
+        print('  seasonal_indices: table not in SQLite — skipping')
+        return 0
+    total = len(rows)
+    print(f'  seasonal_indices: {total:,} rows in SQLite')
+    if dry_run or total == 0:
+        return total
+
+    # Use DO UPDATE so user-customised values overwrite init_db()'s defaults.
+    sql = """
+        INSERT INTO seasonal_indices (month_num, index_value, updated_at)
+        VALUES %s
+        ON CONFLICT (month_num) DO UPDATE SET
+            index_value = EXCLUDED.index_value,
+            updated_at  = EXCLUDED.updated_at
+    """
+    with db.get_db() as conn:
+        raw = conn.raw
+        for i in range(0, total, batch):
+            chunk = rows[i:i + batch]
+            _execute_values_batch(raw, sql, [
+                (r['month_num'], r['index_value'], r['updated_at'])
                 for r in chunk
             ])
     return total
@@ -454,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
                 for tbl in ('customers', 'orders', 'inventory_items',
                             'daily_sku_sales', 'sku_master', 'media_spend',
                             'amazon_revenue_forecast', 'planned_inbound',
-                            'app_settings', 'bank_transactions'):
+                            'seasonal_indices', 'app_settings', 'bank_transactions'):
                     cnt = _pg_count(conn, tbl)
                     print(f'  {tbl:<30} {cnt:>10,}')
         except db.DatabaseError as exc:
@@ -467,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     sqlite_counts = {}
     for tbl in ('customers', 'orders', 'order_items', 'sku_master',
                 'media_spend', 'amazon_revenue_forecast', 'planned_inbound',
-                'app_settings', 'bank_transactions'):
+                'seasonal_indices', 'app_settings', 'bank_transactions'):
         try:
             cnt = _sqlite_count(sc, tbl)
         except sqlite3.OperationalError:
@@ -539,6 +576,9 @@ def main(argv: list[str] | None = None) -> int:
     print('Migrating planned_inbound...')
     results['planned_inbound'] = migrate_planned_inbound(sc, batch, dry_run=False)
 
+    print('Migrating seasonal_indices...')
+    results['seasonal_indices'] = migrate_seasonal_indices(sc, batch, dry_run=False)
+
     print('Migrating app_settings...')
     results['app_settings'] = migrate_app_settings(sc, batch, dry_run=False)
 
@@ -560,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         for tbl in ('customers', 'orders', 'inventory_items',
                     'daily_sku_sales', 'sku_master', 'media_spend',
                     'amazon_revenue_forecast', 'planned_inbound',
-                    'app_settings', 'bank_transactions'):
+                    'seasonal_indices', 'app_settings', 'bank_transactions'):
             cnt = _pg_count(conn, tbl)
             print(f'  {tbl:<30} {cnt:>10,}')
 
