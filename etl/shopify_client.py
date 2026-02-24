@@ -125,8 +125,8 @@ def test_connection():
         return False, f"Connection test failed: {e}"
 
 
-@with_retry
-def _get_orders_page(url, headers, params):
+@with_retry()
+def _fetch_page(url, headers, params):
     """Fetch a single page of Shopify orders."""
     return requests.get(url, headers=headers, params=params, timeout=30)
 
@@ -173,7 +173,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
 
     page_number = 0
     while url:
-        response = _get_orders_page(url, headers, params)
+        response = _fetch_page(url, headers, params)
 
         if response.status_code == 429:
             # Rate limited — Shopify uses leaky bucket
