@@ -420,38 +420,94 @@ section[data-testid="stSidebar"] [data-testid="stExpander"] summary p {
     letter-spacing: 0.01em;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stNumberInput input {
-    background: rgba(255,255,255,0.08) !important;
-    border: 1px solid rgba(255,255,255,0.15) !important;
+    background: rgba(255,255,255,0.14) !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
     border-radius: 6px !important;
     color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     font-size: 0.82rem !important;
     padding: 4px 8px !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stSelectbox > div > div {
-    background: rgba(255,255,255,0.08) !important;
-    border: 1px solid rgba(255,255,255,0.15) !important;
+    background: rgba(255,255,255,0.14) !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
     border-radius: 6px !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] label {
     font-size: 0.75rem !important;
-    color: rgba(255,255,255,0.7) !important;
+    color: rgba(255,255,255,0.75) !important;
+    -webkit-text-fill-color: rgba(255,255,255,0.75) !important;
 }
 section[data-testid="stSidebar"] [data-testid="stExpander"] .stCaption,
 section[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] {
     color: rgba(255,255,255,0.5) !important;
     font-size: 0.7rem !important;
 }
-section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"] {
+/* Sidebar edit buttons (non-primary) */
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button:not([kind="primary"]):not([data-testid="stBaseButton-primary"]) {
+    background: rgba(126,204,229,0.12) !important;
+    border: 1px solid rgba(126,204,229,0.3) !important;
+    color: #7ECCE5 !important;
+    -webkit-text-fill-color: #7ECCE5 !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    font-size: 0.78rem !important;
+    padding: 5px 14px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stExpander"] .stButton button:not([kind="primary"]):not([data-testid="stBaseButton-primary"]):hover {
+    background: rgba(126,204,229,0.22) !important;
+    border-color: rgba(126,204,229,0.5) !important;
+}
+/* Sidebar primary buttons */
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"],
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[data-testid="stBaseButton-primary"] {
     background: #7ECCE5 !important;
     color: #0B2A45 !important;
+    -webkit-text-fill-color: #0B2A45 !important;
     border: none !important;
     font-weight: 700 !important;
     border-radius: 8px !important;
     font-size: 0.8rem !important;
     padding: 6px 16px !important;
 }
-section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"]:hover {
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"]:hover,
+section[data-testid="stSidebar"] [data-testid="stExpander"] button[data-testid="stBaseButton-primary"]:hover {
     background: #5dbdd8 !important;
+}
+
+/* ── Dialog data editor — ensure white background ── */
+[data-testid="stDialog"] [data-testid="stDataEditor"] {
+    background: #ffffff !important;
+    border: 1px solid #E8EDF3;
+    border-radius: 12px;
+    overflow: hidden;
+}
+[data-testid="stDialog"] [data-testid="stDataEditor"] > div,
+[data-testid="stDialog"] [data-testid="stDataEditor"] > div > div,
+[data-testid="stDialog"] [data-testid="stDataEditor"] div[style],
+[data-testid="stDialog"] [data-testid="stDataEditor"] canvas,
+[data-testid="stDialog"] [data-testid="stDataEditor"] [role="grid"],
+[data-testid="stDialog"] [data-testid="stDataEditor"] [role="gridcell"],
+[data-testid="stDialog"] [data-testid="stDataEditor"] [role="columnheader"] {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+}
+/* Dialog text should be dark */
+[data-testid="stDialog"] * {
+    color: #1e2d3d;
+}
+[data-testid="stDialog"] [data-testid="stCaptionContainer"] {
+    color: #6b7c93 !important;
+}
+[data-testid="stDialog"] button[kind="primary"],
+[data-testid="stDialog"] button[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #7ECCE5, #5BB8D4) !important;
+    border: none !important;
+    color: #0F3557 !important;
+    font-weight: 700 !important;
+    border-radius: 10px !important;
 }
 
 /* ── Styled dataframe (Pandas Styler) ── */

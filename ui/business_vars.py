@@ -5,10 +5,10 @@ Defines all user-configurable planning variables (NOT API keys),
 provides DB-backed get/save helpers, and renders a persistent
 sidebar expander accessible from every page.
 
-Three tabs:
-  1. Variables — scalar planning parameters
-  2. Media Spend — per-month DTC spend, ROAS, Amazon ad spend, Amazon revenue
-  3. Orders — planned inbound per SKU per month
+Layout:
+  - Sidebar expander: scalar variables inline + summary cards with Edit buttons
+  - Media Spend dialog: full-width st.data_editor (months x 4 columns)
+  - Planned Inbound dialog: full-width st.data_editor (SKUs x months)
 """
 import streamlit as st
 import pandas as pd
@@ -100,6 +100,13 @@ _GROUP_HEADER = ('<p style="margin:0 0 4px;font-size:0.7rem;font-weight:700;'
                  'text-transform:uppercase;letter-spacing:0.06em;'
                  'color:rgba(255,255,255,0.55);">{}</p>')
 
+_CARD_STYLE = (
+    'background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);'
+    'border-radius:8px;padding:10px 12px;margin-bottom:6px;'
+)
+_CARD_LABEL = 'font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;color:rgba(255,255,255,0.5);margin:0;'
+_CARD_VALUE = 'font-size:0.88rem;font-weight:600;color:#ffffff;margin:2px 0 0;'
+
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -140,10 +147,25 @@ def save_business_vars(values: dict):
 
 
 # ---------------------------------------------------------------------------
-# Tab 1: Scalar variables
+# Helpers: month list + formatters
 # ---------------------------------------------------------------------------
-def _render_variables_tab():
-    """Render scalar variable inputs. Returns dict of edits."""
+def _month_list(horizon):
+    now = datetime.utcnow()
+    return [(now + relativedelta(months=i)).strftime("%Y-%m") for i in range(horizon)]
+
+
+def _month_label(m):
+    try:
+        return datetime.strptime(m, "%Y-%m").strftime("%b '%y")
+    except ValueError:
+        return m
+
+
+# ---------------------------------------------------------------------------
+# Scalar variables (rendered inline in sidebar)
+# ---------------------------------------------------------------------------
+def _render_variables_inline():
+    """Render scalar variable inputs inline in sidebar. Returns dict of edits."""
     current = get_business_vars()
     edits = {}
 
@@ -202,16 +224,65 @@ def _render_variables_tab():
 
 
 # ---------------------------------------------------------------------------
-# Tab 2: Media Spend
+# Media Spend summary card (sidebar)
 # ---------------------------------------------------------------------------
-def _render_media_spend_tab():
-    """Render per-month media spend + Amazon revenue editors. Returns True if saved."""
+def _render_media_spend_summary():
+    """Show a compact summary of media spend with an Edit button."""
+    with get_db() as conn:
+        dtc_rows = get_media_spend(conn, source="All Sources")
+        amz_spend_rows = get_media_spend(conn, source="Amazon")
+
+    total_dtc = sum(float(r.get("spend", 0) or 0) for r in dtc_rows)
+    total_amz = sum(float(r.get("spend", 0) or 0) for r in amz_spend_rows)
+    n_months = max(len(dtc_rows), len(amz_spend_rows), 1)
+
+    st.markdown(_GROUP_HEADER.format("Media Spend Plan"), unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="{_CARD_STYLE}">'
+        f'<p style="{_CARD_LABEL}">DTC: ${total_dtc:,.0f} · AMZ: ${total_amz:,.0f}</p>'
+        f'<p style="{_CARD_VALUE}">{n_months} months planned</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    return st.button("Edit Media Spend", key="bv_open_media_dialog",
+                      use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Orders summary card (sidebar)
+# ---------------------------------------------------------------------------
+def _render_orders_summary(forecast_skus):
+    """Show a compact summary of planned inbound with an Edit button."""
+    with get_db() as conn:
+        existing = get_planned_inbound_dict(conn)
+
+    total_units = sum(
+        sum(months.values()) for months in existing.values()
+    )
+    n_skus = len([s for s in existing if any(v > 0 for v in existing[s].values())])
+
+    st.markdown(_GROUP_HEADER.format("Planned Inbound Orders"), unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="{_CARD_STYLE}">'
+        f'<p style="{_CARD_LABEL}">{n_skus} SKUs with orders planned</p>'
+        f'<p style="{_CARD_VALUE}">{total_units:,.0f} total units</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    return st.button("Edit Inbound Orders", key="bv_open_orders_dialog",
+                      use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Media Spend dialog
+# ---------------------------------------------------------------------------
+@st.dialog("Media Spend Plan", width="large")
+def _media_spend_dialog():
+    """Full-screen dialog with a single data_editor for all media spend data."""
     current = get_business_vars()
     horizon = current.get("forecast_horizon", 12)
-    now = datetime.utcnow()
-    months = [(now + relativedelta(months=i)).strftime("%Y-%m") for i in range(horizon)]
+    months = _month_list(horizon)
 
-    # --- Load existing data ---
     with get_db() as conn:
         dtc_rows = get_media_spend(conn, source="All Sources")
         amz_spend_rows = get_media_spend(conn, source="Amazon")
@@ -221,135 +292,91 @@ def _render_media_spend_tab():
     amz_spend_lookup = {r["month"]: r["spend"] for r in amz_spend_rows}
     amz_rev_lookup = {r["month"]: r["revenue"] for r in amz_rev_rows}
 
-    # --- DTC Ad Spend & ROAS ---
-    st.markdown(_GROUP_HEADER.format("DTC Ad Spend & ROAS"), unsafe_allow_html=True)
-    spend_edits = []
-    for i, m in enumerate(months):
+    # Build a single DataFrame: one row per month, 4 editable columns
+    rows = []
+    for m in months:
         existing = dtc_lookup.get(m, {"spend": 5000.0, "new_customer_roas": 2.0})
-        try:
-            dt = datetime.strptime(m, "%Y-%m")
-            label = dt.strftime("%b '%y")
-        except ValueError:
-            label = m
+        rows.append({
+            "Month": _month_label(m),
+            "DTC Spend ($)": float(existing.get("spend", 5000.0)),
+            "ROAS": float(existing.get("new_customer_roas", 2.0)),
+            "AMZ Ad Spend ($)": float(amz_spend_lookup.get(m, 0.0)),
+            "AMZ Revenue ($)": float(amz_rev_lookup.get(m, 0.0)),
+        })
 
-        st.markdown(f'<span style="font-size:0.75rem;color:rgba(255,255,255,0.6);">{label}</span>',
-                    unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            sv = st.number_input(
-                "Spend $", value=float(existing["spend"]), min_value=0.0,
-                step=500.0, format="%.0f", key=f"bvms_s_{i}", label_visibility="collapsed",
-            )
-        with c2:
-            rv = st.number_input(
-                "ROAS", value=float(existing["new_customer_roas"]), min_value=0.1,
-                step=0.1, format="%.1f", key=f"bvms_r_{i}", label_visibility="collapsed",
-            )
-        spend_edits.append({"month": m, "spend": sv, "roas": rv})
+    df = pd.DataFrame(rows)
 
-    st.markdown('<div style="margin-bottom:8px;"></div>', unsafe_allow_html=True)
+    st.caption("Edit monthly media spend across all channels. AMZ Revenue $0 = use velocity-based projection.")
 
-    # --- Amazon Ad Spend ---
-    st.markdown(_GROUP_HEADER.format("Amazon Ad Spend"), unsafe_allow_html=True)
-    amz_spend_edits = []
-    for i, m in enumerate(months):
-        try:
-            dt = datetime.strptime(m, "%Y-%m")
-            label = dt.strftime("%b '%y")
-        except ValueError:
-            label = m
+    col_config = {
+        "Month": st.column_config.TextColumn("Month", disabled=True, width="small"),
+        "DTC Spend ($)": st.column_config.NumberColumn(
+            "DTC Spend ($)", min_value=0.0, step=500.0, format="$%.0f",
+        ),
+        "ROAS": st.column_config.NumberColumn(
+            "ROAS", min_value=0.1, step=0.1, format="%.1f", width="small",
+        ),
+        "AMZ Ad Spend ($)": st.column_config.NumberColumn(
+            "AMZ Ad Spend ($)", min_value=0.0, step=500.0, format="$%.0f",
+        ),
+        "AMZ Revenue ($)": st.column_config.NumberColumn(
+            "AMZ Revenue ($)", min_value=0.0, step=5000.0, format="$%.0f",
+        ),
+    }
 
-        st.markdown(f'<span style="font-size:0.75rem;color:rgba(255,255,255,0.6);">{label}</span>',
-                    unsafe_allow_html=True)
-        av = st.number_input(
-            "AMZ $", value=float(amz_spend_lookup.get(m, 0.0)), min_value=0.0,
-            step=500.0, format="%.0f", key=f"bvms_a_{i}", label_visibility="collapsed",
-        )
-        amz_spend_edits.append({"month": m, "spend": av})
+    edited_df = st.data_editor(
+        df, column_config=col_config, hide_index=True,
+        use_container_width=True, key="bv_media_editor",
+    )
 
-    st.markdown('<div style="margin-bottom:8px;"></div>', unsafe_allow_html=True)
-
-    # --- Amazon Revenue Forecast ---
-    st.markdown(_GROUP_HEADER.format("Amazon Revenue Forecast"), unsafe_allow_html=True)
-    st.caption("$0 = use velocity-based projection")
-    amz_rev_edits = []
-    for i, m in enumerate(months):
-        try:
-            dt = datetime.strptime(m, "%Y-%m")
-            label = dt.strftime("%b '%y")
-        except ValueError:
-            label = m
-
-        st.markdown(f'<span style="font-size:0.75rem;color:rgba(255,255,255,0.6);">{label}</span>',
-                    unsafe_allow_html=True)
-        rr = st.number_input(
-            "Rev $", value=float(amz_rev_lookup.get(m, 0.0)), min_value=0.0,
-            step=5000.0, format="%.0f", key=f"bvms_ar_{i}", label_visibility="collapsed",
-        )
-        amz_rev_edits.append({"month": m, "revenue": rr})
-
-    # --- Save ---
-    if st.button("Apply Media Spend", type="primary", key="bv_media_apply",
-                 use_container_width=True):
+    if st.button("Save Media Spend", type="primary", key="bv_media_save",
+                  use_container_width=True):
         with get_db() as conn:
-            for row in spend_edits:
-                upsert_media_spend(conn, row["month"], row["spend"], row["roas"], source="All Sources")
-            for row in amz_spend_edits:
-                upsert_media_spend(conn, row["month"], row["spend"], 0.0, source="Amazon")
-            for row in amz_rev_edits:
-                upsert_amazon_revenue_forecast(conn, row["month"], row["revenue"])
-        return True
-    return False
+            for i, m in enumerate(months):
+                row = edited_df.iloc[i]
+                upsert_media_spend(conn, m, row["DTC Spend ($)"], row["ROAS"], source="All Sources")
+                upsert_media_spend(conn, m, row["AMZ Ad Spend ($)"], 0.0, source="Amazon")
+                upsert_amazon_revenue_forecast(conn, m, row["AMZ Revenue ($)"])
+        st.session_state["_bv_media_saved"] = True
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Tab 3: Planned Inbound Orders
+# Planned Inbound Orders dialog
 # ---------------------------------------------------------------------------
-def _render_orders_tab(forecast_skus):
-    """Render per-SKU per-month planned inbound editor. Returns True if saved."""
+@st.dialog("Planned Inbound Orders", width="large")
+def _orders_dialog(forecast_skus):
+    """Full-screen dialog with a data_editor for per-SKU per-month inbound."""
     from analytics.sku_flavors import get_flavor
 
     current = get_business_vars()
     horizon = current.get("forecast_horizon", 12)
-    now = datetime.utcnow()
-    months = [(now + relativedelta(months=i)).strftime("%Y-%m") for i in range(horizon)]
+    months = _month_list(horizon)
 
     with get_db() as conn:
         existing = get_planned_inbound_dict(conn)
 
-    st.markdown(_GROUP_HEADER.format("Planned Inbound (units)"), unsafe_allow_html=True)
-    st.caption("Units arriving per SKU per month.")
-
-    # Build a DataFrame for st.data_editor
     rows = []
     for sku in sorted(forecast_skus):
         flavor = get_flavor(sku)
         row = {"SKU": sku, "Flavor": flavor}
         sku_data = existing.get(sku, {})
         for m in months:
-            try:
-                dt = datetime.strptime(m, "%Y-%m")
-                col_label = dt.strftime("%b '%y")
-            except ValueError:
-                col_label = m
-            row[col_label] = int(sku_data.get(m, 0))
+            row[_month_label(m)] = int(sku_data.get(m, 0))
         rows.append(row)
 
     df = pd.DataFrame(rows)
 
-    # Build column config: SKU/Flavor read-only, month columns editable
+    st.caption("Units arriving per SKU per month.")
+
     col_config = {
         "SKU": st.column_config.TextColumn("SKU", disabled=True, width="small"),
         "Flavor": st.column_config.TextColumn("Flavor", disabled=True, width="small"),
     }
     for m in months:
-        try:
-            dt = datetime.strptime(m, "%Y-%m")
-            col_label = dt.strftime("%b '%y")
-        except ValueError:
-            col_label = m
-        col_config[col_label] = st.column_config.NumberColumn(
-            col_label, min_value=0, step=100, width="small",
+        lbl = _month_label(m)
+        col_config[lbl] = st.column_config.NumberColumn(
+            lbl, min_value=0, step=100, width="small",
         )
 
     edited_df = st.data_editor(
@@ -357,25 +384,17 @@ def _render_orders_tab(forecast_skus):
         use_container_width=True, key="bv_inbound_editor",
     )
 
-    if st.button("Apply Orders", type="primary", key="bv_orders_apply",
-                 use_container_width=True):
-        # Map column labels back to month strings
-        label_to_month = {}
-        for m in months:
-            try:
-                dt = datetime.strptime(m, "%Y-%m")
-                label_to_month[dt.strftime("%b '%y")] = m
-            except ValueError:
-                label_to_month[m] = m
-
+    if st.button("Save Orders", type="primary", key="bv_orders_save",
+                  use_container_width=True):
+        label_to_month = {_month_label(m): m for m in months}
         with get_db() as conn:
             for _, row in edited_df.iterrows():
                 sku = row["SKU"]
                 for col, month_str in label_to_month.items():
                     units = int(row.get(col, 0) or 0)
                     upsert_planned_inbound(conn, sku, month_str, units)
-        return True
-    return False
+        st.session_state["_bv_orders_saved"] = True
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -386,23 +405,35 @@ def render_sidebar_panel(forecast_skus=None):
 
     Returns True if the user saved changes (caller should clear caches & rerun).
     """
+    # Check for dialog save flags (set inside dialogs before rerun)
+    if st.session_state.pop("_bv_media_saved", False):
+        return True
+    if st.session_state.pop("_bv_orders_saved", False):
+        return True
+
     with st.sidebar.expander("\u2699\uFE0F  Business Variables", expanded=False):
-        tab_vars, tab_spend, tab_orders = st.tabs(["Variables", "Media Spend", "Orders"])
+        # --- Scalar variables inline ---
+        edits = _render_variables_inline()
 
-        with tab_vars:
-            edits = _render_variables_tab()
-            if st.button("Apply Changes", type="primary", key="bv_apply",
-                         use_container_width=True):
-                save_business_vars(edits)
-                return True
+        if st.button("Apply Changes", type="primary", key="bv_apply",
+                      use_container_width=True):
+            save_business_vars(edits)
+            return True
 
-        with tab_spend:
-            if _render_media_spend_tab():
-                return True
+        st.markdown('<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
 
-        with tab_orders:
-            skus = forecast_skus or ()
-            if skus and _render_orders_tab(skus):
-                return True
+        # --- Media Spend summary + edit button ---
+        open_media = _render_media_spend_summary()
+
+        # --- Orders summary + edit button ---
+        skus = forecast_skus or ()
+        open_orders = _render_orders_summary(skus) if skus else False
+
+    # Open dialogs (must be outside the expander context)
+    if open_media:
+        _media_spend_dialog()
+
+    if open_orders and skus:
+        _orders_dialog(tuple(skus))
 
     return False
