@@ -8,6 +8,8 @@ Returns JSON with:
 Query parameters are sanitized on every request: whitespace is stripped,
 values are limited to 500 chars, and empty strings are rejected with 400.
 """
+import csv
+import io
 import json
 import os
 import time
@@ -19,6 +21,7 @@ from cache import Cache
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from utils.constants import (
+    EXPORT_CSV_PATH,
     HEALTH_CONTENT_TYPE,
     HEALTH_DEFAULT_HOST,
     HEALTH_DEFAULT_PORT,
@@ -33,6 +36,8 @@ from utils.constants import (
 
 _START_TIME = time.monotonic()
 _cache = Cache(default_ttl=30)
+
+_EXPORT_COLUMNS = ['sale_date', 'sku', 'source', 'units_sold', 'revenue', 'order_count']
 
 _CORE_TABLES = [
     'customers',
@@ -77,7 +82,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'error': f"Invalid value for query parameter '{key}': must not be empty"})
                     return
 
-        if path != HEALTH_ENDPOINT_PATH:
+        if path not in (HEALTH_ENDPOINT_PATH, EXPORT_CSV_PATH):
             self.send_response(404)
             self.end_headers()
             return
@@ -88,6 +93,10 @@ class HealthHandler(BaseHTTPRequestHandler):
             if auth is None or auth != f'Bearer {API_KEY}':
                 self._send_json(401, {'error': 'Unauthorized'})
                 return
+
+        if path == EXPORT_CSV_PATH:
+            self._handle_csv_export()
+            return
 
         try:
             db_row_count = _get_db_row_count()
@@ -105,6 +114,32 @@ class HealthHandler(BaseHTTPRequestHandler):
             'debug': DEBUG,
         }
         self._send_json(200, payload)
+
+    def _handle_csv_export(self):
+        try:
+            with get_db() as conn:
+                rows = conn.execute(
+                    'SELECT sale_date, sku, source, units_sold, revenue, order_count '
+                    'FROM daily_sku_sales ORDER BY sale_date, sku, source'
+                ).fetchall()
+        except Exception as exc:
+            self._send_json(500, {'error': f'Database error: {exc}'})
+            return
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_EXPORT_COLUMNS)
+        for row in rows:
+            writer.writerow([row[col] for col in _EXPORT_COLUMNS])
+        body = buf.getvalue().encode('utf-8')
+
+        filename = f'daily_sku_sales_{datetime.now(timezone.utc).strftime("%Y%m%d")}.csv'
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv; charset=utf-8')
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, status_code, payload):
         body = json.dumps(payload).encode()
