@@ -45,3 +45,6 @@ HEALTH_CONTENT_TYPE = 'application/json'
 HEALTH_DEFAULT_HOST = '0.0.0.0'
 HEALTH_DEFAULT_PORT = 8502
 HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
+
+# Input validation
+MAX_INPUT_LENGTH = 500
