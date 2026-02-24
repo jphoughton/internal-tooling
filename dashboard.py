@@ -2,6 +2,8 @@
 Streamlit Dashboard for Inventory Demand Forecasting.
 Thin router: dispatches to page modules in pages/.
 """
+import logging
+import os
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -58,6 +60,101 @@ def _cached_sku_forecast(waterfall_json, source_filter):
 
 from utils.constants import FORECAST_SKUS
 
+# ---------------------------------------------------------------------------
+# Startup validation — runs once per process on first Streamlit boot
+# ---------------------------------------------------------------------------
+_STARTUP_DONE = False
+
+# Required env vars: at least one data source must be configured to be useful,
+# but we warn (not fatal) so the app still loads for Settings page access.
+_OPTIONAL_BUT_NOTABLE_VARS = [
+    "DATABASE_URL",
+    "SHOPIFY_ACCESS_TOKEN",
+    "SHOPIFY_STORE_URL",
+    "AMAZON_REFRESH_TOKEN",
+    "AMAZON_LWA_CLIENT_ID",
+    "AMAZON_LWA_CLIENT_SECRET",
+]
+
+_log = logging.getLogger(__name__)
+
+
+def _run_startup_validation() -> dict:
+    """Validate DB connection, env vars, and log a startup banner.
+
+    Returns a dict with keys:
+        db_ok (bool), missing_vars (list[str]), warnings (list[str])
+    """
+    import config as _cfg
+
+    # --- Startup banner ---
+    _log.info("=" * 60)
+    _log.info("  Hydrant Command Center  v%s", _cfg.BUILD_VERSION)
+    _log.info("  %s", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
+    _log.info("=" * 60)
+
+    # --- Config summary ---
+    db_url = os.environ.get("DATABASE_URL", "")
+    _log.info("[config] DATABASE_URL   : %s", "set" if db_url else "NOT SET (SQLite fallback)")
+    _log.info("[config] DEBUG          : %s", _cfg.DEBUG)
+    _log.info("[config] SYNC_HOUR      : %s:00 %s", _cfg.SYNC_HOUR, _cfg.SYNC_TIMEZONE)
+    _log.info("[config] FORECAST_HORIZON: %d days", _cfg.FORECAST_HORIZON_DAYS)
+    shopify_set = bool(_cfg.SHOPIFY_STORE_URL and _cfg.SHOPIFY_ACCESS_TOKEN)
+    amazon_set = bool(_cfg.AMAZON_REFRESH_TOKEN and _cfg.AMAZON_LWA_CLIENT_ID)
+    _log.info("[config] Shopify creds  : %s", "configured" if shopify_set else "missing")
+    _log.info("[config] Amazon creds   : %s", "configured" if amazon_set else "missing")
+
+    # --- Env var check ---
+    missing = [v for v in _OPTIONAL_BUT_NOTABLE_VARS if not os.environ.get(v)]
+    if missing:
+        _log.warning("[startup] Missing env vars: %s", ", ".join(missing))
+    else:
+        _log.info("[startup] All notable env vars are set")
+
+    # --- DB connection check ---
+    db_ok = False
+    warnings = []
+    try:
+        from db import get_db
+        with get_db() as conn:
+            conn.execute("SELECT 1")
+        db_ok = True
+        _log.info("[startup] Database connection: OK")
+    except Exception as exc:
+        msg = f"Database connection failed: {exc}"
+        _log.error("[startup] %s", msg)
+        warnings.append(msg)
+
+    _log.info("=" * 60)
+    return {"db_ok": db_ok, "missing_vars": missing, "warnings": warnings}
+
+
+def _maybe_run_startup() -> None:
+    """Run startup validation exactly once per process; surface critical errors in UI."""
+    global _STARTUP_DONE
+    if _STARTUP_DONE:
+        return
+    _STARTUP_DONE = True
+
+    # Ensure logging is configured (Streamlit may not set up a handler)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+    result = _run_startup_validation()
+
+    # Surface critical DB failure in Streamlit UI so operators notice immediately
+    if not result["db_ok"]:
+        st.error(
+            "**Database connection failed at startup.** "
+            "Check `DATABASE_URL` in your environment variables. "
+            f"Detail: {result['warnings'][0] if result['warnings'] else 'unknown error'}",
+            icon="🚨",
+        )
+
+
 def _load_seasonal_json():
     """Load seasonal indices from DB and return as JSON string for cache key, or None if disabled."""
     import json as _json_s
@@ -77,6 +174,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Run once per process after page config is set (st.error is now safe to call)
+_maybe_run_startup()
 
 # --- Password protection (Railway / production) ---
 if not check_password():
