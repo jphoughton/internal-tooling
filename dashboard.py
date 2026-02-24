@@ -25,6 +25,7 @@ from analytics.sku_flavors import get_flavor
 from ui.styles import inject_global_styles, get_nav_section_css
 from ui.components import check_password
 from ui.business_vars import get_business_vars, render_sidebar_panel
+from config import DEBUG, API_KEY
 
 
 # --- Cached wrappers for expensive computations ---
@@ -210,6 +211,8 @@ if configured_sources:
                     st.sidebar.success(f"Auto-sync complete: {', '.join(_auto_ok)}")
         except Exception as _auto_err:
             st.sidebar.warning(f"Auto-sync failed: {_auto_err}")
+            if DEBUG:
+                st.sidebar.exception(_auto_err)
 
 # Sync button
 if st.sidebar.button("Refresh Data"):
@@ -564,6 +567,8 @@ _ctx = {
     'active_sources': active_sources,
     'configured_sources': configured_sources,
     'biz_vars': _biz_vars,
+    'debug': DEBUG,
+    'api_key': API_KEY,
 }
 
 if page == "Overview":

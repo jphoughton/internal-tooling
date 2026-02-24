@@ -49,6 +49,19 @@ MIN_HISTORY_DAYS = int(os.getenv("MIN_HISTORY_DAYS", "60"))  # Minimum days for 
 LEAD_TIME_DAYS = int(os.getenv("LEAD_TIME_DAYS", "14"))  # Default reorder lead time
 SAFETY_STOCK_MULTIPLIER = float(os.getenv("SAFETY_STOCK_MULTIPLIER", "1.5"))
 
+# --- Database ---
+# Full PostgreSQL connection URL — used by db.py to establish the connection pool.
+# On Railway this is injected automatically; locally set it in .env.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# --- App ---
+# Generic API key for programmatic access (e.g. scheduler callbacks, external triggers).
+# Leave empty to disable API-key auth; set a strong random string in production.
+API_KEY = os.getenv("API_KEY", "")
+
+# Debug mode — set DEBUG=true/1 to enable verbose error output and stack traces.
+DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+
 # --- Scheduler ---
 SYNC_HOUR = int(os.getenv("SYNC_HOUR", "5"))  # Daily sync at 5 AM PST
 SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))
@@ -168,6 +181,9 @@ def reload_config():
     g["PACKIYO_API_URL"] = os.getenv("PACKIYO_API_URL", "https://aveshops.packiyo.com/api/v1")
     g["PACKIYO_API_TOKEN"] = os.getenv("PACKIYO_API_TOKEN", "")
     g["PACKIYO_CUSTOMER_ID"] = os.getenv("PACKIYO_CUSTOMER_ID", "12")
+    g["DATABASE_URL"] = os.getenv("DATABASE_URL", "")
+    g["API_KEY"] = os.getenv("API_KEY", "")
+    g["DEBUG"] = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
 
 
 # Load DB credentials on startup (after .env, so DB values take priority),
