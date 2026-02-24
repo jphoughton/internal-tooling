@@ -346,6 +346,22 @@ _SCHEMA_SQL = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS bank_transactions (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        description TEXT,
+        merchant TEXT,
+        amount REAL NOT NULL,
+        direction TEXT DEFAULT 'debit',
+        category TEXT DEFAULT 'Uncategorized',
+        department TEXT,
+        user_name TEXT,
+        is_transfer INTEGER DEFAULT 0,
+        is_ramp_duplicate INTEGER DEFAULT 0,
+        source TEXT DEFAULT 'unknown',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     """CREATE TABLE IF NOT EXISTS klaviyo_campaigns (
         id TEXT PRIMARY KEY,
         name TEXT,
