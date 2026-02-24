@@ -49,6 +49,11 @@ MIN_HISTORY_DAYS = int(os.getenv("MIN_HISTORY_DAYS", "60"))  # Minimum days for 
 LEAD_TIME_DAYS = int(os.getenv("LEAD_TIME_DAYS", "14"))  # Default reorder lead time
 SAFETY_STOCK_MULTIPLIER = float(os.getenv("SAFETY_STOCK_MULTIPLIER", "1.5"))
 
+# --- General Application ---
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # PostgreSQL URL; empty = use local SQLite
+API_KEY = os.getenv("API_KEY", "")  # Optional bearer token for health endpoint auth
+DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
+
 # --- Scheduler ---
 SYNC_HOUR = int(os.getenv("SYNC_HOUR", "5"))  # Daily sync at 5 AM PST
 SYNC_MINUTE = int(os.getenv("SYNC_MINUTE", "0"))

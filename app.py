@@ -9,7 +9,7 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from config import BUILD_VERSION
+from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
 from db import get_db
 from utils.constants import (
     HEALTH_CONTENT_TYPE,
@@ -49,6 +49,13 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if API_KEY:
+            auth = self.headers.get('Authorization', '')
+            if auth != f'Bearer {API_KEY}':
+                self.send_response(401)
+                self.end_headers()
+                return
+
         try:
             db_row_count = _get_db_row_count()
             status = HEALTH_STATUS_OK
@@ -61,6 +68,8 @@ class HealthHandler(BaseHTTPRequestHandler):
             'version': BUILD_VERSION,
             'uptime_seconds': round(time.monotonic() - _START_TIME, 2),
             'db_row_count': db_row_count,
+            'database_url_set': bool(DATABASE_URL),
+            'debug': DEBUG,
         }
         body = json.dumps(payload).encode()
         self.send_response(200)
@@ -69,8 +78,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, fmt, *args):  # suppress default access log noise
-        pass
+    def log_message(self, fmt, *args):
+        if DEBUG:
+            super().log_message(fmt, *args)
 
 
 def run(host=HEALTH_DEFAULT_HOST, port=HEALTH_DEFAULT_PORT):
