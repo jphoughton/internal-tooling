@@ -12,6 +12,7 @@ from db import (
 from analytics.sku_flavors import get_flavor
 from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue, get_projected_new_repeat_summary
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
+from ui.pacing import render_pacing_block
 import config
 
 
@@ -129,6 +130,9 @@ def render(ctx):
                     f'Limited history ({data_span_days} days). Request `read_all_orders` scope '
                     f'in your [Shopify Partner Dashboard](https://partners.shopify.com) for full access.'
                 )
+
+    # --- Pacing Block (uses its own MTD date filter — not affected by the date range below) ---
+    render_pacing_block(ctx, key_prefix='ov_pacing')
 
     # --- Date Filter ---
     with get_db() as conn:
