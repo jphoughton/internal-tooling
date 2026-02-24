@@ -23,7 +23,10 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
-    _TW_ADJ = ctx.get('biz_vars', {}).get('tw_adjustment_factor', 1.0)
+    _bv = ctx.get('biz_vars', {})
+    _TW_ADJ = _bv.get('tw_adjustment_factor', 1.0)
+    _mkt_horizon = _bv.get('forecast_horizon', 12)
+    _mkt_amz_growth = _bv.get('amazon_growth_pct', 0.0)
 
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
@@ -114,14 +117,15 @@ def render(ctx):
                     _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
                     _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
                 import json as _json_mkt
-                _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), None, 12, _seasonal_json_mkt)
+                _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), None, _mkt_horizon, _seasonal_json_mkt)
                 if _mkt_wf is not None and not _mkt_wf.empty:
                     _mkt_sku_table = _cached_sku_forecast(_mkt_wf.to_json(), None)
                     _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
                     _dtc_mkt = build_master_dtc_forecast(
                         shopify_waterfall_df=_mkt_wf,
                         shopify_sku_forecast_df=_mkt_sku_table,
-                        horizon_months=12,
+                        amazon_growth_rate=_mkt_amz_growth / 100.0,
+                        horizon_months=_mkt_horizon,
                         forecast_skus=FORECAST_SKUS,
                         media_plan=_mkt_media,
                         amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
@@ -580,7 +584,7 @@ def render(ctx):
 
             else:
                 # No goals — show MTD summary with last month comparison
-                st.info("Set up a media spend plan and Amazon forecast on the **Demand Forecast** page for pacing.")
+                st.info("Set up a media spend plan and Amazon forecast in the sidebar **Business Variables** panel for pacing.")
                 st.subheader("MTD Summary")
                 ts1, ts2, ts3, ts4 = st.columns(4)
                 ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")

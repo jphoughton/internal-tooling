@@ -151,6 +151,13 @@ def render(ctx):
         _db_spend = get_media_spend(conn, source='All Sources')
         _db_amz_rev = get_amazon_revenue_forecast(conn)
 
+    if not _db_spend:
+        st.info(
+            'No media spend plan configured. Open the **Business Variables** panel in the sidebar '
+            'to enter your monthly DTC ad budget and Amazon revenue forecast. '
+            'Without spend data, the forecast shows repeat customers only.'
+        )
+
     now = datetime.utcnow()
     horizon_months_list = [(now + relativedelta(months=i)).strftime('%Y-%m') for i in range(horizon)]
 
