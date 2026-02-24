@@ -4,7 +4,6 @@ Fetches real-time inventory levels from the Packiyo WMS.
 """
 import requests
 import config
-from etl.retry import with_retry
 
 
 def _headers():
@@ -28,8 +27,6 @@ def test_connection():
         return False, str(e)
 
 
-
-@with_retry()
 def get_inventory():
     """
     Fetch all product inventory from Packiyo.

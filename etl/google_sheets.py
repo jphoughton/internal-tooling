@@ -12,8 +12,6 @@ import re
 import pandas as pd
 import requests
 
-from etl.retry import with_retry
-
 logger = logging.getLogger(__name__)
 
 # Default: Hydrant Daily Data sheet
@@ -28,14 +26,6 @@ def _build_csv_url(sheet_id=None, gid=None):
     return f"https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?tqx=out:csv&gid={g}"
 
 
-
-@with_retry()
-def _get_csv(url, timeout):
-    """Fetch a Google Sheets CSV URL with exponential backoff retry."""
-    resp = requests.get(url, timeout=timeout)
-    resp.raise_for_status()
-    return resp
-
 def fetch_daily_data_tab(sheet_id=None, gid=None, timeout=30):
     """
     Fetch the Daily Data tab from Google Sheets as a pandas DataFrame.
@@ -49,7 +39,8 @@ def fetch_daily_data_tab(sheet_id=None, gid=None, timeout=30):
     logger.info(f"Fetching Google Sheet: {url}")
 
     try:
-        resp = _get_csv(url, timeout)
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
     except requests.RequestException as e:
         logger.error(f"Failed to fetch Google Sheet: {e}")
         return pd.DataFrame()
@@ -122,7 +113,8 @@ def fetch_amazon_rollup_tab(timeout=30):
     url = _build_csv_url(AMAZON_ROLLUP_SHEET_ID, AMAZON_ROLLUP_GID)
     logger.info(f"Fetching Amazon Roll Up Date: {url}")
     try:
-        resp = _get_csv(url, timeout)
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
     except requests.RequestException as e:
         logger.error(f"Failed to fetch Amazon Roll Up Date: {e}")
         return pd.DataFrame()
