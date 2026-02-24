@@ -6,7 +6,9 @@ Returns JSON with:
   - db_row_count:   total rows across core tables from db.py
 """
 import json
+import os
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from config import API_KEY, BUILD_VERSION, DATABASE_URL, DEBUG
@@ -19,6 +21,8 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
+    STARTUP_OPTIONAL_INTEGRATIONS,
+    STARTUP_REQUIRED_ENV_VARS,
 )
 
 _START_TIME = time.monotonic()
@@ -83,9 +87,42 @@ class HealthHandler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+
+def _validate_startup() -> None:
+    """Log a startup banner, check required env vars, and verify DB connectivity."""
+    sep = '=' * 60
+    print(sep)
+    print('  Hydrant Command Center — Health Server')
+    print(f'  Version : {BUILD_VERSION}')
+    print(f'  Started : {datetime.now(timezone.utc).isoformat(timespec="seconds")} UTC')
+    print(f'  Endpoint: {HEALTH_DEFAULT_HOST}:{HEALTH_DEFAULT_PORT}{HEALTH_ENDPOINT_PATH}')
+    print(sep)
+    print('  Config:')
+    print(f'    DATABASE_URL : {"set" if DATABASE_URL else "NOT SET"}')
+    print(f'    API_KEY auth : {"enabled" if API_KEY else "disabled (open)"}')
+    print(f'    Debug mode   : {DEBUG}')
+    print('  Integrations:')
+    for label, var in STARTUP_OPTIONAL_INTEGRATIONS.items():
+        status = 'configured' if os.environ.get(var) else 'not configured'
+        print(f'    {label:<16}: {status}')
+    missing = [v for v in STARTUP_REQUIRED_ENV_VARS if not os.environ.get(v)]
+    if missing:
+        print('  Warnings:')
+        for var in missing:
+            print(f'    [MISSING] {var} is not set — app will not function correctly')
+    print('  DB connection  : ', end='', flush=True)
+    try:
+        with get_db() as conn:
+            conn.execute('SELECT 1').fetchone()
+        print('ok')
+    except Exception as exc:
+        print(f'FAILED — {exc}')
+        print(f'  [DB ERROR] {exc}')
+    print(sep)
+
 def run(host=HEALTH_DEFAULT_HOST, port=HEALTH_DEFAULT_PORT):
+    _validate_startup()
     server = HTTPServer((host, port), HealthHandler)
-    print(f'{HEALTH_STARTUP_MESSAGE} {host}:{port}{HEALTH_ENDPOINT_PATH}')
     server.serve_forever()
 
 

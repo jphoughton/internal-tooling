@@ -45,3 +45,11 @@ HEALTH_CONTENT_TYPE = 'application/json'
 HEALTH_DEFAULT_HOST = '0.0.0.0'
 HEALTH_DEFAULT_PORT = 8502
 HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
+
+# Startup validation
+STARTUP_REQUIRED_ENV_VARS = ['DATABASE_URL']
+STARTUP_OPTIONAL_INTEGRATIONS = {
+    'Amazon SP-API': 'AMAZON_REFRESH_TOKEN',
+    'Shopify': 'SHOPIFY_STORE_URL',
+    'Packiyo 3PL': 'PACKIYO_API_TOKEN',
+}
