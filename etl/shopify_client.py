@@ -2,6 +2,7 @@
 Shopify Admin API integration.
 Fetches orders and line items, normalizes to common schema.
 """
+import logging
 import requests
 import time
 from etl.retry import with_retry
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta
 import config as cfg
 from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
 from etl.customer_id import generate_customer_id
+
+logger = logging.getLogger(__name__)
 
 
 def get_base_url():
@@ -175,7 +178,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         if response.status_code == 429:
             # Rate limited — Shopify uses leaky bucket
             retry_after = float(response.headers.get("Retry-After", 2))
-            print(f"Shopify rate limit hit, waiting {retry_after}s...")
+            logger.warning('Shopify rate limit hit, waiting %gs...', retry_after)
             time.sleep(retry_after)
             continue
 
@@ -256,9 +259,10 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                 requested_days = (actual_end - requested_start).days
                 actual_days = (actual_end - actual_start).days
                 if requested_days > 90 and actual_days < 70:
-                    print(
-                        f"WARNING: Requested orders from {since_date} but oldest is "
-                        f"{oldest} (~{actual_days} days). App may lack 'read_all_orders' scope."
+                    logger.warning(
+                        'Requested orders from %s but oldest is %s (~%d days). '
+                        "App may lack 'read_all_orders' scope.",
+                        since_date, oldest, actual_days,
                     )
         except Exception:
             pass
