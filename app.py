@@ -57,8 +57,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         if API_KEY:
             auth = self.headers.get('Authorization', '')
             if auth != f'Bearer {API_KEY}':
-                self.send_response(401)
-                self.end_headers()
+                self._send_json(401, {'error': 'Unauthorized'})
                 return
 
         if path == HEALTH_ENDPOINT_PATH:
