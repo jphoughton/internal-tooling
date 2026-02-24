@@ -4,6 +4,7 @@ Fetches orders and line items, normalizes to common schema.
 """
 import requests
 import time
+from etl.retry import with_retry
 from datetime import datetime, timedelta
 import config as cfg
 from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
@@ -121,6 +122,12 @@ def test_connection():
         return False, f"Connection test failed: {e}"
 
 
+@with_retry
+def _get_orders_page(url, headers, params):
+    """Fetch a single page of Shopify orders."""
+    return requests.get(url, headers=headers, params=params, timeout=30)
+
+
 def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                  commit_per_page=False):
     """
@@ -162,19 +169,8 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
     }
 
     page_number = 0
-    max_retries = 3
     while url:
-        for attempt in range(max_retries):
-            try:
-                response = requests.get(url, headers=headers, params=params, timeout=30)
-                break
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                if attempt < max_retries - 1:
-                    wait = 2 ** (attempt + 1)
-                    print(f"Request failed ({e}), retrying in {wait}s... (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait)
-                else:
-                    raise
+        response = _get_orders_page(url, headers, params)
 
         if response.status_code == 429:
             # Rate limited — Shopify uses leaky bucket
