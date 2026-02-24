@@ -14,6 +14,7 @@ import csv
 import gzip
 import io
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 
