@@ -14,6 +14,7 @@ values are limited to 500 chars, and empty strings are rejected with 400.
 import csv
 import io
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -207,13 +208,13 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
     def _handle_inventory_list(self, query_string):
-        """Handle GET /inventory_items with page and per_page query params.
+        """Handle GET /items with page and per_page query params.
 
         Returns a JSON object with:
           - items:       list of inventory_items rows for the requested page
           - page:        current page number (1-based)
           - per_page:    number of items per page
-          - total:       total number of rows in inventory_items
+          - total_count: total number of rows in inventory_items
           - total_pages: total number of pages
           - has_next:    whether a next page exists
           - has_prev:    whether a previous page exists
@@ -253,13 +254,12 @@ class HealthHandler(BaseHTTPRequestHandler):
             self._send_json(500, {'error': str(exc)})
             return
 
-        import math
         total_pages = math.ceil(total / per_page) if per_page else 0
         self._send_json(200, {
             'items': items,
             'page': page,
             'per_page': per_page,
-            'total': total,
+            'total_count': total,
             'total_pages': total_pages,
             'has_next': page < total_pages,
             'has_prev': page > 1,
