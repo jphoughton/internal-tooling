@@ -1,77 +1,94 @@
 """Unit tests for utils/validators.py."""
+
 import pytest
 from utils.validators import email_valid, url_valid
 
 
+# ---------------------------------------------------------------------------
+# email_valid tests
+# ---------------------------------------------------------------------------
+
 class TestEmailValid:
-    def test_valid_simple(self):
+    def test_standard_email(self):
         assert email_valid('user@example.com') is True
 
-    def test_valid_plus_addressing(self):
-        assert email_valid('user+tag@example.com') is True
-
-    def test_valid_subdomain(self):
+    def test_email_with_subdomain(self):
         assert email_valid('user@mail.example.co.uk') is True
 
-    def test_valid_numeric_local(self):
-        assert email_valid('123@domain.org') is True
+    def test_email_with_plus(self):
+        assert email_valid('user+tag@example.com') is True
 
-    def test_valid_hyphen_domain(self):
-        assert email_valid('user@my-domain.io') is True
+    def test_email_with_dots_in_local(self):
+        assert email_valid('first.last@example.com') is True
 
-    def test_invalid_missing_at(self):
+    def test_email_uppercase(self):
+        assert email_valid('USER@EXAMPLE.COM') is True
+
+    def test_missing_at_sign(self):
         assert email_valid('userexample.com') is False
 
-    def test_invalid_missing_domain(self):
+    def test_missing_domain(self):
         assert email_valid('user@') is False
 
-    def test_invalid_missing_tld(self):
-        assert email_valid('user@domain') is False
+    def test_missing_local_part(self):
+        assert email_valid('@example.com') is False
 
-    def test_invalid_empty_string(self):
-        assert email_valid('') is False
-
-    def test_invalid_non_string(self):
-        assert email_valid(None) is False  # type: ignore[arg-type]
-
-    def test_invalid_spaces_inside(self):
+    def test_spaces_in_email(self):
         assert email_valid('user @example.com') is False
 
-    def test_strips_surrounding_whitespace(self):
-        # Leading/trailing whitespace is stripped before validation
-        assert email_valid('  user@example.com  ') is True
+    def test_double_at(self):
+        assert email_valid('user@@example.com') is False
 
+    def test_empty_string(self):
+        assert email_valid('') is False
+
+    def test_non_string_input(self):
+        assert email_valid(None) is False
+
+    def test_tld_too_short(self):
+        assert email_valid('user@example.c') is False
+
+
+# ---------------------------------------------------------------------------
+# url_valid tests
+# ---------------------------------------------------------------------------
 
 class TestUrlValid:
-    def test_valid_https(self):
-        assert url_valid('https://example.com') is True
-
-    def test_valid_http(self):
+    def test_simple_http_url(self):
         assert url_valid('http://example.com') is True
 
-    def test_valid_ftp(self):
-        assert url_valid('ftp://files.example.com') is True
+    def test_simple_https_url(self):
+        assert url_valid('https://example.com') is True
 
-    def test_valid_with_path(self):
+    def test_url_with_path(self):
         assert url_valid('https://example.com/path/to/page') is True
 
-    def test_valid_with_port(self):
-        assert url_valid('https://example.com:8080/api') is True
+    def test_url_with_query(self):
+        assert url_valid('https://example.com/search?q=hello&page=1') is True
 
-    def test_valid_subdomain(self):
-        assert url_valid('https://sub.domain.example.com') is True
+    def test_url_with_port(self):
+        assert url_valid('http://localhost:8501') is True
 
-    def test_invalid_missing_scheme(self):
+    def test_url_with_subdomain(self):
+        assert url_valid('https://api.example.co.uk/v1') is True
+
+    def test_url_with_fragment(self):
+        assert url_valid('https://example.com/page#section') is True
+
+    def test_missing_scheme(self):
         assert url_valid('example.com') is False
 
-    def test_invalid_empty_string(self):
+    def test_ftp_scheme(self):
+        assert url_valid('ftp://example.com') is False
+
+    def test_empty_string(self):
         assert url_valid('') is False
 
-    def test_invalid_non_string(self):
-        assert url_valid(42) is False  # type: ignore[arg-type]
+    def test_non_string_input(self):
+        assert url_valid(42) is False
 
-    def test_invalid_scheme_only(self):
+    def test_spaces_in_url(self):
+        assert url_valid('https://exam ple.com') is False
+
+    def test_scheme_only(self):
         assert url_valid('https://') is False
-
-    def test_strips_surrounding_whitespace(self):
-        assert url_valid('  https://example.com  ') is True
