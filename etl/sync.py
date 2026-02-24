@@ -4,11 +4,13 @@ ETL orchestration: coordinates daily sync from all sources.
 Supports parallel backfill via run_parallel_backfill() which splits
 date ranges into chunks and processes them concurrently.
 """
-import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync
 import config as cfg
+
+logger = logging.getLogger(__name__)
 
 
 def run_daily_sync(full_refresh=False, on_status=None):
@@ -50,7 +52,7 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["amazon_sales"] = _sync_amazon(full_refresh)
         except Exception as e:
             results["amazon_sales"] = f"ERROR: {e}"
-            print(f"Amazon sales sync failed: {e}")
+            logger.error("Amazon sales sync failed: %s", e)
         step_idx += 1
 
         _report(step_idx, "Syncing Amazon retention data...")
@@ -58,10 +60,10 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["amazon_retention"] = _sync_amazon_retention(full_refresh)
         except Exception as e:
             results["amazon_retention"] = f"ERROR: {e}"
-            print(f"Amazon retention sync failed: {e}")
+            logger.error("Amazon retention sync failed: %s", e)
         step_idx += 1
     else:
-        print("Amazon SP-API not configured — skipping.")
+        logger.warning("Amazon SP-API not configured — skipping.")
 
     # --- Shopify (only if configured) ---
     if has_shopify:
@@ -70,24 +72,24 @@ def run_daily_sync(full_refresh=False, on_status=None):
         ok, msg = test_connection()
         if not ok:
             results["shopify"] = f"ERROR: {msg}"
-            print(f"Shopify connection failed: {msg}")
+            logger.error("Shopify connection failed: %s", msg)
             with get_db() as conn:
                 log_sync(conn, "shopify", datetime.utcnow().strftime("%Y-%m-%d"),
                          0, status="error", error_message=msg)
         else:
-            print(f"Shopify connection OK: {msg}")
+            logger.info("Shopify connection OK: %s", msg)
             _report(step_idx, "Syncing Shopify orders...")
             try:
                 results["shopify"] = _sync_shopify(full_refresh, on_status=on_status, step_idx=step_idx, total_steps=total_steps)
             except Exception as e:
                 results["shopify"] = f"ERROR: {e}"
-                print(f"Shopify sync failed: {e}")
+                logger.error("Shopify sync failed: %s", e)
                 with get_db() as conn:
                     log_sync(conn, "shopify", datetime.utcnow().strftime("%Y-%m-%d"),
                              0, status="error", error_message=str(e))
         step_idx += 1
     else:
-        print("Shopify not configured — skipping.")
+        logger.warning("Shopify not configured — skipping.")
 
     # --- Klaviyo (only if configured) ---
     with get_db() as conn:
@@ -99,13 +101,13 @@ def run_daily_sync(full_refresh=False, on_status=None):
             results["klaviyo"] = _sync_klaviyo(_klaviyo_key)
         except Exception as e:
             results["klaviyo"] = f"ERROR: {e}"
-            print(f"Klaviyo sync failed: {e}")
+            logger.error("Klaviyo sync failed: %s", e)
             with get_db() as conn:
                 log_sync(conn, "klaviyo", datetime.utcnow().strftime("%Y-%m-%d"),
                          0, status="error", error_message=str(e))
         step_idx += 1
     else:
-        print("Klaviyo not configured — skipping.")
+        logger.warning("Klaviyo not configured — skipping.")
 
     # --- Google Sheet (if configured) ---
     _report(step_idx, "Syncing Google Sheet...")
@@ -123,21 +125,21 @@ def run_daily_sync(full_refresh=False, on_status=None):
                     set_setting(conn, "google_sheet_last_sync",
                                 datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
                 results["google_sheet"] = gs_count
-                print(f"Google Sheet: synced {gs_count} rows")
+                logger.info("Google Sheet: synced %d rows", gs_count)
         else:
-            print("Google Sheet not configured — skipping.")
+            logger.warning("Google Sheet not configured — skipping.")
     except Exception as e:
         results["google_sheet"] = f"ERROR: {e}"
-        print(f"Google Sheet sync failed: {e}")
+        logger.error("Google Sheet sync failed: %s", e)
 
     # --- Rebuild aggregates ---
     _report(step_idx, "Rebuilding sales aggregates...")
-    print("Rebuilding daily sales aggregates...")
+    logger.info("Rebuilding daily sales aggregates...")
     with get_db() as conn:
         rebuild_daily_sales(conn)
 
     _report(total_steps, "Sync complete!")
-    print(f"\nSync complete: {results}")
+    logger.info("Sync complete: %s", results)
     return results
 
 
@@ -149,7 +151,7 @@ def _sync_amazon(full_refresh):
         since = _get_since_date(conn, "amazon", full_refresh, max_days=30)
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        print(f"Amazon sales sync: {since} to {today}")
+        logger.info("Amazon sales sync: %s to %s", since, today)
         count = fetch_sales_report(conn, since_date=since, until_date=today)
         log_sync(conn, "amazon", today, count)
 
@@ -164,7 +166,7 @@ def _sync_amazon_retention(full_refresh):
         since = _get_since_date(conn, "amazon_retention", full_refresh, max_days=30)
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        print(f"Amazon retention sync: {since} to {today}")
+        logger.info("Amazon retention sync: %s to %s", since, today)
         count = fetch_fulfillment_data(conn, since_date=since, until_date=today)
         log_sync(conn, "amazon_retention", today, count)
 
@@ -183,7 +185,7 @@ def _sync_shopify(full_refresh, on_status=None, step_idx=0, total_steps=1):
         since = _get_since_date(conn, "shopify", full_refresh)
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        print(f"Shopify sync: {since} to {today}")
+        logger.info("Shopify sync: %s to %s", since, today)
         count = fetch_orders(conn, since_date=since, until_date=today, on_progress=_order_progress)
         log_sync(conn, "shopify", today, count)
 
@@ -216,7 +218,7 @@ def _sync_klaviyo(api_key):
         for l in lists:
             upsert_klaviyo_list(conn, l)
 
-    print(f"Klaviyo metadata: {len(campaigns)} campaigns, {len(flows)} flows, {len(lists)} lists")
+    logger.info("Klaviyo metadata: %d campaigns, %d flows, %d lists", len(campaigns), len(flows), len(lists))
 
     # --- Performance metrics ---
     with get_db() as conn:
@@ -229,12 +231,12 @@ def _sync_klaviyo(api_key):
             include_revenue = True
             with get_db() as conn:
                 set_setting(conn, "klaviyo_conversion_metric_id", conversion_metric_id)
-            print(f"Auto-detected Placed Order metric: {conversion_metric_id}")
+            logger.info("Auto-detected Placed Order metric: %s", conversion_metric_id)
         else:
             # Fallback: any metric ID (API requires one even for engagement stats)
             conversion_metric_id = fetch_any_metric_id(api_key)
             if conversion_metric_id:
-                print(f"Using fallback metric for engagement stats: {conversion_metric_id}")
+                logger.warning("Using fallback metric for engagement stats: %s", conversion_metric_id)
 
     try:
         campaign_metrics = fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue)
@@ -246,9 +248,9 @@ def _sync_klaviyo(api_key):
             for fid, metrics in flow_metrics.items():
                 update_klaviyo_flow_metrics(conn, fid, metrics)
 
-        print(f"Klaviyo metrics: {len(campaign_metrics)} campaigns, {len(flow_metrics)} flows")
+        logger.info("Klaviyo metrics: %d campaigns, %d flows", len(campaign_metrics), len(flow_metrics))
     except Exception as e:
-        print(f"Klaviyo metrics fetch failed (metadata still saved): {e}")
+        logger.error("Klaviyo metrics fetch failed (metadata still saved): %s", e)
 
     total = len(campaigns) + len(flows) + len(lists)
     with get_db() as conn:
@@ -290,40 +292,31 @@ def _date_chunks(start_date, end_date, chunk_months=3):
     return chunks
 
 
-_print_lock = threading.Lock()
-
-
-def _tprint(msg):
-    """Thread-safe print."""
-    with _print_lock:
-        print(msg, flush=True)
-
-
 def _backfill_amazon_sales_chunk(since, until, chunk_label):
     """Backfill Amazon sales for a single date chunk."""
     from etl.amazon import fetch_sales_report
-    _tprint(f'[Amazon Sales {chunk_label}] {since} → {until}')
+    logger.info('[Amazon Sales %s] %s → %s', chunk_label, since, until)
     try:
         with get_db() as conn:
             count = fetch_sales_report(conn, since_date=since, until_date=until)
-        _tprint(f'[Amazon Sales {chunk_label}] Done: {count} records')
+        logger.info('[Amazon Sales %s] Done: %d records', chunk_label, count)
         return ('amazon_sales', chunk_label, count)
     except Exception as e:
-        _tprint(f'[Amazon Sales {chunk_label}] ERROR: {e}')
+        logger.error('[Amazon Sales %s] ERROR: %s', chunk_label, e)
         return ('amazon_sales', chunk_label, f'ERROR: {e}')
 
 
 def _backfill_amazon_retention_chunk(since, until, chunk_label):
     """Backfill Amazon retention for a single date chunk."""
     from etl.amazon import fetch_fulfillment_data
-    _tprint(f'[Amazon Retention {chunk_label}] {since} → {until}')
+    logger.info('[Amazon Retention %s] %s → %s', chunk_label, since, until)
     try:
         with get_db() as conn:
             count = fetch_fulfillment_data(conn, since_date=since, until_date=until)
-        _tprint(f'[Amazon Retention {chunk_label}] Done: {count} records')
+        logger.info('[Amazon Retention %s] Done: %d records', chunk_label, count)
         return ('amazon_retention', chunk_label, count)
     except Exception as e:
-        _tprint(f'[Amazon Retention {chunk_label}] ERROR: {e}')
+        logger.error('[Amazon Retention %s] ERROR: %s', chunk_label, e)
         return ('amazon_retention', chunk_label, f'ERROR: {e}')
 
 
@@ -332,17 +325,17 @@ def _backfill_shopify_chunk(since, until, chunk_label):
     from etl.shopify_client import fetch_orders
 
     def _progress(orders_so_far, page_number):
-        _tprint(f'[Shopify {chunk_label}] {orders_so_far:,} orders (page {page_number})')
+        logger.info('[Shopify %s] %d orders (page %d)', chunk_label, orders_so_far, page_number)
 
-    _tprint(f'[Shopify {chunk_label}] {since} → {until}')
+    logger.info('[Shopify %s] %s → %s', chunk_label, since, until)
     try:
         with get_db() as conn:
             count = fetch_orders(conn, since_date=since, until_date=until,
                                  on_progress=_progress, commit_per_page=True)
-        _tprint(f'[Shopify {chunk_label}] Done: {count} orders')
+        logger.info('[Shopify %s] Done: %d orders', chunk_label, count)
         return ('shopify', chunk_label, count)
     except Exception as e:
-        _tprint(f'[Shopify {chunk_label}] ERROR: {e}')
+        logger.error('[Shopify %s] ERROR: %s', chunk_label, e)
         return ('shopify', chunk_label, f'ERROR: {e}')
 
 
@@ -375,12 +368,13 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
     shopify_chunks = _date_chunks(shopify_start, end_date, chunk_months)
     amazon_chunks = _date_chunks(amazon_start, end_date, chunk_months)
 
-    print(f'\n{"="*60}')
-    print(f'PARALLEL BACKFILL')
-    print(f'  Amazon:  {amazon_start} → {end_date} ({len(amazon_chunks)} chunks)')
-    print(f'  Shopify: {shopify_start} → {end_date} ({len(shopify_chunks)} chunks)')
-    print(f'  Amazon workers: {amazon_workers}, Shopify workers: {shopify_workers}')
-    print(f'{"="*60}\n')
+    logger.info(
+        'PARALLEL BACKFILL — Amazon: %s → %s (%d chunks), Shopify: %s → %s (%d chunks), '
+        'Amazon workers: %d, Shopify workers: %d',
+        amazon_start, end_date, len(amazon_chunks),
+        shopify_start, end_date, len(shopify_chunks),
+        amazon_workers, shopify_workers,
+    )
 
     has_amazon = all(getattr(cfg, k, '') for k in [
         'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
@@ -395,10 +389,10 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
         from etl.shopify_client import test_connection
         ok, msg = test_connection()
         if not ok:
-            print(f'Shopify connection failed: {msg}')
+            logger.error('Shopify connection failed: %s', msg)
         else:
-            print(f'\nShopify connection OK: {msg}')
-            print(f'Starting Shopify backfill ({len(shopify_chunks)} chunks, {shopify_workers} workers)...')
+            logger.info('Shopify connection OK: %s', msg)
+            logger.info('Starting Shopify backfill (%d chunks, %d workers)...', len(shopify_chunks), shopify_workers)
             futures = []
             with ThreadPoolExecutor(max_workers=shopify_workers, thread_name_prefix='shopify') as executor:
                 for i, (chunk_start, chunk_end) in enumerate(shopify_chunks):
@@ -408,12 +402,12 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
                 for future in as_completed(futures):
                     all_results.append(future.result())
     else:
-        print('Shopify not configured — skipping.')
+        logger.warning('Shopify not configured — skipping.')
 
     # --- Amazon Sales (parallel chunks) ---
     if has_amazon:
         futures = []
-        print(f'\nStarting Amazon Sales backfill ({len(amazon_chunks)} chunks, {amazon_workers} workers)...')
+        logger.info('Starting Amazon Sales backfill (%d chunks, %d workers)...', len(amazon_chunks), amazon_workers)
         with ThreadPoolExecutor(max_workers=amazon_workers, thread_name_prefix='amz-sales') as executor:
             for i, (chunk_start, chunk_end) in enumerate(amazon_chunks):
                 label = f'{i+1}/{len(amazon_chunks)}'
@@ -424,7 +418,7 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
 
         # --- Amazon Retention (parallel chunks) ---
         futures = []
-        print(f'\nStarting Amazon Retention backfill ({len(amazon_chunks)} chunks, {amazon_workers} workers)...')
+        logger.info('Starting Amazon Retention backfill (%d chunks, %d workers)...', len(amazon_chunks), amazon_workers)
         with ThreadPoolExecutor(max_workers=amazon_workers, thread_name_prefix='amz-ret') as executor:
             for i, (chunk_start, chunk_end) in enumerate(amazon_chunks):
                 label = f'{i+1}/{len(amazon_chunks)}'
@@ -433,10 +427,10 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
             for future in as_completed(futures):
                 all_results.append(future.result())
     else:
-        print('Amazon SP-API not configured — skipping.')
+        logger.warning('Amazon SP-API not configured — skipping.')
 
     # --- Rebuild aggregates ---
-    print('\nRebuilding daily sales aggregates...')
+    logger.info('Rebuilding daily sales aggregates...')
     with get_db() as conn:
         rebuild_daily_sales(conn)
         log_sync(conn, 'backfill', end_date, sum(
@@ -444,11 +438,6 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
         ))
 
     elapsed = datetime.now() - start_time
-
-    # --- Summary ---
-    print(f'\n{"="*60}')
-    print(f'BACKFILL COMPLETE in {elapsed}')
-    print(f'{"="*60}')
 
     totals = {}
     errors = []
@@ -458,16 +447,16 @@ def run_parallel_backfill(shopify_years=4, amazon_months=6,
         else:
             errors.append(f'{source} {label}: {result}')
 
+    logger.info('BACKFILL COMPLETE in %s', elapsed)
     for source, total in sorted(totals.items()):
-        print(f'  {source}: {total:,} records')
+        logger.info('  %s: %d records', source, total)
     if errors:
-        print(f'\n  Errors ({len(errors)}):')
-        for err in errors:
-            print(f'    {err}')
+        logger.error('Backfill errors (%d): %s', len(errors), errors)
 
     return totals
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
     results = run_daily_sync()
-    print(f'Sync results: {results}')
+    logger.info('Sync results: %s', results)
