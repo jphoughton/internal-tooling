@@ -5,7 +5,7 @@
   - version:        BUILD_VERSION from config.py
   - db_row_count:   total rows across core tables from db.py
 
-/inventory_items returns paginated order_items with:
+/inventory_items returns paginated inventory_items with:
   - items:        list of order_item records for the requested page
   - page:         current page number
   - per_page:     number of items per page
