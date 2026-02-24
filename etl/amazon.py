@@ -23,6 +23,8 @@ from sp_api.base import Marketplaces
 import config as cfg
 from db import upsert_sku, upsert_customer, upsert_order, upsert_order_item
 from etl.amazon_sku_map import map_amazon_sku
+from etl.retry import with_retry
+import requests as _requests
 
 
 def get_credentials():
@@ -53,19 +55,30 @@ def get_marketplace():
     return marketplace_map.get(cfg.AMAZON_MARKETPLACE_ID, Marketplaces.US)
 
 
+@with_retry
+def _create_report(reports_api, **kwargs):
+    """Create an SP-API report request, with retry on transient errors."""
+    return reports_api.create_report(**kwargs)
+
+
+@with_retry
+def _get_report_status(reports_api, report_id):
+    """Poll SP-API report status, with retry on transient errors."""
+    return reports_api.get_report(report_id)
+
+
+@with_retry
 def _download_report(reports_api, document_id):
     """
     Download and decompress an SP-API report document.
     Returns the text content (handles GZIP compression automatically).
     """
-    import requests as req
-
     doc_response = reports_api.get_report_document(document_id)
     payload = doc_response.payload
     report_url = payload["url"]
     compression = payload.get("compressionAlgorithm", "")
 
-    raw = req.get(report_url)
+    raw = _requests.get(report_url)
 
     if compression == "GZIP" or raw.content[:2] == b"\x1f\x8b":
         return gzip.decompress(raw.content).decode("utf-8")
@@ -103,7 +116,8 @@ def fetch_sales_report(conn, since_date=None, until_date=None):
         print(f"  Requesting S&T for {day_str}...", flush=True)
 
         try:
-            report_response = reports_api.create_report(
+            report_response = _create_report(
+                reports_api,
                 reportType="GET_SALES_AND_TRAFFIC_REPORT",
                 dataStartTime=f"{day_str}T00:00:00Z",
                 dataEndTime=f"{day_str}T23:59:59Z",
@@ -185,7 +199,8 @@ def fetch_fulfillment_data(conn, since_date=None, until_date=None):
 
     reports_api = Reports(credentials=credentials, marketplace=get_marketplace())
 
-    report_response = reports_api.create_report(
+    report_response = _create_report(
+        reports_api,
         reportType="GET_AMAZON_FULFILLED_SHIPMENTS_DATA_GENERAL",
         dataStartTime=f"{since_date}T00:00:00Z",
         dataEndTime=f"{until_date}T23:59:59Z",
@@ -257,7 +272,7 @@ def _wait_for_report(reports_api, report_id, timeout_minutes=20):
 
     poll_count = 0
     while time.time() < deadline:
-        status_response = reports_api.get_report(report_id)
+        status_response = _get_report_status(reports_api, report_id)
         status = status_response.payload.get("processingStatus")
         poll_count += 1
         elapsed = int(time.time() - (deadline - timeout_minutes * 60))
