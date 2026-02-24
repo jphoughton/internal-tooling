@@ -151,8 +151,8 @@ def render(ctx):
                 except ValueError:
                     month_labels[m] = m
 
-            # --- Planned Inbound (from sidebar Business Variables > Orders tab) ---
-            st.caption("Planned inbound — edit in sidebar **Business Variables > Orders** tab.")
+            # --- Planned Inbound (from sidebar Business Variables > Edit Inbound Orders) ---
+            st.caption("Planned inbound — edit via sidebar **Business Variables \u2192 Edit Inbound Orders**.")
             with get_db() as conn:
                 inbound_for_projection = get_planned_inbound_dict(conn)
 
