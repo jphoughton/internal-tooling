@@ -49,6 +49,20 @@ def _get_db_row_count():
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+    def handle_one_request(self):
+        self._req_start = time.monotonic()
+        super().handle_one_request()
+
+    def log_request(self, code='-', size='-'):
+        elapsed_ms = round((time.monotonic() - self._req_start) * 1000, 2)
+        entry = {
+            'method': getattr(self, 'command', None) or '-',
+            'path': getattr(self, 'path', None) or '-',
+            'status': int(code) if str(code).isdigit() else str(code),
+            'response_time_ms': elapsed_ms,
+        }
+        print(json.dumps(entry), flush=True)
+
     def do_GET(self):
         if self.path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)

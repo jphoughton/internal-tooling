@@ -48,3 +48,9 @@ HEALTH_STARTUP_MESSAGE = 'Health check server listening on'
 
 # Input validation
 MAX_INPUT_LENGTH = 500
+
+# Items list endpoint
+ITEMS_ENDPOINT_PATH = '/items'
+ITEMS_DEFAULT_PAGE = 1
+ITEMS_DEFAULT_PER_PAGE = 20
+ITEMS_MAX_PER_PAGE = 100
