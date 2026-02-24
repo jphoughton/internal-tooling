@@ -1051,7 +1051,7 @@ def update_klaviyo_flow_metrics(
 # ---------------------------------------------------------------------------
 # Pagination
 # ---------------------------------------------------------------------------
-def get_items_page(
+def get_inventory_items_page(
     conn: ConnectionWrapper,
     page: int,
     per_page: int,
@@ -1081,7 +1081,7 @@ def get_items_page(
     except DatabaseError:
         raise
     except Exception as exc:
-        raise DatabaseError(f'get_items_page failed: {exc}') from exc
+        raise DatabaseError(f'get_inventory_items_page failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
