@@ -7,7 +7,7 @@ from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql,
     get_media_spend, get_amazon_revenue_forecast,
-    get_planned_inbound_dict, upsert_planned_inbound,
+    get_planned_inbound_dict,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor, get_sku_sales_rank
@@ -151,89 +151,10 @@ def render(ctx):
                 except ValueError:
                     month_labels[m] = m
 
-            # --- Planned Inbound Editor ---
-            with st.expander('Planned Inbound', expanded=True):
-                st.caption(
-                    'Enter units landing per SKU per month. These get added to projected inventory '
-                    'in the month they arrive. Click **Save & Recalculate** to update projections.'
-                )
-
-                # Load existing planned inbound from DB
-                with get_db() as conn:
-                    existing_inbound = get_planned_inbound_dict(conn)
-
-                # Build the editable matrix: rows = SKUs (sorted by best-seller), columns = months
-                _rank = get_sku_sales_rank()
-                _max_rank = len(_rank)
-                sorted_skus = sorted(FORECAST_SKUS, key=lambda s: _rank.get(s, _max_rank))
-                inbound_rows = []
-                for sku in sorted_skus:
-                    row_data = {'SKU': sku, 'Flavor': get_flavor(sku)}
-                    sku_inbound = existing_inbound.get(sku, {})
-                    for m in month_cols:
-                        row_data[m] = sku_inbound.get(m, 0)
-                    inbound_rows.append(row_data)
-
-                # Build editable grid: one SKU per expander row, number inputs per month
-                _inbound_edits = {}  # {sku: {month: units}}
-                _n_months = len(month_cols)
-
-                if _n_months > 0:
-                    # Header row
-                    _h_cols = st.columns([2] + [1] * _n_months)
-                    _h_cols[0].markdown('**Flavor**')
-                    for j, m in enumerate(month_cols):
-                        _h_cols[j + 1].markdown(f'**{month_labels[m]}**')
-
-                for sku in sorted_skus:
-                    flavor = get_flavor(sku)
-                    sku_inbound = existing_inbound.get(sku, {})
-                    _row_cols = st.columns([2] + [1] * _n_months)
-                    _row_cols[0].markdown(f'<small>{flavor}</small>', unsafe_allow_html=True)
-                    _inbound_edits[sku] = {}
-                    for j, m in enumerate(month_cols):
-                        with _row_cols[j + 1]:
-                            val = int(sku_inbound.get(m, 0))
-                            _inbound_edits[sku][m] = st.number_input(
-                                f'{sku}_{m}', value=val, min_value=0, step=100,
-                                key=f'inb_{sku}_{m}', label_visibility='collapsed',
-                            )
-
-                # Build edited_inbound DataFrame for downstream use
-                _inbound_out_rows = []
-                for sku in sorted_skus:
-                    row_out = {'SKU': sku, 'Flavor': get_flavor(sku)}
-                    for m in month_cols:
-                        row_out[month_labels[m]] = _inbound_edits.get(sku, {}).get(m, 0)
-                    _inbound_out_rows.append(row_out)
-                edited_inbound = pd.DataFrame(_inbound_out_rows)
-
-                if st.button('Save & Recalculate', type='primary', key='save_inbound'):
-                    with get_db() as conn:
-                        for sku, months in _inbound_edits.items():
-                            for m, units in months.items():
-                                upsert_planned_inbound(conn, sku, m, int(units))
-                    st.rerun()
-
-            # --- Load planned inbound for projection ---
+            # --- Planned Inbound (from sidebar Business Variables > Orders tab) ---
+            st.caption("Planned inbound — edit in sidebar **Business Variables > Orders** tab.")
             with get_db() as conn:
-                planned_inbound = get_planned_inbound_dict(conn)
-
-            # Also read edited values (before save) so live preview works
-            # Map the edited display back to {sku: {month: units}}
-            reverse_labels_preview = {v: k for k, v in month_labels.items()}
-            live_inbound = {}
-            for _, row in edited_inbound.iterrows():
-                sku = row['SKU']
-                live_inbound[sku] = {}
-                for col in edited_inbound.columns:
-                    if col in ('SKU', 'Flavor'):
-                        continue
-                    m = reverse_labels_preview.get(col, col)
-                    live_inbound[sku][m] = int(row[col] or 0)
-
-            # Use live (edited but possibly unsaved) values for preview
-            inbound_for_projection = live_inbound
+                inbound_for_projection = get_planned_inbound_dict(conn)
 
             st.divider()
 
