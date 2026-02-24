@@ -14,7 +14,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional, Sequence, Union
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -167,7 +167,7 @@ class ConnectionWrapper:
     def execute(
         self,
         sql: str,
-        params: Optional[Union[tuple[Any, ...], list[Any]]] = None,
+        params: Optional[Union[Sequence[Any], Mapping[str, Any]]] = None,
     ) -> _CursorWrapper:
         sql = _translate_sql(sql)
         try:
