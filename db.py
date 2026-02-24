@@ -5,12 +5,15 @@ Uses psycopg2 with a connection pool. All SQL uses PostgreSQL syntax natively.
 The _translate_sql() helper converts any remaining SQLite-style SQL found in
 analytics/dashboard code (strftime, date('now'), julianday, ? placeholders).
 """
+import logging
 import os
 import re
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Connection pool
@@ -373,10 +376,10 @@ _SCHEMA_SQL = [
 
 def init_db():
     """Create all tables and indexes if they don't exist."""
-    print("  init_db: connecting...", flush=True)
+    logger.info("init_db: connecting...")
     with get_db() as conn:
         # Kill stale connections from crashed deploys that may hold locks
-        print("  init_db: terminating stale connections...", flush=True)
+        logger.info("init_db: terminating stale connections...")
         conn.execute("""
             SELECT pg_terminate_backend(pid)
             FROM pg_stat_activity
@@ -387,10 +390,10 @@ def init_db():
 
         for i, stmt in enumerate(_SCHEMA_SQL):
             label = stmt.strip()[:60].replace('\n', ' ')
-            print(f"  init_db: [{i+1}/{len(_SCHEMA_SQL)}] {label}...", flush=True)
+            logger.info("init_db: [%d/%d] %s...", i + 1, len(_SCHEMA_SQL), label)
             conn.execute(stmt)
 
-        print("  init_db: seeding seasonal indices...", flush=True)
+        logger.info("init_db: seeding seasonal indices...")
         # Seed default seasonal indices if table is empty
         existing = conn.execute("SELECT COUNT(*) as cnt FROM seasonal_indices").fetchone()
         if existing['cnt'] == 0:
@@ -405,9 +408,9 @@ def init_db():
                 )
 
         # Migrate legacy media_spend source='all' to 'All Sources'
-        print("  init_db: migrating media_spend source values...", flush=True)
+        logger.info("init_db: migrating media_spend source values...")
         conn.execute("UPDATE media_spend SET source = 'All Sources' WHERE source = 'all'")
-        print("  init_db: done.", flush=True)
+        logger.info("init_db: done.")
 
 
 # ---------------------------------------------------------------------------
@@ -750,5 +753,7 @@ def update_klaviyo_flow_metrics(conn, flow_id, metrics):
 # CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     init_db()
-    print(f"Database initialized (PostgreSQL: {DATABASE_URL[:30]}...)")
+    import os as _os
+    logger.info("Database initialized (PostgreSQL: %s...)", _os.environ.get("DATABASE_URL", "")[:30])

@@ -10,6 +10,8 @@ import logging
 from db import get_db, read_sql
 from config import FORECAST_HORIZON_DAYS, MIN_HISTORY_DAYS, LEAD_TIME_DAYS, SAFETY_STOCK_MULTIPLIER
 
+logger = logging.getLogger(__name__)
+
 # Suppress Prophet's verbose logging
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
@@ -163,7 +165,7 @@ def forecast_all_skus(horizon_days=None):
             if result:
                 results.append(result)
         except Exception as e:
-            print(f"Warning: forecast failed for {sku}: {e}")
+            logger.warning("Forecast failed for %s: %s", sku, e)
             continue
 
     return results
@@ -206,6 +208,7 @@ def get_forecast_summary():
 
 
 if __name__ == "__main__":
-    print("Running forecast for all SKUs...")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logger.info("Running forecast for all SKUs...")
     summary = get_forecast_summary()
-    print(summary.to_string(index=False))
+    logger.info(summary.to_string(index=False))
