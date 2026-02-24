@@ -1,7 +1,7 @@
 """Unit tests for the paginated GET /items endpoint.
 
 Covers:
-  - get_inventory_items_page() in db.py: LIMIT/OFFSET SQL, total_count,
+  - get_order_items_page() in db.py: LIMIT/OFFSET SQL, total_count,
     correct page slicing, and error wrapping.
   - _handle_inventory_list() in app.py: parameter parsing, validation,
     and response metadata (total_pages, has_next, has_prev).
@@ -12,7 +12,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler
 from unittest.mock import MagicMock, patch
 
-from db import DatabaseError, get_inventory_items_page
+from db import DatabaseError, get_order_items_page
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ def _make_conn(rows, total_count):
 
 
 # ---------------------------------------------------------------------------
-# Tests for db.get_inventory_items_page
+# Tests for db.get_order_items_page
 # ---------------------------------------------------------------------------
 
 class TestGetInventoryItemsPage(unittest.TestCase):
@@ -83,7 +83,7 @@ class TestGetInventoryItemsPage(unittest.TestCase):
 
         conn.execute.side_effect = execute
 
-        items, total = get_inventory_items_page(conn, page=1, per_page=20)
+        items, total = get_order_items_page(conn, page=1, per_page=20)
         assert total == 3
         assert items == rows
 
@@ -107,7 +107,7 @@ class TestGetInventoryItemsPage(unittest.TestCase):
         conn = MagicMock()
         conn.execute.side_effect = execute
 
-        get_inventory_items_page(conn, page=2, per_page=5)
+        get_order_items_page(conn, page=2, per_page=5)
 
         # Find the SELECT ... LIMIT call
         select_call = next(c for c in calls if 'LIMIT' in c[0])
@@ -132,7 +132,7 @@ class TestGetInventoryItemsPage(unittest.TestCase):
         conn = MagicMock()
         conn.execute.side_effect = execute
 
-        get_inventory_items_page(conn, page=1, per_page=10)
+        get_order_items_page(conn, page=1, per_page=10)
         select_call = next(c for c in calls if 'LIMIT' in c[0])
         _, offset = select_call[1]
         assert offset == 0
@@ -152,7 +152,7 @@ class TestGetInventoryItemsPage(unittest.TestCase):
         conn = MagicMock()
         conn.execute.side_effect = execute
 
-        items, total = get_inventory_items_page(conn, page=1, per_page=20)
+        items, total = get_order_items_page(conn, page=1, per_page=20)
         assert total == 0
         assert items == []
 
@@ -161,14 +161,14 @@ class TestGetInventoryItemsPage(unittest.TestCase):
         conn.execute.side_effect = RuntimeError('boom')
 
         with self.assertRaises(DatabaseError):
-            get_inventory_items_page(conn, page=1, per_page=20)
+            get_order_items_page(conn, page=1, per_page=20)
 
     def test_re_raises_database_error_unchanged(self):
         conn = MagicMock()
         conn.execute.side_effect = DatabaseError('original')
 
         with self.assertRaises(DatabaseError) as ctx:
-            get_inventory_items_page(conn, page=1, per_page=20)
+            get_order_items_page(conn, page=1, per_page=20)
         assert 'original' in str(ctx.exception)
 
 
@@ -196,7 +196,7 @@ class TestInventoryListEndpointMetadata(unittest.TestCase):
         handler = FakeHandler()
 
         with patch('app.get_db') as mock_get_db, \
-             patch('app.get_inventory_items_page', return_value=(db_items, db_total)):
+             patch('app.get_order_items_page', return_value=(db_items, db_total)):
             handler._handle_inventory_list(query_string)
 
         return responses[0]  # (status_code, payload)

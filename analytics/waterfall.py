@@ -309,7 +309,7 @@ def get_aov_and_units(source_filter=None):
             FROM orders o
             JOIN (
                 SELECT order_id, SUM(quantity) as item_units
-                FROM inventory_items GROUP BY order_id
+                FROM order_items GROUP BY order_id
             ) oi ON o.order_id = oi.order_id
             WHERE 1=1 {source_clause}
         """, params).fetchone()
@@ -322,7 +322,7 @@ def get_aov_and_units(source_filter=None):
                 SUM(oi.quantity) as total_units,
                 COUNT(DISTINCT o.customer_id) as num_customers,
                 COUNT(DISTINCT o.order_id) as num_orders
-            FROM inventory_items oi
+            FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
@@ -336,7 +336,7 @@ def get_aov_and_units(source_filter=None):
                 SUM(oi.total_price) as total_rev,
                 SUM(oi.quantity) as total_units,
                 COUNT(DISTINCT o.customer_id) as num_customers
-            FROM inventory_items oi
+            FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             JOIN customers c ON o.customer_id = c.customer_id
             WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
@@ -350,7 +350,7 @@ def get_aov_and_units(source_filter=None):
                 SELECT strftime('%Y-%m', o.order_date) as month,
                        CAST(SUM(oi.quantity) AS REAL) / COUNT(DISTINCT o.customer_id) as monthly_upc
                 FROM orders o
-                JOIN inventory_items oi ON o.order_id = oi.order_id
+                JOIN order_items oi ON o.order_id = oi.order_id
                 JOIN customers c ON o.customer_id = c.customer_id
                 WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
                   {source_clause}
@@ -578,7 +578,7 @@ def _get_sku_mix(source_filter=None, lookback_months=3):
         source_clause = f"AND o.source = '{source_filter}'" if source_filter else ""
         rows = conn.execute(f"""
             SELECT oi.sku, oi.product_name, SUM(oi.quantity) as qty
-            FROM inventory_items oi
+            FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.order_date >= date('now', '-{lookback_months} months')
               {source_clause}
