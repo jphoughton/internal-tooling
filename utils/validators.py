@@ -1,4 +1,4 @@
-"""Shared validation utilities for email addresses and URLs."""
+"""Input validation utilities using regex."""
 import re
 
 _EMAIL_RE = re.compile(
@@ -6,26 +6,22 @@ _EMAIL_RE = re.compile(
 )
 
 _URL_RE = re.compile(
-    r'^https?://'                                                  # scheme
-    r'(?:'
-    r'(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}'                          # dotted domain (e.g. example.com)
-    r'|localhost'                                                    # or bare localhost
-    r'|(?:\d{1,3}\.){3}\d{1,3}'                                    # or IPv4 address
-    r')'
-    r'(?::\d{1,5})?'                                               # optional port
-    r'(?:/[^\s]*)?$'                                               # optional path/query/fragment
+    r'^https?://'
+    r'(?:(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}|localhost)'
+    r'(?::\d+)?'
+    r'(?:/[^\s]*)?$'
 )
 
 
-def email_valid(value):
-    """Return True if value is a syntactically valid email address."""
-    if not isinstance(value, str):
+def email_valid(email: str) -> bool:
+    """Return True if email is a well-formed email address."""
+    if not isinstance(email, str):
         return False
-    return bool(_EMAIL_RE.match(value))
+    return bool(_EMAIL_RE.match(email.strip()))
 
 
-def url_valid(value):
-    """Return True if value is a valid http/https URL."""
-    if not isinstance(value, str):
+def url_valid(url: str) -> bool:
+    """Return True if url is a well-formed http/https URL."""
+    if not isinstance(url, str):
         return False
-    return bool(_URL_RE.match(value))
+    return bool(_URL_RE.match(url.strip()))

@@ -26,6 +26,8 @@ from db import upsert_sku, upsert_customer, upsert_order, upsert_order_item
 from etl.amazon_sku_map import map_amazon_sku
 from etl.retry import with_retry
 
+logger = logging.getLogger(__name__)
+
 
 def get_credentials():
     """Build SP-API credentials dict. Only LWA fields are required."""
