@@ -9,7 +9,7 @@
   - items:        list of inventory_item records for the requested page
   - page:         current 1-based page number
   - per_page:     number of items per page (default 20, max 100)
-  - total_count:  total number of rows in inventory_items
+  - total_count:  total number of rows in order_items
   - total_pages:  total number of pages
 
 Query parameters are sanitized on every request: whitespace is stripped,
@@ -52,7 +52,7 @@ _rate_limiter = RateLimiter(max_requests=RATE_LIMIT_REQUESTS, window_seconds=RAT
 _CORE_TABLES = [
     'customers',
     'orders',
-    'inventory_items',
+    'order_items',
     'daily_sku_sales',
     'media_spend',
 ]
