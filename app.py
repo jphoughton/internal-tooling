@@ -20,6 +20,7 @@ from utils.constants import (
     HEALTH_STARTUP_MESSAGE,
     HEALTH_STATUS_DB_ERROR,
     HEALTH_STATUS_OK,
+    MAX_INPUT_LENGTH,
 )
 
 _START_TIME = time.monotonic()
@@ -32,6 +33,16 @@ _CORE_TABLES = [
     'daily_sku_sales',
     'media_spend',
 ]
+
+
+def _sanitize_input(value):
+    """Strip whitespace, enforce 500-char limit, return None for empty input."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > MAX_INPUT_LENGTH:
+        return None
+    return value
 
 
 def _get_db_row_count():
@@ -56,8 +67,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             return
 
         if API_KEY:
-            auth = self.headers.get('Authorization', '')
-            if auth != f'Bearer {API_KEY}':
+            raw_auth = self.headers.get('Authorization', '')
+            auth = _sanitize_input(raw_auth)
+            if auth is None or auth != f'Bearer {API_KEY}':
                 self.send_response(401)
                 self.end_headers()
                 return
