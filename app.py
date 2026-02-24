@@ -11,6 +11,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from config import BUILD_VERSION
 from db import get_db
+from utils.constants import (
+    HEALTH_CONTENT_TYPE,
+    HEALTH_DEFAULT_HOST,
+    HEALTH_DEFAULT_PORT,
+    HEALTH_ENDPOINT_PATH,
+    HEALTH_STARTUP_MESSAGE,
+    HEALTH_STATUS_DB_ERROR,
+    HEALTH_STATUS_OK,
+)
 
 _START_TIME = time.monotonic()
 
@@ -35,17 +44,17 @@ def _get_db_row_count():
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != '/health':
+        if self.path != HEALTH_ENDPOINT_PATH:
             self.send_response(404)
             self.end_headers()
             return
 
         try:
             db_row_count = _get_db_row_count()
-            status = 'ok'
+            status = HEALTH_STATUS_OK
         except Exception as exc:
             db_row_count = None
-            status = f'db_error: {exc}'
+            status = f'{HEALTH_STATUS_DB_ERROR}: {exc}'
 
         payload = {
             'status': status,
@@ -55,7 +64,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         }
         body = json.dumps(payload).encode()
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', HEALTH_CONTENT_TYPE)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -64,9 +73,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def run(host='0.0.0.0', port=8502):
+def run(host=HEALTH_DEFAULT_HOST, port=HEALTH_DEFAULT_PORT):
     server = HTTPServer((host, port), HealthHandler)
-    print(f'Health check server listening on {host}:{port}/health')
+    print(f'{HEALTH_STARTUP_MESSAGE} {host}:{port}{HEALTH_ENDPOINT_PATH}')
     server.serve_forever()
 
 
