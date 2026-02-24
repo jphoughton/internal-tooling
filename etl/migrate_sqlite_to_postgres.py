@@ -388,8 +388,9 @@ def migrate_google_sheet_data(
     pragma = sq.execute('PRAGMA table_info(google_sheet_data)').fetchall()
     cols = [row[1] for row in pragma if row[1] != 'id']
 
+    quoted_cols = ', '.join(f'"{c}"' for c in cols)
     rows_raw = sq.execute(
-        f'SELECT {", ".join(cols)} FROM google_sheet_data'
+        f'SELECT {quoted_cols} FROM google_sheet_data'
     ).fetchall()
     rows = [tuple(r) for r in rows_raw]
 
