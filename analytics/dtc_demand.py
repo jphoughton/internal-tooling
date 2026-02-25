@@ -225,8 +225,19 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
     from velocity (what % of Amazon units each SKU represents), seasonally
     adjusted so the mix shifts by calendar month.
 
-    In velocity mode, per-SKU seasonal indices are applied directly to each
-    SKU's projected units.
+    **Seasonal application differs by mode:**
+
+    - **Revenue-driven mode** (revenue_forecast provided): Uses *reweight*
+      factors (sku_index / global_index). This is necessary because the
+      monthly total units are already derived from the revenue target — we
+      only need to redistribute units *between* SKUs based on their relative
+      seasonal shapes, while preserving the total.
+
+    - **Velocity mode** (no revenue_forecast): Applies per-SKU seasonal
+      indices *directly* as multipliers to each SKU's projected units. This
+      is correct because velocity-based projections start from a flat
+      baseline (recent avg daily rate), so the seasonal factor must scale
+      the absolute quantity up or down for each calendar month.
 
     Returns:
         DataFrame: [SKU, Flavor, % of Sales, month_1, month_2, ..., Total]
@@ -267,7 +278,8 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
             continue
         sku_mix[sku] = v["avg_daily"] / total_daily if total_daily > 0 else 0
 
-    # Load per-SKU seasonal indices for Amazon (applied directly, not as reweight)
+    # Load per-SKU seasonal indices for velocity mode (direct multiplier on each
+    # SKU's projected units — appropriate because velocity is a flat baseline).
     sku_seasonal = {}
     with get_db() as conn:
         enabled = get_setting(conn, 'seasonality_enabled', 'true')
@@ -275,7 +287,9 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
             raw = get_sku_seasonal_indices(conn)
             sku_seasonal = raw if raw else {}
 
-    # For revenue-driven mode, use seasonal mix reweighting (preserves total)
+    # For revenue-driven mode, use seasonal mix reweighting instead (sku/global
+    # ratio). This redistributes units between SKUs while preserving the monthly
+    # total derived from the revenue target.
     reweights = _load_sku_seasonal_reweights() if rev_driven else {}
 
     rows = []

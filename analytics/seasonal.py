@@ -175,7 +175,7 @@ def _update_global_from_sku_indices(sku_indices):
             row = conn.execute(
                 "SELECT COALESCE(SUM(units_sold), 0) AS total "
                 "FROM daily_sku_sales WHERE sku = %s "
-                "AND sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text",
+                "AND sale_date::date >= CURRENT_DATE - INTERVAL '90 days'",
                 (sku,)
             ).fetchone()
             sku_weights[sku] = float(row['total']) if row else 0
