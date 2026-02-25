@@ -158,7 +158,7 @@ _ENGAGEMENT_STATS = [
     "unsubscribes", "unsubscribe_rate", "bounce_rate",
 ]
 _REVENUE_STATS = [
-    "revenue", "revenue_per_recipient", "average_order_value", "conversion_rate",
+    "conversion_value", "revenue_per_recipient", "average_order_value", "conversion_rate",
 ]
 
 
@@ -169,6 +169,51 @@ def _klaviyo_headers(api_key):
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+
+
+def _remap_conversion_value(stats):
+    """Remap conversion_value -> revenue so DB column names match."""
+    out = dict(stats)
+    if "conversion_value" in out:
+        out["revenue"] = out.pop("conversion_value")
+    return out
+
+
+# Count stats that should be summed across flow messages
+_SUM_STATS = {
+    "recipients", "delivered", "opens_unique", "clicks_unique",
+    "unsubscribes", "conversion_value",
+}
+# Rate stats that should be weighted-averaged by recipients
+_RATE_STATS = {
+    "open_rate", "click_rate", "click_to_open_rate",
+    "unsubscribe_rate", "bounce_rate",
+    "revenue_per_recipient", "average_order_value", "conversion_rate",
+}
+
+
+def _aggregate_message_stats(items):
+    """Aggregate per-message stats into per-flow stats.
+
+    Sums count metrics; weighted-averages rate metrics by recipients.
+    """
+    aggregated = {}
+    total_recipients = 0
+    for item in items:
+        s = item.get("statistics", {})
+        recip = s.get("recipients", 0) or 0
+        total_recipients += recip
+        for k in _SUM_STATS:
+            aggregated[k] = aggregated.get(k, 0) + (s.get(k, 0) or 0)
+        for k in _RATE_STATS:
+            aggregated[k] = aggregated.get(k, 0) + (s.get(k, 0) or 0) * recip
+
+    # Finish weighted averages
+    if total_recipients > 0:
+        for k in _RATE_STATS:
+            aggregated[k] = aggregated[k] / total_recipients
+
+    return aggregated
 
 
 def fetch_placed_order_metric_id(api_key):
@@ -230,7 +275,7 @@ def _build_report_body(report_type, stats, conversion_metric_id):
         "statistics": stats,
         "timeframe": {"key": "last_365_days"},
         "conversion_metric_id": conversion_metric_id,
-        "filter": "equals(send_channel,'email')",
+        "filter": 'equals(send_channel,"email")',
     }
     return {"data": {"type": report_type, "attributes": attrs}}
 
@@ -269,7 +314,7 @@ def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
     for item in data.get("data", {}).get("attributes", {}).get("results", []):
         campaign_id = item.get("groupings", {}).get("campaign_id")
         if campaign_id:
-            results[campaign_id] = item.get("statistics", {})
+            results[campaign_id] = _remap_conversion_value(item.get("statistics", {}))
 
     logger.info(f"Fetched metrics for {len(results)} campaigns")
     return results
@@ -279,7 +324,8 @@ def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
     """Fetch performance metrics for all flows.
 
     Uses POST /api/flow-values-reports (1 API call for all flows).
-    Requires a valid conversion_metric_id (any metric works for engagement stats).
+    The API returns one result per flow *message*, so we aggregate
+    per-message stats into per-flow totals.
 
     Returns dict mapping flow_id -> {metric_name: value, ...}
     """
@@ -305,11 +351,16 @@ def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
         raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
     data = resp.json()
 
-    results = {}
+    # Group results by flow_id (API returns one row per message)
+    by_flow = {}
     for item in data.get("data", {}).get("attributes", {}).get("results", []):
         flow_id = item.get("groupings", {}).get("flow_id")
         if flow_id:
-            results[flow_id] = item.get("statistics", {})
+            by_flow.setdefault(flow_id, []).append(item)
+
+    results = {}
+    for flow_id, items in by_flow.items():
+        results[flow_id] = _remap_conversion_value(_aggregate_message_stats(items))
 
     logger.info(f"Fetched metrics for {len(results)} flows")
     return results
