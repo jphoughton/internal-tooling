@@ -123,6 +123,7 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
                 f'#{table_id} th.col_heading.col{col_idx} {{'
                 f'  position:sticky !important; left:{cumulative}px;'
                 f'  min-width:{width}px; max-width:{width}px;'
+                f'  overflow:hidden; text-overflow:ellipsis;'
                 f'}}\n'
                 f'#{table_id} td.col{col_idx} {{'
                 f'  z-index:2; background-color:#ffffff !important;'
