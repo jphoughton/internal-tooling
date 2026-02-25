@@ -23,6 +23,7 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     _bv = ctx.get('biz_vars', {})
     _TW_ADJ = _bv.get('tw_adjustment_factor', 1.0)
     _mkt_horizon = _bv.get('forecast_horizon', 12)
@@ -119,7 +120,9 @@ def render(ctx):
                 import json as _json_mkt
                 _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), None, _mkt_horizon, _seasonal_json_mkt)
                 if _mkt_wf is not None and not _mkt_wf.empty:
-                    _mkt_sku_table = _cached_sku_forecast(_mkt_wf.to_json(), None)
+                    _mkt_sku_table = _cached_sku_forecast(
+                        _mkt_wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json_mkt,
+                    )
                     _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
                     _dtc_mkt = build_master_dtc_forecast(
                         shopify_waterfall_df=_mkt_wf,

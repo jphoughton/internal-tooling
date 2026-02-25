@@ -16,6 +16,7 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     active_sources = ctx['active_sources']
 
     _title_col, _badge_col = st.columns([7, 3])
@@ -122,7 +123,9 @@ def render(ctx):
                 amz_source = "amazon" if "amazon" in active_sources else None
                 wf_amz = _cached_waterfall(media_json_amz, amz_source, 3, _load_seasonal_json())
                 if not wf_amz.empty:
-                    _amz_fc_raw = _cached_sku_forecast(wf_amz.to_json(), amz_source)
+                    _amz_fc_raw = _cached_sku_forecast(
+                        wf_amz.to_json(), amz_source, _load_sku_seasonal_json(), _load_seasonal_json(),
+                    )
                     if not _amz_fc_raw.empty:
                         _amz_sku_fc_core = _amz_fc_raw[_amz_fc_raw["SKU"].isin(FORECAST_SKUS)].copy()
                         if "Variant" in _amz_sku_fc_core.columns:

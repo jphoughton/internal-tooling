@@ -117,6 +117,7 @@ def render(ctx):
     _cached_retention_curve = ctx['cached_retention_curve']
     _cached_aov_and_units = ctx['cached_aov_and_units']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     active_sources = ctx['active_sources']
 
     _title_col, _badge_col = st.columns([7, 3])
@@ -137,7 +138,19 @@ def render(ctx):
     # Seasonality status
     _seas_status_json = _load_seasonal_json()
     if _seas_status_json:
-        st.caption('Seasonality enabled \u2014 indices from the Retention page.')
+        with get_db() as _sc:
+            _seas_mode = _sc.execute(
+                "SELECT value FROM app_settings WHERE key = 'seasonality_mode'"
+            ).fetchone()
+            _sku_cnt = _sc.execute(
+                "SELECT COUNT(DISTINCT sku) as cnt FROM sku_seasonal_indices"
+            ).fetchone()
+        _mode_label = (_seas_mode['value'] if _seas_mode and _seas_mode['value'] else 'auto').title()
+        _sku_count = int(_sku_cnt['cnt']) if _sku_cnt else 0
+        if _sku_count > 0:
+            st.caption(f'Seasonality enabled ({_mode_label} mode) \u2014 SKU-level indices for {_sku_count} SKUs shift mix by season.')
+        else:
+            st.caption('Seasonality enabled \u2014 global indices from the Retention page.')
     else:
         st.caption('Seasonality disabled \u2014 enable on the Retention page to apply seasonal adjustments.')
 
@@ -187,8 +200,11 @@ def render(ctx):
     media_plan_json = _json.dumps(media_plan, sort_keys=True)
     with st.spinner('Computing demand forecast...'):
         _seasonal_json = _load_seasonal_json()
+        _sku_seasonal_json = _load_sku_seasonal_json()
         waterfall_df = _cached_waterfall(media_plan_json, None, horizon, _seasonal_json)
-        shopify_sku_table = _cached_sku_forecast(waterfall_df.to_json(), None) if not waterfall_df.empty else pd.DataFrame()
+        shopify_sku_table = _cached_sku_forecast(
+            waterfall_df.to_json(), None, _sku_seasonal_json, _seasonal_json,
+        ) if not waterfall_df.empty else pd.DataFrame()
 
         # Master DTC forecast
         dtc = build_master_dtc_forecast(

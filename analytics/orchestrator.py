@@ -94,15 +94,22 @@ def run_repeat_forecast(triggered_by='scheduler'):
 
 
 def run_seasonality(triggered_by='scheduler'):
-    """Reload seasonal indices from DB (validates they exist and are sane)."""
+    """Recompute data-driven SKU-level seasonal indices from daily_sku_sales.
+
+    Also updates the global seasonal_indices table with a sales-weighted
+    average across all SKUs (unless user has set seasonality_mode='manual').
+    """
     def _compute():
+        from analytics.seasonal import refresh_sku_seasonal_indices
         from db import get_seasonal_indices
+        result = refresh_sku_seasonal_indices()
+        logger.info('[orchestrator] Seasonal index refresh: %s', result)
+        # Validate global indices still exist
         with get_db() as conn:
             indices = get_seasonal_indices(conn)
         if not indices:
             logger.warning('[orchestrator] No seasonal indices found in DB')
         else:
-            # Sanity check: all 12 months should be present
             missing = [m for m in range(1, 13) if m not in indices]
             if missing:
                 logger.warning('[orchestrator] Missing seasonal indices for months: %s', missing)

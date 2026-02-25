@@ -10,7 +10,8 @@ from datetime import datetime
 from db import (
     get_db,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
-    get_seasonal_indices, get_setting, set_setting, upsert_seasonal_index,
+    get_seasonal_indices, get_sku_seasonal_indices,
+    get_setting, set_setting, upsert_seasonal_index,
     get_media_spend,
     get_model_runs,
 )
@@ -462,17 +463,29 @@ def render(ctx):
 
         with get_db() as conn:
             _seas_enabled_val = get_setting(conn, 'seasonality_enabled', 'true')
+            _seas_mode = get_setting(conn, 'seasonality_mode', 'auto')
             _seas_indices = get_seasonal_indices(conn)
+            _sku_seas_indices = get_sku_seasonal_indices(conn)
 
         _seas_enabled = st.toggle('Enable Seasonality', value=(_seas_enabled_val == 'true'), key='seas_toggle')
 
+        _mode_options = ['Auto (data-driven)', 'Manual']
+        _mode_idx = 1 if _seas_mode == 'manual' else 0
+        _selected_mode = st.segmented_control(
+            'Seasonality Mode', _mode_options, default=_mode_options[_mode_idx], key='seas_mode_ctrl',
+        )
+        _is_manual = (_selected_mode == 'Manual')
+
+        if not _is_manual:
+            st.caption(
+                'Indices are computed daily from actual sales data. '
+                'Each SKU gets its own seasonal shape. The global index shown '
+                'below is a sales-weighted average across all SKUs.'
+            )
+        else:
+            st.caption('Manually set seasonal multipliers for all SKUs.')
+
         _month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        _seas_df = pd.DataFrame({
-            'Month': _month_names,
-            'Index': [_seas_indices.get(m, 1.0) for m in range(1, 13)],
-        })
-        _seas_df['Month'] = _seas_df['Month'].astype(str)
-        _seas_df['Index'] = pd.to_numeric(_seas_df['Index'], errors='coerce').fillna(1.0)
 
         col_seas_edit, col_seas_chart = st.columns([1, 2])
 
@@ -488,6 +501,7 @@ def render(ctx):
                     _edited_seas_values[i] = st.number_input(
                         name, min_value=0.50, max_value=2.00, value=float(val),
                         step=0.01, format='%.2f', key=f'seas_{i}', label_visibility='collapsed',
+                        disabled=(not _is_manual),
                     )
 
         edited_seas = pd.DataFrame({'Month': _month_names, 'Index': _edited_seas_values})
@@ -500,6 +514,7 @@ def render(ctx):
                 marker_color=['#E05252' if v < 1.0 else '#2DA87E' for v in edited_seas['Index']],
                 text=[f'{v:.2f}' for v in edited_seas['Index']],
                 textposition='outside',
+                name='Global',
             ))
             fig_seas.add_shape(type='line', x0=-0.5, x1=11.5, y0=1.0, y1=1.0,
                                line=dict(dash='dash', color='gray', width=1))
@@ -514,8 +529,40 @@ def render(ctx):
         if st.button('Save Settings', type='primary', key='save_seas'):
             with get_db() as conn:
                 set_setting(conn, 'seasonality_enabled', 'true' if _seas_enabled else 'false')
-                for i, row in edited_seas.iterrows():
-                    upsert_seasonal_index(conn, i + 1, float(row['Index']))
+                set_setting(conn, 'seasonality_mode', 'manual' if _is_manual else 'auto')
+                if _is_manual:
+                    for i, row in edited_seas.iterrows():
+                        upsert_seasonal_index(conn, i + 1, float(row['Index']))
             clear_waterfall_cache()
             st.success('Seasonality settings saved! Forecasts will update on next load.')
             st.rerun()
+
+        # --- Per-SKU Seasonal Indices (read-only) ---
+        if _sku_seas_indices and not _is_manual:
+            from analytics.sku_flavors import get_flavor
+            st.divider()
+            st.subheader('Per-SKU Seasonal Indices')
+            st.caption('Data-driven indices computed from actual sales history. Updated daily.')
+
+            _sku_rows = []
+            for sku, months in sorted(_sku_seas_indices.items()):
+                row = {'SKU': sku, 'Flavor': get_flavor(sku)}
+                for m in range(1, 13):
+                    row[_month_names[m - 1]] = months.get(m, 1.0)
+                _sku_rows.append(row)
+
+            if _sku_rows:
+                _sku_seas_df = pd.DataFrame(_sku_rows)
+
+                def _seas_color(val):
+                    if isinstance(val, (int, float)):
+                        if val < 0.95:
+                            return 'color: #E05252'
+                        elif val > 1.05:
+                            return 'color: #2DA87E; font-weight: 600'
+                    return ''
+
+                styled = _sku_seas_df.style.format(
+                    {m: '{:.2f}' for m in _month_names}, na_rep='-',
+                ).map(_seas_color, subset=_month_names)
+                st.dataframe(styled, use_container_width=True, hide_index=True)

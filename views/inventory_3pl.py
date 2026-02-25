@@ -16,6 +16,7 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
 
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
@@ -114,7 +115,9 @@ def render(ctx):
                 media_json_inv = _json_inv.dumps(media_plan_inv, sort_keys=True)
                 wf_inv = _cached_waterfall(media_json_inv, wf_source_inv, 3, _load_seasonal_json())
                 if not wf_inv.empty:
-                    _sku_fc_raw = _cached_sku_forecast(wf_inv.to_json(), wf_source_inv)
+                    _sku_fc_raw = _cached_sku_forecast(
+                        wf_inv.to_json(), wf_source_inv, _load_sku_seasonal_json(), _load_seasonal_json(),
+                    )
                     if not _sku_fc_raw.empty:
                         _sku_fc_core = _sku_fc_raw[_sku_fc_raw["SKU"].isin(FORECAST_SKUS)].copy()
                         if "Variant" in _sku_fc_core.columns:

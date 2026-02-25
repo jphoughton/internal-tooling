@@ -8,14 +8,83 @@ Builds four SKU × Month forecast tables:
 4. Master DTC Rollup — sums all three into one production planning table
 
 Each table includes % of segment sales and monthly columns for the forecast horizon.
+SKU-level seasonal indices shift the mix by month so summer-peaking flavors get
+more allocation in warm months, etc. Monthly totals from the waterfall stay intact.
 """
 import calendar
+import logging
 import pandas as pd
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-from db import get_db
+from db import get_db, get_sku_seasonal_indices, get_seasonal_indices, get_setting
 from analytics.sku_flavors import get_flavor
 from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff
+
+logger = logging.getLogger(__name__)
+
+
+def _load_sku_seasonal_reweights():
+    """Load per-SKU seasonal reweight factors from the database.
+
+    Reweight = sku_index / global_index for each (sku, calendar_month).
+    This captures how each SKU deviates from the average seasonal shape
+    without double-counting the global seasonal adjustment already applied
+    in the waterfall.
+
+    Returns:
+        dict: {sku: {cal_month(1-12): reweight_factor}} or empty dict
+              if seasonality is disabled or no data exists.
+    """
+    with get_db() as conn:
+        enabled = get_setting(conn, 'seasonality_enabled', 'true')
+        if enabled != 'true':
+            return {}
+        sku_indices = get_sku_seasonal_indices(conn)
+        global_indices = get_seasonal_indices(conn)
+
+    if not sku_indices or not global_indices:
+        return {}
+
+    reweights = {}
+    for sku, months in sku_indices.items():
+        reweights[sku] = {}
+        for cal_month in range(1, 13):
+            sku_val = months.get(cal_month, 1.0)
+            global_val = global_indices.get(cal_month, 1.0)
+            if global_val > 0:
+                reweights[sku][cal_month] = sku_val / global_val
+            else:
+                reweights[sku][cal_month] = 1.0
+    return reweights
+
+
+def _seasonal_mix_for_month(base_mix, reweights, cal_month):
+    """Adjust a SKU mix dict for a calendar month using seasonal reweights.
+
+    The base_mix {sku: pct} is reweighted so SKUs that peak in this calendar
+    month get a larger share, while the total still sums to 1.0.
+
+    Args:
+        base_mix: {sku: fraction} summing to ~1.0
+        reweights: {sku: {cal_month: factor}} from _load_sku_seasonal_reweights()
+        cal_month: 1-12
+
+    Returns:
+        {sku: adjusted_fraction} summing to 1.0
+    """
+    if not reweights:
+        return base_mix
+
+    weighted = {}
+    for sku, pct in base_mix.items():
+        factor = reweights.get(sku, {}).get(cal_month, 1.0)
+        weighted[sku] = pct * factor
+
+    total = sum(weighted.values())
+    if total <= 0:
+        return base_mix
+
+    return {sku: w / total for sku, w in weighted.items()}
 
 
 def get_current_month_progress():
@@ -153,7 +222,11 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
 
     If revenue_forecast is provided (dict {month: revenue}), units are derived
     from revenue ÷ rev_per_unit instead of velocity. The SKU mix still comes
-    from velocity (what % of Amazon units each SKU represents).
+    from velocity (what % of Amazon units each SKU represents), seasonally
+    adjusted so the mix shifts by calendar month.
+
+    In velocity mode, per-SKU seasonal indices are applied directly to each
+    SKU's projected units.
 
     Returns:
         DataFrame: [SKU, Flavor, % of Sales, month_1, month_2, ..., Total]
@@ -194,6 +267,17 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
             continue
         sku_mix[sku] = v["avg_daily"] / total_daily if total_daily > 0 else 0
 
+    # Load per-SKU seasonal indices for Amazon (applied directly, not as reweight)
+    sku_seasonal = {}
+    with get_db() as conn:
+        enabled = get_setting(conn, 'seasonality_enabled', 'true')
+        if enabled == 'true':
+            raw = get_sku_seasonal_indices(conn)
+            sku_seasonal = raw if raw else {}
+
+    # For revenue-driven mode, use seasonal mix reweighting (preserves total)
+    reweights = _load_sku_seasonal_reweights() if rev_driven else {}
+
     rows = []
     for sku, pct in sku_mix.items():
         v = velocity[sku]
@@ -202,21 +286,25 @@ def build_amazon_sku_month_table(horizon_months=12, growth_rate=0.0, forecast_sk
         total = 0
 
         if rev_driven:
-            # Units from revenue forecast, distributed by SKU mix
+            # Units from revenue forecast, distributed by seasonally-adjusted SKU mix
             for m in months:
-                monthly_units = round(monthly_total_units.get(m, 0) * pct)
+                cal_month = datetime.strptime(m, '%Y-%m').month
+                adjusted_mix = _seasonal_mix_for_month(sku_mix, reweights, cal_month)
+                monthly_units = round(monthly_total_units.get(m, 0) * adjusted_mix.get(sku, 0))
                 row[m] = monthly_units
                 total += monthly_units
         else:
-            # Original velocity-based projection
+            # Velocity-based projection with per-SKU seasonal adjustment
             if v["avg_7d"] > 0 and v["avg_30d"] > 0:
                 blended = v["avg_7d"] * 0.6 + v["avg_30d"] * 0.4
             else:
                 blended = v["avg_daily"]
 
             for i, m in enumerate(months):
+                cal_month = datetime.strptime(m, '%Y-%m').month
                 growth_factor = (1 + growth_rate) ** i
-                monthly_units = round(blended * 30.44 * growth_factor)
+                seasonal_factor = sku_seasonal.get(sku, {}).get(cal_month, 1.0)
+                monthly_units = round(blended * 30.44 * growth_factor * seasonal_factor)
                 row[m] = monthly_units
                 total += monthly_units
 
@@ -325,7 +413,8 @@ def build_new_customer_sku_month_table(waterfall_df, horizon_months=12, forecast
 
     Uses new_customers_acquired from waterfall × forecast-SKU-only UPC
     to get the correct number of forecast-SKU units (excluding merch,
-    samples, virtual items, etc.). Then distributes across SKUs by mix.
+    samples, virtual items, etc.). Then distributes across SKUs by mix,
+    seasonally adjusted so the mix shifts by calendar month.
 
     Returns:
         DataFrame: [SKU, Flavor, % of New Sales, month_1, ..., Total]
@@ -337,6 +426,8 @@ def build_new_customer_sku_month_table(waterfall_df, horizon_months=12, forecast
     if not sku_mix or forecast_upc <= 0:
         return pd.DataFrame()
 
+    reweights = _load_sku_seasonal_reweights()
+
     now = datetime.utcnow()
     current_month = _month_str(now)
     months = [_add_months(current_month, i) for i in range(horizon_months)]
@@ -346,22 +437,25 @@ def build_new_customer_sku_month_table(waterfall_df, horizon_months=12, forecast
     for _, row in waterfall_df.iterrows():
         monthly_new_units[row["month"]] = row["new_customers_acquired"] * forecast_upc
 
-    rows = []
-    for sku, pct in sku_mix.items():
-        row = {
-            "SKU": sku,
-            "Flavor": get_flavor(sku),
-            "% of New Sales": round(pct * 100, 1),
-        }
-        total = 0
-        for m in months:
-            units = round(monthly_new_units.get(m, 0) * pct)
-            row[m] = units
-            total += units
-        row["Total"] = total
-        rows.append(row)
+    rows = {sku: {"SKU": sku, "Flavor": get_flavor(sku), "% of New Sales": round(pct * 100, 1)}
+            for sku, pct in sku_mix.items()}
+    totals = {sku: 0 for sku in sku_mix}
 
-    df = pd.DataFrame(rows)
+    for m in months:
+        cal_month = datetime.strptime(m, '%Y-%m').month
+        adjusted_mix = _seasonal_mix_for_month(sku_mix, reweights, cal_month)
+        month_total = monthly_new_units.get(m, 0)
+        for sku in sku_mix:
+            units = round(month_total * adjusted_mix.get(sku, 0))
+            rows[sku][m] = units
+            totals[sku] += units
+
+    result = []
+    for sku in sku_mix:
+        rows[sku]["Total"] = totals[sku]
+        result.append(rows[sku])
+
+    df = pd.DataFrame(result)
     if not df.empty:
         df = df.sort_values("Total", ascending=False).reset_index(drop=True)
     return df
@@ -431,7 +525,8 @@ def build_repeat_customer_sku_month_table(waterfall_df, horizon_months=12, forec
 
     The waterfall computes repeat_units using the ALL-item units-per-customer.
     We scale those down to forecast-SKU-only units using the ratio of
-    forecast-SKU UPC to all-item UPC, then distribute across SKUs by mix.
+    forecast-SKU UPC to all-item UPC, then distribute across SKUs by
+    seasonally-adjusted mix.
 
     Returns:
         DataFrame: [SKU, Flavor, % of Repeat Sales, month_1, ..., Total]
@@ -442,6 +537,8 @@ def build_repeat_customer_sku_month_table(waterfall_df, horizon_months=12, forec
     sku_mix, forecast_rep_upc = _get_repeat_customer_sku_mix(forecast_skus=forecast_skus)
     if not sku_mix:
         return pd.DataFrame()
+
+    reweights = _load_sku_seasonal_reweights()
 
     now = datetime.utcnow()
     current_month = _month_str(now)
@@ -458,22 +555,25 @@ def build_repeat_customer_sku_month_table(waterfall_df, horizon_months=12, forec
     for _, row in waterfall_df.iterrows():
         monthly_repeat[row["month"]] = row["repeat_units"] * scale
 
-    rows = []
-    for sku, pct in sku_mix.items():
-        row = {
-            "SKU": sku,
-            "Flavor": get_flavor(sku),
-            "% of Repeat Sales": round(pct * 100, 1),
-        }
-        total = 0
-        for m in months:
-            units = round(monthly_repeat.get(m, 0) * pct)
-            row[m] = units
-            total += units
-        row["Total"] = total
-        rows.append(row)
+    rows = {sku: {"SKU": sku, "Flavor": get_flavor(sku), "% of Repeat Sales": round(pct * 100, 1)}
+            for sku, pct in sku_mix.items()}
+    totals = {sku: 0 for sku in sku_mix}
 
-    df = pd.DataFrame(rows)
+    for m in months:
+        cal_month = datetime.strptime(m, '%Y-%m').month
+        adjusted_mix = _seasonal_mix_for_month(sku_mix, reweights, cal_month)
+        month_total = monthly_repeat.get(m, 0)
+        for sku in sku_mix:
+            units = round(month_total * adjusted_mix.get(sku, 0))
+            rows[sku][m] = units
+            totals[sku] += units
+
+    result = []
+    for sku in sku_mix:
+        rows[sku]["Total"] = totals[sku]
+        result.append(rows[sku])
+
+    df = pd.DataFrame(result)
     if not df.empty:
         df = df.sort_values("Total", ascending=False).reset_index(drop=True)
     return df
