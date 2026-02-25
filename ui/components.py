@@ -189,6 +189,79 @@ def render_freshness_badge(last_refreshed_str=None, new_rows=None, is_live=False
     )
 
 
+def render_model_freshness(model_runs, model_names=None):
+    """Render compact model-freshness badges for analytics models.
+
+    Shows last-run timestamps and status for each model in a single row.
+
+    Args:
+        model_runs: dict from get_model_runs() — {model_name: {last_run_at, status, ...}}
+        model_names: optional list of model names to show (default: all)
+    """
+    if not model_runs:
+        st.caption('Models: no runs yet')
+        return
+
+    _labels = {
+        'retention_cohorts': 'Retention',
+        'repeat_forecast': 'Repeat Forecast',
+        'seasonality': 'Seasonality',
+        'sku_sales_mix': 'SKU Mix',
+        'waterfall': 'Waterfall',
+    }
+
+    names = model_names or list(model_runs.keys())
+    badges = []
+    for name in names:
+        run = model_runs.get(name)
+        label = _labels.get(name, name)
+        if not run or not run.get('last_run_at'):
+            badges.append(
+                f'<span style="color:#94a3b8;font-size:0.68rem;">'
+                f'{label}: <span style="color:#f59e0b;">never</span></span>'
+            )
+            continue
+
+        status = run.get('status', 'success')
+        triggered = run.get('triggered_by', '')
+        duration = run.get('duration_seconds')
+
+        # Parse timestamp for relative display
+        try:
+            last_dt = datetime.strptime(run['last_run_at'][:19], '%Y-%m-%d %H:%M:%S')
+            delta = datetime.utcnow() - last_dt
+            secs = delta.total_seconds()
+            if secs < 3600:
+                ago = f'{max(1, int(secs // 60))}m ago'
+            elif secs < 86400:
+                ago = f'{int(secs // 3600)}h ago'
+            else:
+                ago = f'{delta.days}d ago'
+        except (ValueError, TypeError):
+            ago = run['last_run_at'][:16]
+
+        if status == 'success':
+            dot = '<span style="color:#22c55e;">&#9679;</span>'
+        else:
+            dot = '<span style="color:#ef4444;">&#9679;</span>'
+
+        dur_str = f' ({duration:.0f}s)' if duration and duration > 0.5 else ''
+        trigger_str = f' via {triggered}' if triggered and triggered != 'manual' else ''
+
+        badges.append(
+            f'<span style="font-size:0.68rem;color:#64748b;">'
+            f'{dot} {label}: {ago}{dur_str}{trigger_str}</span>'
+        )
+
+    separator = '&nbsp;&nbsp;&middot;&nbsp;&nbsp;'
+    st.markdown(
+        f'<div style="text-align:right;padding:0 0 4px;line-height:1.6;">'
+        f'{separator.join(badges)}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default_preset='MTD'):
     """Reusable date filter with quick presets (MTD, YTD, Last 7d, etc.).
 

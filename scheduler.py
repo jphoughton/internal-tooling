@@ -20,7 +20,7 @@ from etl.sync import run_daily_sync, run_parallel_backfill
 
 
 def daily_job():
-    """The main daily job: sync data and log results."""
+    """The main daily job: sync data, then run analytics models."""
     print(f"\n{'='*60}")
     print(f"Daily sync started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
@@ -30,6 +30,19 @@ def daily_job():
         print(f"\nDaily sync completed successfully: {results}")
     except Exception as e:
         print(f"\nDaily sync failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Run daily analytics models after ETL sync
+    print(f"\n{'='*60}")
+    print(f"Daily model runs starting...")
+    print(f"{'='*60}")
+    try:
+        from analytics.orchestrator import run_all_daily_models
+        model_results = run_all_daily_models(triggered_by='scheduler')
+        print(f"\nDaily model runs completed: {model_results}")
+    except Exception as e:
+        print(f"\nDaily model runs failed: {e}")
         import traceback
         traceback.print_exc()
 

@@ -138,6 +138,18 @@ def run_daily_sync(full_refresh=False, on_status=None):
     with get_db() as conn:
         rebuild_daily_sales(conn)
 
+    # --- Event-driven: rerun waterfall if new repeat data arrived ---
+    _report(step_idx, "Checking for model reruns...")
+    try:
+        from analytics.orchestrator import run_waterfall_if_new_repeat_data
+        model_results = run_waterfall_if_new_repeat_data(triggered_by='etl_sync')
+        if model_results:
+            results["model_reruns"] = model_results
+            logger.info("Event-driven model reruns: %s", model_results)
+    except Exception as e:
+        logger.error("Event-driven model rerun failed: %s", e)
+        results["model_reruns"] = f"ERROR: {e}"
+
     _report(total_steps, "Sync complete!")
     logger.info("Sync complete: %s", results)
     return results

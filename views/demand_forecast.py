@@ -18,7 +18,7 @@ from analytics.dtc_demand import (
     get_current_month_progress,
     compute_remaining_month_demand,
 )
-from ui.components import render_html_table, render_freshness_badge
+from ui.components import render_html_table, render_freshness_badge, render_model_freshness
 
 
 @st.cache_data(ttl=300)
@@ -128,6 +128,10 @@ def render(ctx):
             _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
         _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+        from db import get_model_runs
+        with get_db() as _mr_conn:
+            _mr = get_model_runs(_mr_conn)
+        render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
     st.caption('Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.')
 
     # Seasonality status
