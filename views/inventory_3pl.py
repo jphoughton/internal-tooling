@@ -46,7 +46,7 @@ def render(ctx):
                 if _fc in _fb_display.columns:
                     _fb_display[_fc] = _fb_display[_fc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
             _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
-            render_html_table(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700))
+            render_html_table(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700), freeze_cols=2)
     else:
         from etl.packiyo_client import get_inventory
 
@@ -183,7 +183,8 @@ def render(ctx):
                                   ('', ['SKU', 'Flavor']),
                                   ('Stock Levels', ['On Hand', 'Allocated', 'Available', 'DoS']),
                                   ('Pipeline', ['Backordered', 'Inbound']),
-                              ])
+                              ],
+                              freeze_cols=2)
 
             # Forecast vs Inventory comparison (core SKUs only)
             st.divider()
@@ -228,7 +229,8 @@ def render(ctx):
                         return ''
 
                     render_html_table(comparison, max_height=min(len(comparison) * 35 + 38, 700),
-                                      style_fn=_color_mos, style_cols=["Months of Stock"])
+                                      style_fn=_color_mos, style_cols=["Months of Stock"],
+                                      freeze_cols=2)
                 except Exception as e:
                     st.warning(f"Could not load forecast comparison: {e}")
             else:

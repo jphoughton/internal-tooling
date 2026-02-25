@@ -52,7 +52,7 @@ def render(ctx):
                 if _fc in _amz_fb_display.columns:
                     _amz_fb_display[_fc] = _amz_fb_display[_fc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
             _amz_fb_display["Revenue (30d)"] = _amz_fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
-            render_html_table(_amz_fb_display, max_height=min(len(_amz_fb_display) * 35 + 38, 700))
+            render_html_table(_amz_fb_display, max_height=min(len(_amz_fb_display) * 35 + 38, 700), freeze_cols=2)
     else:
         from etl.amazon_inventory import get_inventory as get_amz_inventory
 
@@ -194,7 +194,8 @@ def render(ctx):
                                   ('Available', ['Fulfillable', 'Reserved']),
                                   ('Inbound', ['Inbound Shipped', 'Inbound Receiving']),
                                   ('Summary', ['Unfulfillable', 'Total', 'DoS']),
-                              ])
+                              ],
+                              freeze_cols=3)
 
             # Forecast vs Amazon Inventory comparison
             st.divider()
@@ -238,7 +239,8 @@ def render(ctx):
                         return ''
 
                     render_html_table(comparison_amz, max_height=min(len(comparison_amz) * 35 + 38, 700),
-                                      style_fn=_color_mos_amz, style_cols=["Months of Stock"])
+                                      style_fn=_color_mos_amz, style_cols=["Months of Stock"],
+                                      freeze_cols=2)
                 except Exception as e:
                     st.warning(f"Could not load forecast comparison: {e}")
             else:

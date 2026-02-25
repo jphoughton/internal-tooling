@@ -837,16 +837,29 @@ def render(ctx):
                 )
                 html = styled.to_html()
                 height_style = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
+                import secrets as _secrets
+                _tid = f'mpt{_secrets.token_hex(3)}'
+                _freeze_css = (
+                    f'#{_tid} th.col0'
+                    f'{{ position:sticky !important; left:0; z-index:3 !important;'
+                    f' min-width:130px; background-color:#F0F4F8 !important; }}\n'
+                    f'#{_tid} td.col0'
+                    f'{{ position:sticky !important; left:0; z-index:2 !important;'
+                    f' min-width:130px; }}\n'
+                    f'#{_tid} th.col0,#{_tid} td.col0'
+                    f'{{ border-right:2px solid #D6DEE8 !important; }}\n'
+                )
                 st.markdown(
                     f'<div style="background:#ffffff;border-radius:12px;'
                     f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
                     f'width:100%;overflow:hidden;">'
-                    f'<div class="perf-table" style="overflow-x:auto;{height_style}">'
+                    f'<div id="{_tid}" class="perf-table" style="overflow-x:auto;{height_style}">'
                     '<style>'
-                    '.perf-table table { width:100%; border-collapse:collapse; }'
-                    '.perf-table th, .perf-table td { white-space:nowrap; }'
-                    '.perf-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
-                    '.perf-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
+                    f'#{_tid} table {{ width:100%; border-collapse:collapse; }}'
+                    f'#{_tid} th, #{_tid} td {{ white-space:nowrap; }}'
+                    f'#{_tid} th {{ position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }}'
+                    f'#{_tid} tr:hover td:not([style*="background-color"]) {{ background:#F7FAFC !important; }}'
+                    f'{_freeze_css}'
                     '</style>'
                     f'{html}</div></div>',
                     unsafe_allow_html=True,
@@ -1236,7 +1249,7 @@ def render(ctx):
             weekly["New Custs"] = weekly["New Custs"].astype(int)
             weekly["Sessions"] = weekly["Sessions"].astype(int)
             weekly["NC ROAS"] = weekly["NC ROAS"].apply(lambda x: f"{x:.2f}x")
-            render_html_table(weekly.sort_values("Week", ascending=False))
+            render_html_table(weekly.sort_values("Week", ascending=False), freeze_cols=1)
 
             # Conversion funnel
             st.subheader("Conversion Funnel")
@@ -1373,7 +1386,7 @@ def render(ctx):
 
                 from ui.tables import format_number_cols
                 display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
-                render_html_table(display, max_height=500)
+                render_html_table(display, max_height=500, freeze_cols=1)
             else:
                 st.info("No campaigns synced yet. Click **Refresh from Klaviyo** above.")
 
@@ -1400,7 +1413,7 @@ def render(ctx):
 
                 from ui.tables import format_number_cols
                 display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
-                render_html_table(display, max_height=500)
+                render_html_table(display, max_height=500, freeze_cols=1)
             else:
                 st.info("No flows synced yet.")
 

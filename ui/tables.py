@@ -1,4 +1,5 @@
 """DataFrame formatting and styling helpers for the Hydrant dashboard."""
+import secrets
 import pandas as pd
 import streamlit as st
 
@@ -159,7 +160,8 @@ def gradient_perf_style(pct_change, higher_is_good):
 
 
 def render_perf_table_colored(df, period_col, max_height=420,
-                               col_direction=None, render_plain=None):
+                               col_direction=None, render_plain=None,
+                               freeze_cols=1):
     """Render a performance table with gradient period-over-period color coding.
 
     Args:
@@ -172,6 +174,8 @@ def render_perf_table_colored(df, period_col, max_height=420,
         render_plain: Optional callable(df, max_height) used when the DataFrame
             has fewer than 2 rows and gradient styling is not possible.  When
             *None* a simple st.dataframe fallback is used.
+        freeze_cols: Number of left columns to freeze when scrolling
+            horizontally (default 1 = freeze the period column).
     """
     if df.empty or len(df) < 2:
         if render_plain:
@@ -248,16 +252,41 @@ def render_perf_table_colored(df, period_col, max_height=420,
     )
     html = styled.to_html()
     height_style = f'max-height:{max_height}px;overflow-y:auto;' if max_height else ''
+
+    # --- Frozen left columns ---
+    tid = f'pt{secrets.token_hex(3)}'
+    freeze_css = ''
+    if freeze_cols and freeze_cols > 0:
+        _COL_W = 130
+        for ci in range(freeze_cols):
+            left_px = ci * _COL_W
+            freeze_css += (
+                f'#{tid} th.col{ci}'
+                f'{{ position:sticky !important; left:{left_px}px;'
+                f' z-index:3 !important; min-width:{_COL_W}px;'
+                f' background-color:#F0F4F8 !important; }}\n'
+                f'#{tid} td.col{ci}'
+                f'{{ position:sticky !important; left:{left_px}px;'
+                f' z-index:2 !important; min-width:{_COL_W}px; }}\n'
+            )
+        last = freeze_cols - 1
+        freeze_css += (
+            f'#{tid} th.col{last},'
+            f'#{tid} td.col{last}'
+            f'{{ border-right:2px solid #D6DEE8 !important; }}\n'
+        )
+
     st.markdown(
         f'<div style="background:#ffffff;border-radius:12px;'
         f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
         f'width:100%;overflow:hidden;">'
-        f'<div class="perf-table" style="overflow-x:auto;{height_style}">'
+        f'<div id="{tid}" class="perf-table" style="overflow-x:auto;{height_style}">'
         '<style>'
-        '.perf-table table { width:100%; border-collapse:collapse; }'
-        '.perf-table th, .perf-table td { white-space:nowrap; }'
-        '.perf-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
-        '.perf-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
+        f'#{tid} table {{ width:100%; border-collapse:collapse; }}'
+        f'#{tid} th, #{tid} td {{ white-space:nowrap; }}'
+        f'#{tid} th {{ position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }}'
+        f'#{tid} tr:hover td:not([style*="background-color"]) {{ background:#F7FAFC !important; }}'
+        f'{freeze_css}'
         '</style>'
         f'{html}</div></div>',
         unsafe_allow_html=True,

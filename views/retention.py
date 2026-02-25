@@ -221,6 +221,7 @@ def render(ctx):
                 style_fn=style_fn,
                 style_cols=month_cols,
                 column_groups=column_groups,
+                freeze_cols=len(summary_cols),
             )
 
     # --- Retention Curve ---
@@ -316,7 +317,7 @@ def render(ctx):
                 _rr_display['1st Order Rev'] = _rr_display['first_order_revenue'].apply(lambda x: f'${x:,.0f}')
                 _rr_display['Repeat Rev'] = _rr_display['repeat_revenue'].apply(lambda x: f'${x:,.0f}')
                 _rr_display = _rr_display[['Cohort', 'Customers', 'Repeat', 'Repeat Rate', '1st Order Rev', 'Repeat Rev']]
-                render_html_table(_rr_display, max_height=min(len(_rr_display) * 35 + 60, 500))
+                render_html_table(_rr_display, max_height=min(len(_rr_display) * 35 + 60, 500), freeze_cols=1)
 
                 # Repeat rate trend chart
                 st.subheader('Repeat Rate Trend')
@@ -429,7 +430,7 @@ def render(ctx):
                 }
                 _display_df = _rev_df[['Month', 'Repeat Revenue', 'New Customer Revenue', 'Total Revenue']]
                 _display_df = pd.concat([_display_df, pd.DataFrame([_totals])], ignore_index=True)
-                render_html_table(_display_df)
+                render_html_table(_display_df, freeze_cols=1)
 
                 _chart_df = _rev_df[['Month', '_repeat', '_new']].rename(columns={'_repeat': 'Repeat', '_new': 'New Customer'})
                 _melted = _chart_df.melt(id_vars='Month', var_name='Segment', value_name='Revenue')

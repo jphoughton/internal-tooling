@@ -200,7 +200,7 @@ def render(ctx):
                 merch_spend.columns = ["Vendor", "Total Spend", "# Payments", "Avg Payment"]
                 merch_spend["Total Spend"] = merch_spend["Total Spend"].apply(lambda x: f"${x:,.0f}")
                 merch_spend["Avg Payment"] = merch_spend["Avg Payment"].apply(lambda x: f"${x:,.0f}")
-                render_html_table(merch_spend)
+                render_html_table(merch_spend, freeze_cols=1)
 
                 st.divider()
 
@@ -225,7 +225,7 @@ def render(ctx):
                 ).round(0)
                 monthly_cat.loc["TOTAL"] = monthly_cat.sum()
                 monthly_display = monthly_cat.map(lambda x: f"${x:,.0f}")
-                render_html_table(monthly_display)
+                render_html_table(monthly_display, freeze_cols=1)
 
             st.divider()
 
@@ -267,4 +267,4 @@ def render(ctx):
                     display_df["Amount"] = display_df["Amount"].apply(lambda x: f"${x:,.2f}")
                 if "Date" in display_df.columns:
                     display_df["Date"] = pd.to_datetime(display_df["Date"]).dt.strftime("%Y-%m-%d")
-                render_html_table(display_df.sort_values("Date", ascending=False))
+                render_html_table(display_df.sort_values("Date", ascending=False), freeze_cols=1)

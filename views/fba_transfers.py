@@ -82,7 +82,7 @@ def render(ctx):
                 if _fc in _fb_display.columns:
                     _fb_display[_fc] = _fb_display[_fc].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "")
             _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
-            render_html_table(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700))
+            render_html_table(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700), freeze_cols=2)
     elif not inv_data_amz_fba:
         st.info("No Amazon FBA inventory data found.")
     else:
@@ -289,6 +289,7 @@ def render(ctx):
                                   ('FBA Status', ['FBA Stock', 'FBA Monthly Demand', 'FBA Stockout']),
                                   ('Transfer Plan', ['Transfer By', 'Days Until Transfer', 'Transfer Qty']),
                                   ('3PL Supply', ['3PL Available', 'Can Fulfill', 'Urgency']),
-                              ])
+                              ],
+                              freeze_cols=2)
         else:
             st.info("No Amazon FBA SKUs with measurable demand found.")
