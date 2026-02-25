@@ -216,24 +216,34 @@ def _aggregate_message_stats(items):
     return aggregated
 
 
+def _fetch_all_metrics(api_key):
+    """Fetch all metrics from Klaviyo, paginating through results."""
+    all_metrics = []
+    url = f"{_KLAVIYO_API}/metrics"
+    while url:
+        resp = _requests.get(url, headers=_klaviyo_headers(api_key), timeout=15)
+        resp.raise_for_status()
+        body = resp.json()
+        all_metrics.extend(body.get("data", []))
+        url = body.get("links", {}).get("next")
+    return all_metrics
+
+
 def fetch_placed_order_metric_id(api_key):
-    """Auto-discover the Klaviyo 'Placed Order' metric ID via raw HTTP.
+    """Auto-discover the Klaviyo 'Placed Order' metric ID.
+
+    The metrics endpoint doesn't support filtering by name, so we fetch all
+    metrics and search for 'Placed Order' by name.
 
     Returns metric ID string, or None if not found.
     """
     try:
-        resp = _requests.get(
-            f"{_KLAVIYO_API}/metrics",
-            headers=_klaviyo_headers(api_key),
-            params={"filter": "equals(name,'Placed Order')"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if data:
-            metric_id = data[0]["id"]
-            logger.info(f"Found Placed Order metric: {metric_id}")
-            return metric_id
+        for m in _fetch_all_metrics(api_key):
+            name = m.get("attributes", {}).get("name", "")
+            if name == "Placed Order":
+                metric_id = m["id"]
+                logger.info(f"Found Placed Order metric: {metric_id}")
+                return metric_id
         logger.warning("Placed Order metric not found in Klaviyo")
         return None
     except Exception as e:
@@ -242,31 +252,41 @@ def fetch_placed_order_metric_id(api_key):
 
 
 def fetch_any_metric_id(api_key):
-    """Fetch any metric ID from Klaviyo (fallback for reporting API).
+    """Fetch a metric ID suitable for the Reporting API.
 
-    The Reporting API requires a conversion_metric_id even for engagement-only
-    stats. This grabs the first available metric as a fallback.
+    The Reporting API requires a conversion_metric_id that supports values
+    queries. Searches for well-known order metrics, then falls back to any
+    Shopify-integrated metric.
 
-    Returns metric ID string, or None if no metrics exist.
+    Returns metric ID string, or None if no suitable metrics exist.
     """
     try:
-        resp = _requests.get(
-            f"{_KLAVIYO_API}/metrics",
-            headers=_klaviyo_headers(api_key),
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if data:
-            metric_id = data[0]["id"]
-            name = data[0].get("attributes", {}).get("name", "unknown")
-            logger.info(f"Fallback metric: {name} ({metric_id})")
-            return metric_id
-        logger.warning("No metrics found in Klaviyo account")
-        return None
+        all_metrics = _fetch_all_metrics(api_key)
     except Exception as e:
-        logger.error(f"Failed to fetch fallback metric: {e}")
+        logger.error(f"Failed to fetch metrics: {e}")
         return None
+
+    # Priority 1: well-known order/revenue metrics
+    priority_names = {"Placed Order", "Ordered Product", "Fulfilled Order"}
+    for m in all_metrics:
+        name = m.get("attributes", {}).get("name", "")
+        if name in priority_names:
+            metric_id = m["id"]
+            logger.info(f"Found conversion metric: {name} ({metric_id})")
+            return metric_id
+
+    # Priority 2: any Shopify-integrated metric (these support values queries)
+    for m in all_metrics:
+        integration = m.get("attributes", {}).get("integration", {})
+        integ_name = integration.get("name", "") if integration else ""
+        if integ_name == "Shopify":
+            metric_id = m["id"]
+            m_name = m.get("attributes", {}).get("name", "unknown")
+            logger.info(f"Fallback Shopify metric: {m_name} ({metric_id})")
+            return metric_id
+
+    logger.warning("No suitable conversion metric found in Klaviyo")
+    return None
 
 
 def _build_report_body(report_type, stats, conversion_metric_id):
