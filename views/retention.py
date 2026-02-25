@@ -12,6 +12,7 @@ from db import (
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
     get_seasonal_indices, get_setting, set_setting, upsert_seasonal_index,
     get_media_spend,
+    get_model_runs,
 )
 from analytics.retention import (
     get_customer_cohort_data,
@@ -22,7 +23,7 @@ from analytics.retention import (
 )
 from analytics.waterfall import clear_waterfall_cache
 from analytics.dtc_demand import build_repeat_customer_sku_month_table
-from ui.components import render_freshness_badge, smart_date_filter, render_html_table
+from ui.components import render_freshness_badge, render_model_freshness, smart_date_filter, render_html_table
 from ui.tables import make_cohort_cell_style
 
 
@@ -140,6 +141,9 @@ def render(ctx):
             _srcs = get_synced_sources(conn, _badge_source)
         _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+        with get_db() as _mr_conn:
+            _mr = get_model_runs(_mr_conn)
+        render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast'])
 
     # --- SKU filter ---
     skus = _load_sku_list()

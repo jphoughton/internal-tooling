@@ -6,6 +6,7 @@ from db import (
     get_db, read_sql,
     get_setting, set_setting,
     upsert_customer, upsert_order, upsert_order_item, upsert_sku,
+    get_model_runs,
 )
 from config import save_env, reload_config
 import config
@@ -180,6 +181,63 @@ def render(ctx):
             st.warning("Packiyo 3PL: Not configured")
 
     st.info("Currently using **live API data**.")
+
+    # --- Model Run Status ---
+    st.divider()
+    st.subheader("Analytics Model Status")
+    st.caption("Daily analytics models run automatically after each ETL sync. You can also trigger them manually.")
+
+    with get_db() as _mr_conn:
+        _model_runs = get_model_runs(_mr_conn)
+
+    if _model_runs:
+        _mr_rows = []
+        _status_icons = {'success': '\u2705', 'error': '\u274C'}
+        for name, run in sorted(_model_runs.items()):
+            icon = _status_icons.get(run.get('status', ''), '\u2753')
+            last_at = run.get('last_run_at', '')
+            if last_at:
+                try:
+                    _dt = datetime.strptime(last_at[:19], '%Y-%m-%d %H:%M:%S')
+                    _delta = datetime.utcnow() - _dt
+                    _secs = _delta.total_seconds()
+                    if _secs < 3600:
+                        ago = f'{max(1, int(_secs // 60))}m ago'
+                    elif _secs < 86400:
+                        ago = f'{int(_secs // 3600)}h ago'
+                    else:
+                        ago = f'{_delta.days}d ago'
+                    last_at = f'{last_at[:16]} ({ago})'
+                except (ValueError, TypeError):
+                    pass
+            dur = run.get('duration_seconds')
+            dur_str = f'{dur:.1f}s' if dur else '-'
+            _mr_rows.append({
+                'Status': icon,
+                'Model': name.replace('_', ' ').title(),
+                'Last Run': last_at,
+                'Duration': dur_str,
+                'Triggered By': (run.get('triggered_by') or '-').replace('_', ' ').title(),
+                'Error': run.get('error_message') or '',
+            })
+        _mr_df = pd.DataFrame(_mr_rows)
+        render_html_table(_mr_df)
+    else:
+        st.caption("No model runs recorded yet. Models will run automatically after the next data sync.")
+
+    _mr_col1, _mr_col2 = st.columns(2)
+    with _mr_col1:
+        if st.button("Run All Models Now", key="run_all_models"):
+            with st.spinner("Running analytics models..."):
+                from analytics.orchestrator import run_all_daily_models
+                _results = run_all_daily_models(triggered_by='manual')
+            _ok = sum(1 for s in _results.values() if s == 'success')
+            if _ok == len(_results):
+                st.success(f"All {_ok} models completed successfully.")
+            else:
+                _errs = [k for k, v in _results.items() if v != 'success']
+                st.warning(f"{_ok}/{len(_results)} models succeeded. Failed: {', '.join(_errs)}")
+            st.rerun()
 
     # --- Backfill Full History ---
     st.divider()

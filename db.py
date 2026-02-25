@@ -374,6 +374,15 @@ _SCHEMA_SQL = [
         synced_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS model_runs (
+        model_name TEXT PRIMARY KEY,
+        last_run_at TEXT NOT NULL,
+        duration_seconds REAL,
+        status TEXT DEFAULT 'success',
+        error_message TEXT,
+        triggered_by TEXT DEFAULT 'manual'
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -1046,6 +1055,67 @@ def update_klaviyo_flow_metrics(
     except Exception as exc:
         logger.error('update_klaviyo_flow_metrics failed for id=%s: %s', flow_id, exc)
         raise DatabaseError(f'update_klaviyo_flow_metrics failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Model run tracking
+# ---------------------------------------------------------------------------
+def log_model_run(
+    conn: ConnectionWrapper,
+    model_name: str,
+    duration_seconds: float,
+    status: str = 'success',
+    error_message: Optional[str] = None,
+    triggered_by: str = 'manual',
+) -> None:
+    """Record the completion of a model run with timestamp and duration."""
+    try:
+        conn.execute("""
+            INSERT INTO model_runs (model_name, last_run_at, duration_seconds, status, error_message, triggered_by)
+            VALUES (%s, CURRENT_TIMESTAMP::text, %s, %s, %s, %s)
+            ON CONFLICT(model_name) DO UPDATE SET
+                last_run_at = CURRENT_TIMESTAMP::text,
+                duration_seconds = excluded.duration_seconds,
+                status = excluded.status,
+                error_message = excluded.error_message,
+                triggered_by = excluded.triggered_by
+        """, (model_name, duration_seconds, status, error_message, triggered_by))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('log_model_run failed for model=%s: %s', model_name, exc)
+        raise DatabaseError(f'log_model_run failed: {exc}') from exc
+
+
+def get_model_runs(conn: ConnectionWrapper) -> dict[str, dict[str, Any]]:
+    """Return all model run records as {model_name: {last_run_at, duration_seconds, status, ...}}."""
+    try:
+        rows = conn.execute(
+            "SELECT model_name, last_run_at, duration_seconds, status, error_message, triggered_by "
+            "FROM model_runs ORDER BY model_name"
+        ).fetchall()
+        return {r['model_name']: dict(r) for r in rows}
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_model_runs failed: %s', exc)
+        raise DatabaseError(f'get_model_runs failed: {exc}') from exc
+
+
+def get_model_run(conn: ConnectionWrapper, model_name: str) -> Optional[dict[str, Any]]:
+    """Return a single model run record or None."""
+    try:
+        row = conn.execute(
+            "SELECT model_name, last_run_at, duration_seconds, status, error_message, triggered_by "
+            "FROM model_runs WHERE model_name = %s",
+            (model_name,)
+        ).fetchone()
+        return dict(row) if row else None
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_model_run failed for model=%s: %s', model_name, exc)
+        raise DatabaseError(f'get_model_run failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
