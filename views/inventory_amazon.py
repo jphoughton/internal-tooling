@@ -137,12 +137,13 @@ def render(ctx):
             except Exception:
                 pass
 
-            # Fallback: fill gaps with actual 3-month sales history for non-forecast SKUs
-            _missing_skus = [s for s in amz_df["sku"] if s not in _amz_fc_map]
-            if _missing_skus:
-                try:
+            # Actual sales data (last 90 days) for Avg Mo. Sales & DoS
+            _amz_sales_map = {}  # {sku: units_3mo}
+            try:
+                _all_skus = list(amz_df["sku"])
+                if _all_skus:
                     with get_db() as conn:
-                        _placeholders = ",".join(["%s"] * len(_missing_skus))
+                        _placeholders = ",".join(["%s"] * len(_all_skus))
                         _90_ago = (datetime.utcnow() - relativedelta(days=90)).strftime("%Y-%m-%d")
                         _hist = read_sql(f"""
                             SELECT sku, SUM(units_sold) as units_3mo
@@ -151,13 +152,13 @@ def render(ctx):
                               AND source = 'amazon'
                               AND sku IN ({_placeholders})
                             GROUP BY sku
-                        """, conn, params=[_90_ago] + _missing_skus)
+                        """, conn, params=[_90_ago] + _all_skus)
                     if not _hist.empty:
                         for _, _hr in _hist.iterrows():
                             if _hr["units_3mo"] and _hr["units_3mo"] > 0:
-                                _amz_fc_map[_hr["sku"]] = float(_hr["units_3mo"])
-                except Exception:
-                    pass
+                                _amz_sales_map[_hr["sku"]] = float(_hr["units_3mo"])
+            except Exception:
+                pass
 
             # KPI cards
             col1, col2, col3, col4 = st.columns(4)
@@ -180,18 +181,18 @@ def render(ctx):
                 get_flavor(row["sku"], row["product_name"]) for _, row in amz_df[["sku", "product_name"]].iterrows()
             ])
 
-            # Add Avg Monthly Sales column (3-month forecast / 3)
+            # Add Avg Monthly Sales column (actual last 90 days / 3)
             _amz_avg_mo_sales = []
             for _, _r in amz_df.iterrows():
-                _fc3 = _amz_fc_map.get(_r["sku"], 0)
-                _amz_avg_mo_sales.append(round(_fc3 / 3) if _fc3 > 0 else None)
+                _u3 = _amz_sales_map.get(_r["sku"], 0)
+                _amz_avg_mo_sales.append(round(_u3 / 3) if _u3 > 0 else None)
             display_amz["Avg Mo. Sales"] = _amz_avg_mo_sales
 
-            # Add Days of Supply column
+            # Add Days of Supply column (based on actual sales velocity)
             _amz_dos_vals = []
             for _, _r in amz_df.iterrows():
-                _fc3 = _amz_fc_map.get(_r["sku"], 0)
-                _daily = _fc3 / 91.32 if _fc3 > 0 else 0
+                _u3 = _amz_sales_map.get(_r["sku"], 0)
+                _daily = _u3 / 90.0 if _u3 > 0 else 0
                 _total = _r.get("total_quantity", 0) or 0
                 _amz_dos_vals.append(round(_total / _daily) if _daily > 0 else None)
             display_amz["DoS"] = _amz_dos_vals
