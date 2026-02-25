@@ -158,7 +158,7 @@ _ENGAGEMENT_STATS = [
     "unsubscribes", "unsubscribe_rate", "bounce_rate",
 ]
 _REVENUE_STATS = [
-    "revenue", "revenue_per_recipient", "average_order_value", "conversion_rate",
+    "conversion_value", "revenue_per_recipient", "average_order_value", "conversion_rate",
 ]
 
 
@@ -230,9 +230,64 @@ def _build_report_body(report_type, stats, conversion_metric_id):
         "statistics": stats,
         "timeframe": {"key": "last_365_days"},
         "conversion_metric_id": conversion_metric_id,
-        "filter": "equals(send_channel,'email')",
+        "filter": 'equals(send_channel,"email")',
     }
     return {"data": {"type": report_type, "attributes": attrs}}
+
+
+def _aggregate_message_stats(items, id_key):
+    """Aggregate per-message stats into per-parent (flow/campaign) totals.
+
+    The Reporting API returns one result per message. Flows have multiple
+    messages, so we sum count metrics and compute weighted-average rates.
+
+    Returns dict mapping parent_id -> {metric_name: value, ...}
+    """
+    _COUNT_STATS = {
+        "recipients", "delivered", "opens_unique", "clicks_unique",
+        "unsubscribes", "conversion_value",
+    }
+    _RATE_STATS = {
+        "open_rate", "click_rate", "click_to_open_rate",
+        "unsubscribe_rate", "bounce_rate", "conversion_rate",
+    }
+    _WEIGHTED_AVG_STATS = {"revenue_per_recipient", "average_order_value"}
+
+    # Collect raw per-message data grouped by parent ID
+    buckets = {}  # parent_id -> list of {stat: value}
+    for item in items:
+        parent_id = item.get("groupings", {}).get(id_key)
+        if not parent_id:
+            continue
+        stats = item.get("statistics", {})
+        buckets.setdefault(parent_id, []).append(stats)
+
+    results = {}
+    for parent_id, messages in buckets.items():
+        merged = {}
+
+        # Sum count metrics
+        for stat in _COUNT_STATS:
+            merged[stat] = sum(float(m.get(stat, 0) or 0) for m in messages)
+
+        # Weighted-average rate metrics (weight = recipients per message)
+        for stat in _RATE_STATS | _WEIGHTED_AVG_STATS:
+            total_weight = 0
+            weighted_sum = 0
+            for m in messages:
+                w = float(m.get("recipients", 0) or 0)
+                v = float(m.get(stat, 0) or 0)
+                weighted_sum += w * v
+                total_weight += w
+            merged[stat] = weighted_sum / total_weight if total_weight > 0 else 0
+
+        # Map API name 'conversion_value' -> DB column 'revenue'
+        if "conversion_value" in merged:
+            merged["revenue"] = merged.pop("conversion_value")
+
+        results[parent_id] = merged
+
+    return results
 
 
 def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
@@ -265,11 +320,8 @@ def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
         raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
     data = resp.json()
 
-    results = {}
-    for item in data.get("data", {}).get("attributes", {}).get("results", []):
-        campaign_id = item.get("groupings", {}).get("campaign_id")
-        if campaign_id:
-            results[campaign_id] = item.get("statistics", {})
+    items = data.get("data", {}).get("attributes", {}).get("results", [])
+    results = _aggregate_message_stats(items, "campaign_id")
 
     logger.info(f"Fetched metrics for {len(results)} campaigns")
     return results
@@ -305,11 +357,8 @@ def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
         raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
     data = resp.json()
 
-    results = {}
-    for item in data.get("data", {}).get("attributes", {}).get("results", []):
-        flow_id = item.get("groupings", {}).get("flow_id")
-        if flow_id:
-            results[flow_id] = item.get("statistics", {})
+    items = data.get("data", {}).get("attributes", {}).get("results", [])
+    results = _aggregate_message_stats(items, "flow_id")
 
     logger.info(f"Fetched metrics for {len(results)} flows")
     return results
