@@ -58,14 +58,21 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
             styler = styler.map(style_fn, subset=cols)
     html = styler.to_html()
 
+    # --- Frozen left columns (SKU / Flavor pinned while scrolling) ---
+    _FREEZE_COLS = [('SKU', 200), ('Flavor', 160)]
+    col_list = list(df.columns)
+    freeze_specs = [(col_list.index(name), name, w)
+                    for name, w in _FREEZE_COLS if name in col_list]
+
     # --- Column group headers & boundary borders ---
     group_css = ''
     group_header_html = ''
     container_extra_class = ''
+    table_id = f'ht{secrets.token_hex(3)}' if (column_groups or freeze_specs) else None
     if column_groups:
-        table_id = f'ht{secrets.token_hex(3)}'
-        col_list = list(df.columns)
         container_extra_class = ' html-table-grouped'
+        frozen_names = {spec[1] for spec in freeze_specs}
+        total_freeze_width = sum(spec[2] for spec in freeze_specs)
 
         # Group header row
         cells = []
@@ -75,13 +82,17 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
             if not actual:
                 continue
             border = '' if is_first else 'border-left:2px solid #CBD5E1;'
+            # Pin the first group header if it contains frozen columns
+            freeze_style = ''
+            if is_first and freeze_specs and any(c in frozen_names for c in actual):
+                freeze_style = f'left:0;z-index:5;min-width:{total_freeze_width}px;'
             cells.append(
                 f'<th colspan="{len(actual)}" style="'
                 f'background-color:#E8EDF3;color:#64748b;font-size:0.68rem;'
                 f'font-weight:600;text-transform:uppercase;letter-spacing:0.06em;'
                 f'padding:6px 14px;border-bottom:none;'
                 f'text-align:center;position:sticky;top:0;z-index:2;'
-                f'{border}'
+                f'{border}{freeze_style}'
                 f'">{group_name}</th>'
             )
             is_first = False
@@ -102,8 +113,36 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
                     f'{{ border-left: 2px solid #CBD5E1 !important; }}\n'
                 )
 
+    # --- Freeze CSS (scoped to this table) ---
+    freeze_css = ''
+    if freeze_specs:
+        cumulative = 0
+        for col_idx, _, width in freeze_specs:
+            freeze_css += (
+                f'#{table_id} td.col{col_idx},'
+                f'#{table_id} th.col_heading.col{col_idx} {{'
+                f'  position:sticky !important; left:{cumulative}px;'
+                f'  min-width:{width}px; max-width:{width}px;'
+                f'}}\n'
+                f'#{table_id} td.col{col_idx} {{'
+                f'  z-index:2; background-color:#ffffff !important;'
+                f'}}\n'
+                f'#{table_id} th.col_heading.col{col_idx} {{'
+                f'  z-index:3 !important; background-color:#F0F4F8 !important;'
+                f'}}\n'
+            )
+            cumulative += width
+        # Visual separator after last frozen column
+        last_idx = freeze_specs[-1][0]
+        freeze_css += (
+            f'#{table_id} td.col{last_idx},'
+            f'#{table_id} th.col_heading.col{last_idx} {{'
+            f'  border-right:2px solid #D6DEE8 !important;'
+            f'}}\n'
+        )
+
     height_style = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
-    table_id_attr = f' id="{table_id}"' if column_groups else ''
+    table_id_attr = f' id="{table_id}"' if table_id else ''
     grouped_css = (
         '.html-table-grouped th.col_heading { top: 29px !important; }'
         '.html-table .group-header:hover th { background-color: #E8EDF3 !important; }'
@@ -119,6 +158,7 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
         '.html-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
         '.html-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
         f'{grouped_css}'
+        f'{freeze_css}'
         '</style>'
         f'<div class="html-table{container_extra_class}" style="overflow-x:auto;{height_style}"'
         f'{table_id_attr}>{html}</div></div>',
