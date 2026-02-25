@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 
 def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
-                      column_groups=None):
+                      column_groups=None, n_frozen_cols=0, frozen_col_widths=None):
     """Render a plain DataFrame as a styled HTML table with white background.
     Replaces st.dataframe() to avoid Glide canvas dark-background issues.
 
@@ -20,6 +20,10 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
         column_groups: Optional list of (group_name, [col_names]) tuples.
             Adds visual separators and a group header row between column
             groups.  Use empty string for unnamed groups (e.g. identity cols).
+        n_frozen_cols: Number of leftmost columns to freeze during horizontal
+            scroll (sticky left). Defaults to 0 (no frozen columns).
+        frozen_col_widths: List of pixel widths for each frozen column, used to
+            compute accurate left offsets. Defaults to 140px per column.
     """
     styler = (
         df.style
@@ -60,10 +64,14 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
 
     # --- Column group headers & boundary borders ---
     group_css = ''
-    group_header_html = ''
     container_extra_class = ''
-    if column_groups:
+    table_id = None
+
+    # Generate a unique table ID whenever scoped CSS is needed
+    if column_groups or n_frozen_cols > 0:
         table_id = f'ht{secrets.token_hex(3)}'
+
+    if column_groups:
         col_list = list(df.columns)
         container_extra_class = ' html-table-grouped'
 
@@ -102,13 +110,68 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
                     f'{{ border-left: 2px solid #CBD5E1 !important; }}\n'
                 )
 
+    # --- Frozen left columns ---
+    frozen_css = ''
+    if n_frozen_cols > 0:
+        widths = list(frozen_col_widths) if frozen_col_widths else []
+        # Pad with default 140px if not enough widths supplied
+        while len(widths) < n_frozen_cols:
+            widths.append(140)
+
+        # Cumulative left offsets
+        left_offsets = []
+        cumulative = 0
+        for i in range(n_frozen_cols):
+            left_offsets.append(cumulative)
+            cumulative += widths[i]
+
+        for i in range(n_frozen_cols):
+            is_last = i == n_frozen_cols - 1
+            # Shadow on the rightmost frozen column marks the freeze boundary
+            shadow = 'box-shadow:3px 0 6px rgba(15,53,87,0.10);' if is_last else ''
+            border_r = 'border-right:1px solid #D6DEE8 !important;' if is_last else ''
+            # th.colN: sticky in both axes (top from Styler, left from here)
+            # z-index 30+ keeps corner headers above all other sticky headers
+            frozen_css += (
+                f'#{table_id} th.col{i},'
+                f'#{table_id} td.col{i} {{'
+                f'position:sticky !important;'
+                f'left:{left_offsets[i]}px !important;'
+                f'min-width:{widths[i]}px;'
+                f'{shadow}{border_r}'
+                f'}}\n'
+                f'#{table_id} th.col{i} {{'
+                f'background-color:#F0F4F8 !important;'
+                f'z-index:{30 - i} !important;'
+                f'}}\n'
+                f'#{table_id} tbody td.col{i} {{'
+                f'background-color:#ffffff !important;'
+                f'z-index:{20 - i} !important;'
+                f'}}\n'
+                f'#{table_id} tbody tr:hover td.col{i} {{'
+                f'background-color:#F7FAFC !important;'
+                f'}}\n'
+            )
+
+        # Also freeze the group-header's first cell so it tracks with col0
+        if column_groups:
+            frozen_css += (
+                f'#{table_id} thead .group-header th:first-child {{'
+                f'position:sticky !important;'
+                f'left:0 !important;'
+                f'z-index:31 !important;'
+                f'}}\n'
+            )
+
     height_style = f"max-height:{max_height}px;overflow-y:auto;" if max_height else ""
-    table_id_attr = f' id="{table_id}"' if column_groups else ''
-    grouped_css = (
-        '.html-table-grouped th.col_heading { top: 29px !important; }'
-        '.html-table .group-header:hover th { background-color: #E8EDF3 !important; }'
-        f'{group_css}'
-    ) if column_groups else ''
+    table_id_attr = f' id="{table_id}"' if table_id else ''
+    extra_css = ''
+    if column_groups:
+        extra_css += (
+            '.html-table-grouped th.col_heading { top: 29px !important; }'
+            '.html-table .group-header:hover th { background-color: #E8EDF3 !important; }'
+        )
+    extra_css += group_css + frozen_css
     st.markdown(
         f'<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
         f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
@@ -117,7 +180,7 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
         '.html-table table { width:100%; border-collapse:collapse; }'
         '.html-table th, .html-table td { white-space:nowrap; }'
         '.html-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
-        f'{grouped_css}'
+        f'{extra_css}'
         '</style>'
         f'<div class="html-table{container_extra_class}" style="overflow-x:auto;"'
         f'{table_id_attr}>{html}</div></div>',

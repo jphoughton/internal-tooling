@@ -183,7 +183,8 @@ def render(ctx):
                                   ('', ['SKU', 'Flavor']),
                                   ('Stock Levels', ['On Hand', 'Allocated', 'Available', 'DoS']),
                                   ('Pipeline', ['Backordered', 'Inbound']),
-                              ])
+                              ],
+                              n_frozen_cols=2, frozen_col_widths=[195, 145])
 
             # Forecast vs Inventory comparison (core SKUs only)
             st.divider()
@@ -228,7 +229,8 @@ def render(ctx):
                         return ''
 
                     render_html_table(comparison, max_height=min(len(comparison) * 35 + 38, 700),
-                                      style_fn=_color_mos, style_cols=["Months of Stock"])
+                                      style_fn=_color_mos, style_cols=["Months of Stock"],
+                                      n_frozen_cols=2, frozen_col_widths=[195, 145])
                 except Exception as e:
                     st.warning(f"Could not load forecast comparison: {e}")
             else:

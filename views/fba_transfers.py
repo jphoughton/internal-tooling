@@ -289,6 +289,7 @@ def render(ctx):
                                   ('FBA Status', ['FBA Stock', 'FBA Monthly Demand', 'FBA Stockout']),
                                   ('Transfer Plan', ['Transfer By', 'Days Until Transfer', 'Transfer Qty']),
                                   ('3PL Supply', ['3PL Available', 'Can Fulfill', 'Urgency']),
-                              ])
+                              ],
+                              n_frozen_cols=2, frozen_col_widths=[195, 145])
         else:
             st.info("No Amazon FBA SKUs with measurable demand found.")

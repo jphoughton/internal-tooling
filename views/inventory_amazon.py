@@ -194,7 +194,8 @@ def render(ctx):
                                   ('Available', ['Fulfillable', 'Reserved']),
                                   ('Inbound', ['Inbound Shipped', 'Inbound Receiving']),
                                   ('Summary', ['Unfulfillable', 'Total', 'DoS']),
-                              ])
+                              ],
+                              n_frozen_cols=3, frozen_col_widths=[195, 145, 110])
 
             # Forecast vs Amazon Inventory comparison
             st.divider()
@@ -238,7 +239,8 @@ def render(ctx):
                         return ''
 
                     render_html_table(comparison_amz, max_height=min(len(comparison_amz) * 35 + 38, 700),
-                                      style_fn=_color_mos_amz, style_cols=["Months of Stock"])
+                                      style_fn=_color_mos_amz, style_cols=["Months of Stock"],
+                                      n_frozen_cols=2, frozen_col_widths=[195, 145])
                 except Exception as e:
                     st.warning(f"Could not load forecast comparison: {e}")
             else:

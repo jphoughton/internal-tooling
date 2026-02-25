@@ -421,7 +421,8 @@ def render(ctx):
                                   ('Current Stock', ['3PL Stock', 'FBA Stock', 'Total Stock', 'Inbound']),
                                   ('Demand', ['Monthly Demand', 'Months of Cover']),
                                   ('Action', ['Reorder By', 'Stockout Date', 'Order Qty', 'Planned Inbound']),
-                              ])
+                              ],
+                              n_frozen_cols=3, frozen_col_widths=[195, 145, 125])
 
             # --- Export ---
             st.divider()

@@ -321,6 +321,7 @@ def render(ctx):
                     ('Current Stock', ['3PL', 'FBA', 'In Transit', 'Total Stock', 'DoS']),
                     ('Monthly Projections', disp_month_labels),
                 ],
+                n_frozen_cols=2, frozen_col_widths=[195, 145],
             )
 
             # --- Stockout Alerts ---

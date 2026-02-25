@@ -318,7 +318,7 @@ def render(ctx):
         for _rc in ['New Rev', 'Repeat Rev', 'Shopify Rev', 'Amazon Rev', 'DTC Rev']:
             if _rc in disp_summary.columns:
                 disp_summary[_rc] = disp_summary[_rc].apply(lambda x: f'${x:,.0f}' if pd.notnull(x) else '')
-        render_html_table(disp_summary)
+        render_html_table(disp_summary, n_frozen_cols=1, frozen_col_widths=[105])
 
     # ================================================================
     # SECTION: Master DTC Rollup by SKU x Month
@@ -331,7 +331,8 @@ def render(ctx):
         ru_display, ru_fmt, ru_has_rev = _format_sku_month_table(
             rollup_table, '% of Sales', rev_dict=revenue.get('rollup'),
         )
-        render_html_table(ru_display, max_height=min(len(ru_display) * 35 + 38, 700))
+        render_html_table(ru_display, max_height=min(len(ru_display) * 35 + 38, 700),
+                          n_frozen_cols=2, frozen_col_widths=[195, 145])
 
         grand_total = rollup_table['Total'].sum()
         dtc_rev_total = channel.get('dtc_rev', 0)
@@ -350,7 +351,8 @@ def render(ctx):
         nc_display, nc_fmt, nc_has_rev = _format_sku_month_table(
             new_customer_table, '% of New Sales', rev_dict=revenue.get('new_customer'),
         )
-        render_html_table(nc_display, max_height=min(len(nc_display) * 35 + 38, 600))
+        render_html_table(nc_display, max_height=min(len(nc_display) * 35 + 38, 600),
+                          n_frozen_cols=2, frozen_col_widths=[195, 145])
 
         nc_total = new_customer_table['Total'].sum()
         rev_metrics = revenue.get('metrics', {})
@@ -370,7 +372,8 @@ def render(ctx):
         rc_display, rc_fmt, rc_has_rev = _format_sku_month_table(
             repeat_customer_table, '% of Repeat Sales', rev_dict=revenue.get('repeat_customer'),
         )
-        render_html_table(rc_display, max_height=min(len(rc_display) * 35 + 38, 600))
+        render_html_table(rc_display, max_height=min(len(rc_display) * 35 + 38, 600),
+                          n_frozen_cols=2, frozen_col_widths=[195, 145])
 
         rc_total = repeat_customer_table['Total'].sum()
         rev_metrics = revenue.get('metrics', {})
@@ -407,7 +410,8 @@ def render(ctx):
             amz_display, amz_fmt, amz_has_rev = _format_sku_month_table(
                 amazon_table, '% of Sales', rev_dict=revenue.get('amazon'),
             )
-            render_html_table(amz_display, max_height=min(len(amz_display) * 35 + 38, 600))
+            render_html_table(amz_display, max_height=min(len(amz_display) * 35 + 38, 600),
+                              n_frozen_cols=2, frozen_col_widths=[195, 145])
         else:
             st.info('No Amazon sales data available for forecasting.')
 

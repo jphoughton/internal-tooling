@@ -221,6 +221,8 @@ def render(ctx):
                 style_fn=style_fn,
                 style_cols=month_cols,
                 column_groups=column_groups,
+                n_frozen_cols=5,
+                frozen_col_widths=[95, 110, 90, 85, 100],
             )
 
     # --- Retention Curve ---
@@ -429,7 +431,7 @@ def render(ctx):
                 }
                 _display_df = _rev_df[['Month', 'Repeat Revenue', 'New Customer Revenue', 'Total Revenue']]
                 _display_df = pd.concat([_display_df, pd.DataFrame([_totals])], ignore_index=True)
-                render_html_table(_display_df)
+                render_html_table(_display_df, n_frozen_cols=1, frozen_col_widths=[105])
 
                 _chart_df = _rev_df[['Month', '_repeat', '_new']].rename(columns={'_repeat': 'Repeat', '_new': 'New Customer'})
                 _melted = _chart_df.melt(id_vars='Month', var_name='Segment', value_name='Revenue')
