@@ -6,6 +6,7 @@ from db import (
     get_db, read_sql,
     get_setting, set_setting,
     upsert_customer, upsert_order, upsert_order_item, upsert_sku,
+    get_model_runs,
 )
 from config import save_env, reload_config
 import config
@@ -186,7 +187,6 @@ def render(ctx):
     st.subheader("Analytics Model Status")
     st.caption("Daily analytics models run automatically after each ETL sync. You can also trigger them manually.")
 
-    from db import get_model_runs, log_model_run
     with get_db() as _mr_conn:
         _model_runs = get_model_runs(_mr_conn)
 

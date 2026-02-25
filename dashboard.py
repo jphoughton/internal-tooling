@@ -13,7 +13,6 @@ from db import (
     get_seasonal_indices,
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
-    get_model_runs,
 )
 from analytics.waterfall import (
     get_active_sources,

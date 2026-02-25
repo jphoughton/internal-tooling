@@ -8,6 +8,7 @@ from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
+    get_model_runs,
 )
 from analytics.forecast import forecast_sku
 from analytics.waterfall import clear_waterfall_cache
@@ -128,7 +129,6 @@ def render(ctx):
             _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
         _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-        from db import get_model_runs
         with get_db() as _mr_conn:
             _mr = get_model_runs(_mr_conn)
         render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
