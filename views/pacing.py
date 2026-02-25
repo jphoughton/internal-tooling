@@ -356,6 +356,9 @@ def render_pacing(ctx):
                     ("letter-spacing", "0.05em"),
                     ("border-bottom", "2px solid #D6DEE8"),
                     ("padding", "11px 14px"),
+                    ("position", "sticky"),
+                    ("top", "0"),
+                    ("z-index", "1"),
                 ]},
                 {"selector": "td", "props": [
                     ("border-bottom", "1px solid #F0F4F8"),
@@ -370,14 +373,15 @@ def render_pacing(ctx):
         st.markdown(
             '<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
             'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
-            'width:100%;overflow-x:auto;">'
+            'width:100%;">'
             '<style>'
             '.pace-table table { width:100%; border-collapse:collapse; }'
             '.pace-table th, .pace-table td { white-space:nowrap; }'
+            '.pace-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
             '.pace-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
             '.pace-table td[style*="color"] { -webkit-text-fill-color: unset; }'
             '</style>'
-            f'<div class="pace-table">{html}</div></div>',
+            f'<div class="pace-table" style="overflow-x:auto;max-height:600px;overflow-y:auto;">{html}</div></div>',
             unsafe_allow_html=True,
         )
 
