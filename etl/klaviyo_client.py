@@ -78,12 +78,9 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         raise
 
 
-def fetch_flows(api_key, statuses=("live", "draft")):
+def fetch_flows(api_key):
     """
-    Fetch flows (automated email sequences) from Klaviyo.
-
-    Fetches multiple statuses so that draft flows with historical
-    sending data also get their metadata stored for metrics matching.
+    Fetch all flows from Klaviyo (no status filter).
 
     Returns:
         list of dicts with flow data
@@ -91,33 +88,26 @@ def fetch_flows(api_key, statuses=("live", "draft")):
     try:
         client = get_client(api_key)
         flows = []
-        seen_ids = set()
+        resp = client.Flows.get_flows(sort="name")
 
-        for status in statuses:
-            _filter = f"equals(status,'{status}')"
-            resp = client.Flows.get_flows(filter=_filter, sort="name")
-
-            while resp:
-                if hasattr(resp, "data") and resp.data:
-                    for f in resp.data:
-                        if f.id in seen_ids:
-                            continue
-                        seen_ids.add(f.id)
-                        attrs = f.attributes
-                        flows.append({
-                            "id": f.id,
-                            "name": getattr(attrs, "name", ""),
-                            "status": getattr(attrs, "status", ""),
-                            "created": getattr(attrs, "created", ""),
-                            "updated": getattr(attrs, "updated", ""),
-                            "trigger_type": getattr(attrs, "trigger_type", ""),
-                        })
-                if hasattr(resp, "links") and resp.links and resp.links.next:
-                    resp = client.Flows.get_flows(
-                        filter=_filter, sort="name", page_cursor=resp.links.next,
-                    )
-                else:
-                    break
+        while resp:
+            if hasattr(resp, "data") and resp.data:
+                for f in resp.data:
+                    attrs = f.attributes
+                    flows.append({
+                        "id": f.id,
+                        "name": getattr(attrs, "name", ""),
+                        "status": getattr(attrs, "status", ""),
+                        "created": getattr(attrs, "created", ""),
+                        "updated": getattr(attrs, "updated", ""),
+                        "trigger_type": getattr(attrs, "trigger_type", ""),
+                    })
+            if hasattr(resp, "links") and resp.links and resp.links.next:
+                resp = client.Flows.get_flows(
+                    sort="name", page_cursor=resp.links.next,
+                )
+            else:
+                break
 
         logger.info(f"Fetched {len(flows)} Klaviyo flows")
         return flows
@@ -304,7 +294,6 @@ def _build_report_body(report_type, stats, conversion_metric_id):
         "statistics": stats,
         "timeframe": {"key": "last_365_days"},
         "conversion_metric_id": conversion_metric_id,
-        "filter": 'equals(send_channel,"email")',
     }
     return {"data": {"type": report_type, "attributes": attrs}}
 
@@ -349,25 +338,74 @@ def fetch_campaign_metrics(api_key, conversion_metric_id, include_revenue=True):
     return results
 
 
-def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
-    """Fetch performance metrics for all flows.
+def _query_metric_by_flow(api_key, metric_id, measurement="count"):
+    """Query a single Klaviyo metric aggregated by $flow over the last year.
 
-    Uses POST /api/flow-values-reports (1 API call for all flows).
-    The API returns one result per flow *message*, so we aggregate
-    per-message stats into per-flow totals.
-
-    Returns dict mapping flow_id -> {metric_name: value, ...}
+    Returns dict mapping flow_id -> total count/unique for that metric.
     """
-    if not conversion_metric_id:
-        logger.warning("No conversion_metric_id — skipping flow metrics")
+    from datetime import datetime, timedelta
+    end = datetime.utcnow()
+    start = end - timedelta(days=364)
+    body = {
+        "data": {
+            "type": "metric-aggregate",
+            "attributes": {
+                "metric_id": metric_id,
+                "measurements": [measurement],
+                "interval": "month",
+                "page_size": 500,
+                "by": ["$flow"],
+                "filter": [
+                    f"greater-or-equal(datetime,{start.strftime('%Y-%m-%d')})",
+                    f"less-than(datetime,{end.strftime('%Y-%m-%d')})",
+                ],
+            },
+        }
+    }
+    resp = _requests.post(
+        f"{_KLAVIYO_API}/metric-aggregates",
+        headers=_klaviyo_headers(api_key),
+        json=body,
+        timeout=30,
+    )
+    if not resp.ok:
+        logger.error(f"Metric aggregates API {resp.status_code}: {resp.text[:500]}")
         return {}
 
-    stats = list(_ENGAGEMENT_STATS)
-    if include_revenue:
-        stats += _REVENUE_STATS
+    totals = {}
+    for row in resp.json().get("data", {}).get("attributes", {}).get("data", []):
+        flow_id = (row.get("dimensions") or [""])[0]
+        if not flow_id:
+            continue
+        values = row.get("measurements", {}).get(measurement, [])
+        totals[flow_id] = sum(v for v in values if v)
+    return totals
 
-    body = _build_report_body("flow-values-report", stats, conversion_metric_id)
 
+# Metric names -> their Klaviyo metric IDs (discovered at sync time)
+_FLOW_METRIC_NAMES = {
+    "Received Email": "recipients",
+    "Opened Email": "opens_unique",
+    "Clicked Email": "clicks_unique",
+    "Bounced Email": "bounced",
+    "Unsubscribed": "unsubscribes",
+}
+
+
+def _fetch_flow_revenue(api_key, conversion_metric_id):
+    """Fetch per-flow revenue via flow-values-reports.
+
+    The metric-aggregates API doesn't attribute Placed Order revenue to
+    individual flows, so we use the flow-values-reports endpoint which
+    does handle attribution (though it covers fewer flows).
+
+    Returns dict mapping flow_id -> total revenue.
+    """
+    body = _build_report_body(
+        "flow-values-report",
+        ["conversion_value", "revenue_per_recipient"],
+        conversion_metric_id,
+    )
     resp = _requests.post(
         f"{_KLAVIYO_API}/flow-values-reports",
         headers=_klaviyo_headers(api_key),
@@ -375,21 +413,95 @@ def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
         timeout=30,
     )
     if not resp.ok:
-        error_detail = resp.text[:1000]
-        logger.error(f"Flow metrics API {resp.status_code}: {error_detail}")
-        raise RuntimeError(f"Klaviyo Reporting API {resp.status_code}: {error_detail}")
-    data = resp.json()
+        logger.error(f"Flow revenue API {resp.status_code}: {resp.text[:500]}")
+        return {}
 
-    # Group results by flow_id (API returns one row per message)
-    by_flow = {}
-    for item in data.get("data", {}).get("attributes", {}).get("results", []):
+    # Aggregate per-message results into per-flow totals
+    flow_revenue = {}
+    for item in resp.json().get("data", {}).get("attributes", {}).get("results", []):
         flow_id = item.get("groupings", {}).get("flow_id")
-        if flow_id:
-            by_flow.setdefault(flow_id, []).append(item)
+        if not flow_id:
+            continue
+        rev = item.get("statistics", {}).get("conversion_value", 0) or 0
+        flow_revenue[flow_id] = flow_revenue.get(flow_id, 0) + rev
 
+    logger.info(f"Fetched revenue for {len(flow_revenue)} flows")
+    return flow_revenue
+
+
+def fetch_flow_metrics(api_key, conversion_metric_id, include_revenue=True):
+    """Fetch performance metrics for all flows via metric-aggregates API.
+
+    The flow-values-reports endpoint only returns a subset of flows.
+    Instead, we query each engagement metric (Received Email, Opened Email,
+    etc.) aggregated by $flow, which returns data for ALL flows.
+
+    Returns dict mapping flow_id -> {metric_name: value, ...}
+    """
+    import time
+
+    # Discover metric IDs
+    try:
+        all_metrics = _fetch_all_metrics(api_key)
+    except Exception as e:
+        logger.error(f"Failed to fetch metrics list: {e}")
+        return {}
+
+    metric_ids = {}
+    for m in all_metrics:
+        name = m.get("attributes", {}).get("name", "")
+        if name in _FLOW_METRIC_NAMES:
+            metric_ids[name] = m["id"]
+        if name == "Placed Order":
+            metric_ids["Placed Order"] = m["id"]
+
+    # Query each metric aggregated by flow
     results = {}
-    for flow_id, items in by_flow.items():
-        results[flow_id] = _remap_conversion_value(_aggregate_message_stats(items))
+    for metric_name, db_field in _FLOW_METRIC_NAMES.items():
+        mid = metric_ids.get(metric_name)
+        if not mid:
+            continue
+        totals = _query_metric_by_flow(api_key, mid, measurement="unique")
+        for flow_id, val in totals.items():
+            results.setdefault(flow_id, {})[db_field] = val
+        time.sleep(0.5)  # respect rate limits
+
+    # Delivered ≈ recipients - bounced
+    for flow_id, stats in results.items():
+        recip = stats.get("recipients", 0)
+        bounced = stats.get("bounced", 0)
+        stats["delivered"] = max(0, recip - bounced)
+        stats.pop("bounced", None)
+
+    # Compute rates
+    for flow_id, stats in results.items():
+        recip = stats.get("recipients", 0)
+        delivered = stats.get("delivered", 0)
+        if recip > 0:
+            stats["open_rate"] = stats.get("opens_unique", 0) / recip
+            stats["click_rate"] = stats.get("clicks_unique", 0) / recip
+            stats["unsubscribe_rate"] = stats.get("unsubscribes", 0) / recip
+            stats["bounce_rate"] = (recip - delivered) / recip
+        opens = stats.get("opens_unique", 0)
+        if opens > 0:
+            stats["click_to_open_rate"] = stats.get("clicks_unique", 0) / opens
+
+    # Revenue via flow-values-reports (metric-aggregates doesn't attribute
+    # Placed Order revenue to individual flows)
+    if include_revenue and conversion_metric_id:
+        time.sleep(0.5)
+        try:
+            rev_by_flow = _fetch_flow_revenue(api_key, conversion_metric_id)
+            for flow_id, rev in rev_by_flow.items():
+                results.setdefault(flow_id, {})["revenue"] = rev
+            # Revenue per recipient
+            for flow_id, stats in results.items():
+                recip = stats.get("recipients", 0)
+                rev = stats.get("revenue", 0)
+                if recip > 0 and rev > 0:
+                    stats["revenue_per_recipient"] = rev / recip
+        except Exception as e:
+            logger.warning(f"Failed to fetch flow revenue: {e}")
 
     logger.info(f"Fetched metrics for {len(results)} flows")
     return results
