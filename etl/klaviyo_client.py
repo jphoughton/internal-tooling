@@ -78,9 +78,12 @@ def fetch_campaigns(api_key, status="sent", limit=50):
         raise
 
 
-def fetch_flows(api_key, status="live"):
+def fetch_flows(api_key, statuses=("live", "draft")):
     """
     Fetch flows (automated email sequences) from Klaviyo.
+
+    Fetches multiple statuses so that draft flows with historical
+    sending data also get their metadata stored for metrics matching.
 
     Returns:
         list of dicts with flow data
@@ -88,27 +91,33 @@ def fetch_flows(api_key, status="live"):
     try:
         client = get_client(api_key)
         flows = []
-        _filter = f"equals(status,'{status}')"
-        resp = client.Flows.get_flows(filter=_filter, sort="name")
+        seen_ids = set()
 
-        while resp:
-            if hasattr(resp, "data") and resp.data:
-                for f in resp.data:
-                    attrs = f.attributes
-                    flows.append({
-                        "id": f.id,
-                        "name": getattr(attrs, "name", ""),
-                        "status": getattr(attrs, "status", ""),
-                        "created": getattr(attrs, "created", ""),
-                        "updated": getattr(attrs, "updated", ""),
-                        "trigger_type": getattr(attrs, "trigger_type", ""),
-                    })
-            if hasattr(resp, "links") and resp.links and resp.links.next:
-                resp = client.Flows.get_flows(
-                    filter=_filter, sort="name", page_cursor=resp.links.next,
-                )
-            else:
-                break
+        for status in statuses:
+            _filter = f"equals(status,'{status}')"
+            resp = client.Flows.get_flows(filter=_filter, sort="name")
+
+            while resp:
+                if hasattr(resp, "data") and resp.data:
+                    for f in resp.data:
+                        if f.id in seen_ids:
+                            continue
+                        seen_ids.add(f.id)
+                        attrs = f.attributes
+                        flows.append({
+                            "id": f.id,
+                            "name": getattr(attrs, "name", ""),
+                            "status": getattr(attrs, "status", ""),
+                            "created": getattr(attrs, "created", ""),
+                            "updated": getattr(attrs, "updated", ""),
+                            "trigger_type": getattr(attrs, "trigger_type", ""),
+                        })
+                if hasattr(resp, "links") and resp.links and resp.links.next:
+                    resp = client.Flows.get_flows(
+                        filter=_filter, sort="name", page_cursor=resp.links.next,
+                    )
+                else:
+                    break
 
         logger.info(f"Fetched {len(flows)} Klaviyo flows")
         return flows
