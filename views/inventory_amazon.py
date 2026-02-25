@@ -197,7 +197,7 @@ def render(ctx):
 
             for _ac in ["Avg Mo. Sales", "Fulfillable", "Reserved", "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total"]:
                 if _ac in display_amz.columns:
-                    display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
+                    display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else "\u2014")
             render_html_table(display_amz, max_height=min(len(display_amz) * 35 + 38, 700),
                               style_fn=_color_dos_amz, style_cols=["DoS"],
                               column_groups=[
