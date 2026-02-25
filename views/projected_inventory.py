@@ -25,6 +25,7 @@ def render(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
 
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
@@ -117,7 +118,9 @@ def render(ctx):
 
             pi_media_json = _json_pi.dumps(pi_spend, sort_keys=True)
             pi_wf = _cached_waterfall(pi_media_json, None, 12, _load_seasonal_json())
-            pi_sku_fc = _cached_sku_forecast(pi_wf.to_json(), None) if not pi_wf.empty else pd.DataFrame()
+            pi_sku_fc = _cached_sku_forecast(
+                pi_wf.to_json(), None, _load_sku_seasonal_json(), _load_seasonal_json(),
+            ) if not pi_wf.empty else pd.DataFrame()
 
             _bv_pi = ctx.get('biz_vars', {})
             pi_dtc = build_master_dtc_forecast(

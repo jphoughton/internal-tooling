@@ -20,6 +20,7 @@ def render_pacing(ctx):
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
+    _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     _TW_ADJ = ctx.get('biz_vars', {}).get('tw_adjustment_factor', 1.0)
 
     # Check for Google Sheet data
@@ -85,7 +86,9 @@ def render_pacing(ctx):
         import json as _json_pac
         _wf = _cached_waterfall(_json_pac.dumps(_mkt_media, sort_keys=True), None, 12, _seasonal_json)
         if _wf is not None and not _wf.empty:
-            _sku_table = _cached_sku_forecast(_wf.to_json(), None)
+            _sku_table = _cached_sku_forecast(
+                _wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json,
+            )
             _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
             _dtc_fc = build_master_dtc_forecast(
                 shopify_waterfall_df=_wf,

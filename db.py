@@ -340,6 +340,15 @@ _SCHEMA_SQL = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS sku_seasonal_indices (
+        sku TEXT NOT NULL,
+        month_num INTEGER NOT NULL,
+        index_value REAL NOT NULL DEFAULT 1.0,
+        sample_months INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
+        PRIMARY KEY (sku, month_num)
+    )""",
+
     """CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT,
@@ -860,6 +869,53 @@ def upsert_seasonal_index(
     except Exception as exc:
         logger.error('upsert_seasonal_index failed for month_num=%s: %s', month_num, exc)
         raise DatabaseError(f'upsert_seasonal_index failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# SKU-level seasonal indices
+# ---------------------------------------------------------------------------
+def get_sku_seasonal_indices(conn: ConnectionWrapper) -> dict[str, dict[int, float]]:
+    """Return SKU-level seasonal indices as {sku: {month_num: value}}."""
+    try:
+        rows = conn.execute(
+            "SELECT sku, month_num, index_value FROM sku_seasonal_indices ORDER BY sku, month_num"
+        ).fetchall()
+        result: dict[str, dict[int, float]] = {}
+        for r in rows:
+            sku = r['sku']
+            if sku not in result:
+                result[sku] = {}
+            result[sku][int(r['month_num'])] = float(r['index_value'] or 1.0)
+        return result
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_sku_seasonal_indices failed: %s', exc)
+        raise DatabaseError(f'get_sku_seasonal_indices failed: {exc}') from exc
+
+
+def upsert_sku_seasonal_indices(
+    conn: ConnectionWrapper,
+    sku: str,
+    indices: dict[int, float],
+    sample_months: int = 0,
+) -> None:
+    """Upsert all 12 monthly seasonal indices for a single SKU."""
+    try:
+        for month_num, value in indices.items():
+            conn.execute("""
+                INSERT INTO sku_seasonal_indices (sku, month_num, index_value, sample_months)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT(sku, month_num) DO UPDATE SET
+                    index_value = excluded.index_value,
+                    sample_months = excluded.sample_months,
+                    updated_at = CURRENT_TIMESTAMP::text
+            """, (sku, month_num, value, sample_months))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_sku_seasonal_indices failed for sku=%s: %s', sku, exc)
+        raise DatabaseError(f'upsert_sku_seasonal_indices failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------

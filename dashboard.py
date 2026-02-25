@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from db import (
     get_db, read_sql,
     get_media_spend, get_amazon_revenue_forecast,
-    get_seasonal_indices,
+    get_seasonal_indices, get_sku_seasonal_indices,
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
@@ -53,10 +53,21 @@ def _cached_waterfall(media_plan_json, source_filter, horizon_months, seasonal_j
                            seasonal_indices=seasonal)
 
 @st.cache_data(ttl=600)
-def _cached_sku_forecast(waterfall_json, source_filter):
-    """SKU forecast depends on waterfall output."""
+def _cached_sku_forecast(waterfall_json, source_filter, sku_seasonal_json=None, global_seasonal_json=None):
+    """SKU forecast depends on waterfall output + per-SKU seasonal indices."""
+    import json
     df = pd.read_json(waterfall_json) if waterfall_json else pd.DataFrame()
-    return build_sku_forecast_table(df, source_filter=source_filter)
+    sku_seasonal = None
+    global_seasonal = None
+    if sku_seasonal_json:
+        raw = json.loads(sku_seasonal_json)
+        sku_seasonal = {sku: {int(k): v for k, v in months.items()} for sku, months in raw.items()}
+    if global_seasonal_json:
+        raw = json.loads(global_seasonal_json)
+        global_seasonal = {int(k): v for k, v in raw.items()}
+    return build_sku_forecast_table(df, source_filter=source_filter,
+                                    sku_seasonal_indices=sku_seasonal,
+                                    global_seasonal_indices=global_seasonal)
 
 from utils.constants import FORECAST_SKUS
 
@@ -194,6 +205,19 @@ def _load_seasonal_json():
         if enabled != "true":
             return None
         indices = get_seasonal_indices(conn)
+    if not indices:
+        return None
+    return _json_s.dumps(indices, sort_keys=True)
+
+
+def _load_sku_seasonal_json():
+    """Load per-SKU seasonal indices from DB as JSON string for cache key, or None if empty."""
+    import json as _json_s
+    with get_db() as conn:
+        enabled = get_setting(conn, "seasonality_enabled", "true")
+        if enabled != "true":
+            return None
+        indices = get_sku_seasonal_indices(conn)
     if not indices:
         return None
     return _json_s.dumps(indices, sort_keys=True)
@@ -498,7 +522,7 @@ def _compute_global_alerts():
         if _wf_alert is None or _wf_alert.empty:
             return alerts
 
-        _sku_alert = _cached_sku_forecast(_wf_alert.to_json(), None)
+        _sku_alert = _cached_sku_forecast(_wf_alert.to_json(), None, _load_sku_seasonal_json(), _seasonal_alert)
         if _sku_alert.empty:
             return alerts
         _sku_alert = _sku_alert[_sku_alert["SKU"].isin(FORECAST_SKUS)].copy()
@@ -695,6 +719,7 @@ _ctx = {
     'cached_retention_curve': _cached_retention_curve,
     'cached_aov_and_units': _cached_aov_and_units,
     'load_seasonal_json': _load_seasonal_json,
+    'load_sku_seasonal_json': _load_sku_seasonal_json,
     'active_sources': active_sources,
     'configured_sources': configured_sources,
     'biz_vars': _biz_vars,

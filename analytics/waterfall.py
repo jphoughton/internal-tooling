@@ -599,13 +599,23 @@ def _get_sku_mix(source_filter=None, lookback_months=3):
     return mix, variants
 
 
-def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005):
+def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005,
+                             sku_seasonal_indices=None, global_seasonal_indices=None):
     """
-    Allocate the waterfall total units to SKUs using recent % of sales.
+    Allocate the waterfall total units to SKUs using recent % of sales,
+    adjusted by per-SKU seasonal indices when available.
 
-    Takes the total_units from each forecast month and multiplies by
-    each SKU's recent share of sales. Simple, stable, and matches
-    the spreadsheet approach used in inventory planning.
+    When sku_seasonal_indices are provided, the base mix % is adjusted each
+    month by the ratio of the SKU's seasonal index to the global seasonal
+    index for that calendar month. This shifts units between SKUs based on
+    their individual seasonality while preserving the monthly total.
+
+    Args:
+        waterfall_df: Output from build_waterfall()
+        source_filter: Optional source filter ('shopify', 'amazon', etc.)
+        min_mix_pct: Minimum mix % to include a SKU (default 0.5%)
+        sku_seasonal_indices: {sku: {month_num(1-12): index_value}} from DB
+        global_seasonal_indices: {month_num(1-12): index_value} from DB
 
     Returns:
         DataFrame with SKU rows and month columns showing units.
@@ -623,16 +633,45 @@ def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005
     # Filter to SKUs with meaningful share
     significant_skus = {sku for sku, pct in sku_mix.items() if pct >= min_mix_pct}
 
+    # If we have per-SKU seasonal data, compute month-varying mix
+    has_sku_seasonal = bool(sku_seasonal_indices and global_seasonal_indices)
+
     rows = []
     for sku in significant_skus:
-        pct = sku_mix[sku]
+        base_pct = sku_mix[sku]
         variant = sku_variants.get(sku, sku)[:55]
         row = {"SKU": sku, "Variant": variant}
+
         for m in months:
-            row[m] = round(total_by_month.get(m, 0) * pct)
+            if has_sku_seasonal and sku in sku_seasonal_indices:
+                cal_month = _parse_month(m).month
+                sku_factor = sku_seasonal_indices[sku].get(cal_month, 1.0)
+                global_factor = global_seasonal_indices.get(cal_month, 1.0)
+                # Relative adjustment: how much more/less seasonal is this SKU
+                # compared to the global average for this month
+                if global_factor > 0:
+                    relative_factor = sku_factor / global_factor
+                else:
+                    relative_factor = 1.0
+                row[m] = total_by_month.get(m, 0) * base_pct * relative_factor
+            else:
+                row[m] = total_by_month.get(m, 0) * base_pct
+
         rows.append(row)
 
+    if not rows:
+        return pd.DataFrame()
+
+    # Renormalize each month so SKU units sum to the waterfall total
+    # (the relative seasonal adjustments may have shifted the total)
     result = pd.DataFrame(rows)
+    for m in months:
+        col_total = result[m].sum()
+        target_total = total_by_month.get(m, 0)
+        if col_total > 0 and target_total > 0:
+            result[m] = result[m] * (target_total / col_total)
+        result[m] = result[m].round(0)
+
     if months:
         result = result.sort_values(months[0], ascending=False).reset_index(drop=True)
     return result
