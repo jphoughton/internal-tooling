@@ -212,5 +212,6 @@ def run_waterfall_if_new_repeat_data(triggered_by='etl_sync'):
     results = {}
     results[MODEL_RETENTION] = run_retention_cohorts(triggered_by)
     results[MODEL_REPEAT_FORECAST] = run_repeat_forecast(triggered_by)
+    results[MODEL_SEASONALITY] = run_seasonality(triggered_by)
     results[MODEL_WATERFALL] = run_waterfall(triggered_by)
     return results
