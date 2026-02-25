@@ -158,6 +158,13 @@ def render(ctx):
                 get_flavor(row["sku"], row["product_name"]) for _, row in amz_df[["sku", "product_name"]].iterrows()
             ])
 
+            # Add Avg Monthly Sales column (3-month forecast / 3)
+            _amz_avg_mo_sales = []
+            for _, _r in amz_df.iterrows():
+                _fc3 = _amz_fc_map.get(_r["sku"], 0)
+                _amz_avg_mo_sales.append(round(_fc3 / 3) if _fc3 > 0 else None)
+            display_amz["Avg Mo. Sales"] = _amz_avg_mo_sales
+
             # Add Days of Supply column
             _amz_dos_vals = []
             for _, _r in amz_df.iterrows():
@@ -170,9 +177,10 @@ def render(ctx):
                 lambda x: f"{int(x)}d" if pd.notnull(x) and x is not None else "\u2014"
             )
 
-            # Reorder columns: put DoS after Total
-            _amz_col_order = ["SKU", "Flavor", "ASIN", "Fulfillable", "Reserved",
-                              "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total", "DoS"]
+            # Reorder columns: Avg Mo. Sales and DoS first after identifiers
+            _amz_col_order = ["SKU", "Flavor", "ASIN", "Avg Mo. Sales", "DoS",
+                              "Fulfillable", "Reserved",
+                              "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total"]
             display_amz = display_amz[[c for c in _amz_col_order if c in display_amz.columns]]
 
             def _color_dos_amz(val):
@@ -187,16 +195,17 @@ def render(ctx):
                         pass
                 return ''
 
-            for _ac in ["Fulfillable", "Reserved", "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total"]:
+            for _ac in ["Avg Mo. Sales", "Fulfillable", "Reserved", "Inbound Shipped", "Inbound Receiving", "Unfulfillable", "Total"]:
                 if _ac in display_amz.columns:
                     display_amz[_ac] = display_amz[_ac].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
             render_html_table(display_amz, max_height=min(len(display_amz) * 35 + 38, 700),
                               style_fn=_color_dos_amz, style_cols=["DoS"],
                               column_groups=[
                                   ('', ['SKU', 'Flavor', 'ASIN']),
+                                  ('Demand', ['Avg Mo. Sales', 'DoS']),
                                   ('Available', ['Fulfillable', 'Reserved']),
                                   ('Inbound', ['Inbound Shipped', 'Inbound Receiving']),
-                                  ('Summary', ['Unfulfillable', 'Total', 'DoS']),
+                                  ('Summary', ['Unfulfillable', 'Total']),
                               ])
 
             # Forecast vs Amazon Inventory comparison
