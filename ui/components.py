@@ -112,14 +112,15 @@ def render_html_table(df, max_height=None, style_fn=None, style_cols=None,
     st.markdown(
         f'<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
         f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
-        f'width:100%;{height_style}">'
+        f'width:100%;">'
         '<style>'
         '.html-table table { width:100%; border-collapse:collapse; }'
         '.html-table th, .html-table td { white-space:nowrap; }'
+        '.html-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
         '.html-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
         f'{grouped_css}'
         '</style>'
-        f'<div class="html-table{container_extra_class}" style="overflow-x:auto;"'
+        f'<div class="html-table{container_extra_class}" style="overflow-x:auto;{height_style}"'
         f'{table_id_attr}>{html}</div></div>',
         unsafe_allow_html=True,
     )
