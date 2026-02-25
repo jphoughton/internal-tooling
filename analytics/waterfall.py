@@ -295,6 +295,11 @@ def get_aov_and_units(source_filter=None):
             repeat_rev_per_unit        — revenue per unit for repeat customer orders
     """
     with get_db() as conn:
+        # Prevent disk-spill crashes on large hash joins: disable parallel
+        # workers and give the query enough memory to run in-process.
+        conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
+        conn.execute("SET LOCAL work_mem = '256MB'")
+
         source_clause = ""
         params = []
         if source_filter:
