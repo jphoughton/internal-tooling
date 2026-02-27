@@ -187,29 +187,24 @@ def get_revenue_retention_data(source_filter=None):
             params.append(source_filter)
         df = read_sql(query, conn, params=params)
 
-        # First-order-only revenue: revenue from orders where order_month == cohort_month
+        # First-order-only revenue: strictly the first order per customer
         first_order_query = f"""
             WITH {cohort_cte},
-            first_orders AS (
+            first_order_ids AS (
                 SELECT ec.customer_id,
                        ec.first_paid_date,
-                       o.order_id,
-                       o.total_amount
+                       MIN(o.order_id) AS first_order_id
                 FROM orders o
                 JOIN effective_cohort ec ON o.customer_id = ec.customer_id
                 WHERE o.total_amount > 0
-                  AND strftime('%Y-%m', o.order_date) = strftime('%Y-%m', ec.first_paid_date)
+                  AND o.order_date = ec.first_paid_date
                   {source_clause}
+                GROUP BY ec.customer_id, ec.first_paid_date
             )
-            SELECT strftime('%Y-%m', first_paid_date) AS cohort,
-                   SUM(total_amount) AS first_order_revenue
-            FROM (
-                SELECT customer_id, first_paid_date,
-                       MIN(order_id) AS first_order_id,
-                       total_amount
-                FROM first_orders
-                GROUP BY customer_id, first_paid_date, total_amount
-            )
+            SELECT strftime('%Y-%m', foi.first_paid_date) AS cohort,
+                   SUM(o.total_amount) AS first_order_revenue
+            FROM first_order_ids foi
+            JOIN orders o ON o.order_id = foi.first_order_id
             GROUP BY cohort ORDER BY cohort
         """
         fo_params = list(source_params)

@@ -524,8 +524,9 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
     )
     historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
 
-    # Exclude pre-2020 cohorts to match spreadsheet scope
-    historical_first_order_rev = historical_first_order_rev[historical_first_order_rev.index >= '2020-01']
+    # Include ALL historical cohorts (including pre-2020) for revenue projection.
+    # The retention curve is computed from 2020+ cohorts only, but we apply it
+    # to all past cohorts when projecting their repeat revenue contribution.
 
     # Organic baseline
     organic_per_month = _get_organic_baseline(historical_customers)
