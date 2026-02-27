@@ -220,9 +220,6 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         page_number += 1
 
         for order in orders:
-            if order.get("financial_status") in ("refunded", "voided"):
-                continue
-
             shopify_order_id = str(order["id"])
             order_date = order["created_at"][:10]
             total = float(order.get("total_price", 0))
@@ -281,8 +278,6 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                         time.sleep(_attempt + 1)
                         # Re-execute the page's upserts after rollback
                         for order in orders:
-                            if order.get("financial_status") in ("refunded", "voided"):
-                                continue
                             _replay_order(conn, order)
                     else:
                         raise

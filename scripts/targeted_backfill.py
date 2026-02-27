@@ -66,8 +66,6 @@ def _insert_batch(batch):
             with get_db() as conn:
                 conn.execute("SET statement_timeout = 120000")
                 for order in batch:
-                    if order.get("financial_status") in ("refunded", "voided"):
-                        continue
                     sid = str(order["id"])
                     od = order["created_at"][:10]
                     tot = float(order.get("total_price", 0))
@@ -115,7 +113,7 @@ def process_page(orders):
     return total
 
 
-def backfill_month(year, month):
+def backfill_month(year, month, min_missing=50):
     last_day = calendar.monthrange(year, month)[1]
     since = f"{year}-{month:02d}-01"
     until = f"{year}-{month:02d}-{last_day:02d}"
@@ -129,8 +127,8 @@ def backfill_month(year, month):
     log.info("%s  Shopify=%d  DB=%d  Missing=%d  (%.0f%%)",
              ms, sc, dc, missing, dc / sc * 100 if sc else 100)
 
-    if missing < 50:
-        log.info("  Small gap — skipping")
+    if missing < min_missing:
+        log.info("  Small gap (%d < %d) — skipping", missing, min_missing)
         return dc, sc
 
     url = f"{get_base_url()}/orders.json"
