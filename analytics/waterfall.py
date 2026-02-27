@@ -5,9 +5,8 @@ Splits forecast into repeat customer demand (base) + new customer demand (from m
 import pandas as pd
 import time
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
 from db import get_db
-from analytics.retention import get_customer_cohort_data
+from analytics.retention import get_customer_cohort_data, get_revenue_retention_data
 from utils.date_helpers import month_str as _month_str, parse_month as _parse_month, add_months as _add_months, month_diff as _month_diff
 
 # Simple TTL cache for expensive computations (survives within a Streamlit rerun cycle).
@@ -153,78 +152,49 @@ def _get_contaminated_cohort_rates(contaminated_cohorts, source_filter=None):
 
 def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weighted=True):
     """
-    Average the cohort retention matrix across clean cohorts to produce
-    a single retention curve: {month_offset: retention_rate}.
-    Month 0 is always 1.0 (the first-purchase month).
+    Build a revenue-based retention curve matching the spreadsheet methodology.
 
-    Auto-detects and excludes contaminated cohorts (pre-existing customers
-    misclassified as new due to data window truncation). Extrapolates
-    the curve beyond available data using the plateau rate from months 12+.
+    Retention is defined as incremental revenue per month as a fraction of
+    first-order revenue:
+        retention[N] = (CumulativeRevenue[N] - CumulativeRevenue[N-1]) / 1st_Order_Revenue
 
-    When recency_weighted=True, applies weighting:
-        Last 12 months = 60%, Next 12 = 30%, Rest = 10%
-    (matches the Repeat Model spreadsheet methodology).
+    Methodology (matches Dynamic_Cohort_Model_FINAL spreadsheet exactly):
+    - Only cohorts from 2020-01 onwards (spreadsheet starts Jan 2020)
+    - Weighted average across all cohorts that have data at each offset
+    - Weighting: Last 12 months = 60%, Next 12 = 30%, Rest = 10%
+    - No clipping or contamination filtering (spreadsheet includes all cohorts)
+    - Extrapolation beyond observed data: 0.98 decay, 0.50% floor
     """
-    matrix = _get_cached(
-        f"cohort_matrix_{source_filter}",
-        lambda: get_customer_cohort_data(source_filter=source_filter)
+    rev_data = _get_cached(
+        f"rev_retention_{source_filter}",
+        lambda: get_revenue_retention_data(source_filter=source_filter)
     )
+    matrix = rev_data['matrix']
     if matrix.empty:
-        return {}
+        return _get_customer_retention_curve(source_filter, min_cohorts, recency_weighted)
 
-    # Auto-detect and exclude contaminated cohorts
-    contaminated = _detect_contaminated_cohorts(matrix)
-    clean_cohorts = [c for c in sorted(matrix.index.tolist()) if c not in contaminated]
-    if len(clean_cohorts) < 3:
-        clean_cohorts = sorted(matrix.index.tolist())
-    matrix = matrix.loc[clean_cohorts]
+    # Only include cohorts from 2020-01 onwards (matching spreadsheet scope)
+    all_cohorts = sorted(matrix.index.tolist())
+    cohorts = [c for c in all_cohorts if c >= '2020-01']
+    if len(cohorts) < min_cohorts:
+        cohorts = all_cohorts  # Fall back to all if not enough post-2020
+    matrix = matrix.loc[cohorts]
 
-    # --- Recency weighting ---
-    # Assign each cohort a weight based on how recent it is.
-    # Last 12 months get 60% of total weight, next 12 get 30%, rest get 10%.
+    # --- Recency weighting (60/30/10) ---
     sorted_cohorts = sorted(matrix.index.tolist())
     n = len(sorted_cohorts)
+    weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
 
-    if recency_weighted and n >= 6:
-        # Split into three tiers by cohort position
-        tier1_start = max(0, n - 12)   # last 12 cohorts
-        tier2_start = max(0, n - 24)   # months 13-24
-
-        tier1_cohorts = sorted_cohorts[tier1_start:]
-        tier2_cohorts = sorted_cohorts[tier2_start:tier1_start]
-        tier3_cohorts = sorted_cohorts[:tier2_start]
-
-        # Assign per-cohort weights so tiers sum to 0.6, 0.3, 0.1
-        weights = {}
-        for c in tier1_cohorts:
-            weights[c] = 0.60 / len(tier1_cohorts) if tier1_cohorts else 0
-        for c in tier2_cohorts:
-            weights[c] = 0.30 / len(tier2_cohorts) if tier2_cohorts else 0
-        for c in tier3_cohorts:
-            weights[c] = 0.10 / len(tier3_cohorts) if tier3_cohorts else 0
-
-        # If a tier is empty, redistribute its weight
-        if not tier2_cohorts and not tier3_cohorts:
-            for c in tier1_cohorts:
-                weights[c] = 1.0 / len(tier1_cohorts)
-        elif not tier3_cohorts:
-            for c in tier1_cohorts:
-                weights[c] = 0.70 / len(tier1_cohorts)
-            for c in tier2_cohorts:
-                weights[c] = 0.30 / len(tier2_cohorts)
-    else:
-        # Equal weighting
-        weights = {c: 1.0 / n for c in sorted_cohorts} if n > 0 else {}
-
+    # Weighted average across cohorts for each month offset.
+    # Use ALL offsets where data exists (no cutoff — spreadsheet computes all).
     curve = {}
     for col in matrix.columns:
         offset = int(col)
         values = matrix[col].dropna()
-        if len(values) == 0:
+        if len(values) < min_cohorts:
             continue
 
         if recency_weighted and n >= 6:
-            # Weighted average
             w_sum = 0.0
             val_sum = 0.0
             for cohort in values.index:
@@ -234,41 +204,109 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
             if w_sum > 0:
                 curve[offset] = val_sum / w_sum
         else:
-            # Simple mean — use recent 24 cohorts when available
-            recent_cohorts_24 = sorted_cohorts[-24:] if n > 24 else sorted_cohorts
-            recent_values = values[values.index.isin(recent_cohorts_24)]
-            if len(recent_values) >= min_cohorts:
-                curve[offset] = float(recent_values.mean())
-            elif len(values) >= min_cohorts:
-                curve[offset] = float(values.mean())
-            elif len(values) > 0:
-                curve[offset] = float(values.mean())
+            curve[offset] = float(values.mean())
 
-    # Extrapolate beyond available data with a decaying curve.
-    # Compute decay rate from months 12+ (the long-tail plateau region).
-    max_offset = max((o for o in curve if o > 0), default=0)
-    late_offsets = sorted(o for o in curve if 12 <= o <= max_offset and curve[o] > 0)
+    # Extrapolate beyond observed data: 0.98 decay per month, floor 0.50%
+    curve = _extrapolate_curve(curve)
+    return curve
 
-    if len(late_offsets) >= 2:
-        first_o, first_r = late_offsets[0], curve[late_offsets[0]]
-        last_o, last_r = late_offsets[-1], curve[late_offsets[-1]]
-        span = last_o - first_o
-        if span > 0 and first_r > 0 and last_r > 0:
-            decay = (last_r / first_r) ** (1.0 / span)
-            decay = min(decay, 0.99)  # never grow
-        else:
-            decay = 0.98
+
+def _compute_recency_weights(sorted_cohorts, recency_weighted=True):
+    """Compute 60/30/10 recency weights for cohort list."""
+    n = len(sorted_cohorts)
+    if recency_weighted and n >= 6:
+        tier1_start = max(0, n - 12)
+        tier2_start = max(0, n - 24)
+        tier1_cohorts = sorted_cohorts[tier1_start:]
+        tier2_cohorts = sorted_cohorts[tier2_start:tier1_start]
+        tier3_cohorts = sorted_cohorts[:tier2_start]
+
+        weights = {}
+        for c in tier1_cohorts:
+            weights[c] = 0.60 / len(tier1_cohorts) if tier1_cohorts else 0
+        for c in tier2_cohorts:
+            weights[c] = 0.30 / len(tier2_cohorts) if tier2_cohorts else 0
+        for c in tier3_cohorts:
+            weights[c] = 0.10 / len(tier3_cohorts) if tier3_cohorts else 0
+
+        if not tier2_cohorts and not tier3_cohorts:
+            for c in tier1_cohorts:
+                weights[c] = 1.0 / len(tier1_cohorts)
+        elif not tier3_cohorts:
+            for c in tier1_cohorts:
+                weights[c] = 0.70 / len(tier1_cohorts)
+            for c in tier2_cohorts:
+                weights[c] = 0.30 / len(tier2_cohorts)
     else:
-        decay = 0.98  # default gentle decay
+        weights = {c: 1.0 / n for c in sorted_cohorts} if n > 0 else {}
+    return weights
+
+
+def _extrapolate_curve(curve):
+    """Extend retention curve beyond observed data.
+
+    Uses fixed 0.98 decay per month with 0.50% floor, matching
+    the spreadsheet's Decay Rate and Terminal Floor parameters.
+    """
+    if not curve:
+        return curve
+
+    max_offset = max((o for o in curve if o > 0), default=0)
+    decay = 0.98
+    floor = 0.005
 
     last_known = curve.get(max_offset, 0.05)
-    floor = 0.005  # 0.5% retention floor (matches Repeat Model terminal floor)
     for m in range(max_offset + 1, max_offset + 60):
         last_known *= decay
         last_known = max(last_known, floor)
         curve[m] = last_known
 
     return curve
+
+
+def _get_customer_retention_curve(source_filter=None, min_cohorts=3, recency_weighted=True):
+    """Fallback: customer-count based retention curve (original method)."""
+    matrix = _get_cached(
+        f"cohort_matrix_{source_filter}",
+        lambda: get_customer_cohort_data(source_filter=source_filter)
+    )
+    if matrix.empty:
+        return {}
+
+    contaminated = _detect_contaminated_cohorts(matrix)
+    clean_cohorts = [c for c in sorted(matrix.index.tolist()) if c not in contaminated]
+    if len(clean_cohorts) < 3:
+        clean_cohorts = sorted(matrix.index.tolist())
+    matrix = matrix.loc[clean_cohorts]
+
+    sorted_cohorts = sorted(matrix.index.tolist())
+    n = len(sorted_cohorts)
+    weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
+
+    curve = {}
+    for col in matrix.columns:
+        offset = int(col)
+        values = matrix[col].dropna()
+        if len(values) == 0:
+            continue
+        if recency_weighted and n >= 6:
+            w_sum = 0.0
+            val_sum = 0.0
+            for cohort in values.index:
+                w = weights.get(cohort, 0)
+                val_sum += values[cohort] * w
+                w_sum += w
+            if w_sum > 0:
+                curve[offset] = val_sum / w_sum
+        else:
+            recent_cohorts_24 = sorted_cohorts[-24:] if n > 24 else sorted_cohorts
+            recent_values = values[values.index.isin(recent_cohorts_24)]
+            if len(recent_values) >= min_cohorts:
+                curve[offset] = float(recent_values.mean())
+            elif len(values) > 0:
+                curve[offset] = float(values.mean())
+
+    return _extrapolate_curve(curve)
 
 
 def get_aov_and_units(source_filter=None):
@@ -437,28 +475,31 @@ def _get_organic_baseline(historical_customers, lookback_months=6):
 def build_waterfall(media_plan, source_filter=None, horizon_months=12,
                     seasonal_indices=None):
     """
-    Combine repeat + new customer demand into a single DataFrame.
+    Revenue-based waterfall forecast matching the spreadsheet methodology.
 
-    Uses separate units-per-customer for new vs repeat customers and
-    handles contaminated early cohorts (pre-existing customers) with
-    their own observed retention rates.
+    Uses revenue retention: each month's repeat revenue is projected as
+        1st_Order_Total * retention_curve[age] * seasonality[calendar_month]
+    instead of customer-count retention × units.
 
-    Three sources of demand:
+    Three sources of revenue:
     1. Repeat from historical cohorts (already acquired)
     2. Repeat from future cohorts (media-acquired + organic) that compound
-    3. New customer first-order demand (media + organic)
+    3. New customer first-order revenue (media + organic)
+
+    Still outputs units (for SKU allocation) by dividing revenue by
+    revenue-per-unit metrics, but the underlying model is revenue-first.
 
     Args:
         seasonal_indices: optional dict {month_num(1-12): multiplier}.
-            When provided, each month's units are scaled by the seasonal
-            factor for that calendar month.  E.g. {7: 1.12} means July
-            demand is 12% higher than the baseline.
+            Applied to repeat revenue only (not first-order), matching
+            the spreadsheet approach.
 
     Returns:
         DataFrame with columns:
-        [month, repeat_units, new_customer_units, total_units, new_customers_acquired]
+        [month, repeat_units, new_customer_units, total_units,
+         new_customers_acquired, repeat_revenue, new_customer_revenue, total_revenue]
     """
-    # Use TTL cache for expensive DB queries — these don't change when media spend changes
+    # Revenue-based retention curve
     cache_key = f"retention_{source_filter}"
     retention = _get_cached(cache_key, lambda: get_average_retention_curve(source_filter))
     if not retention:
@@ -466,87 +507,98 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
 
     metrics = _get_cached(f"metrics_{source_filter}", lambda: get_aov_and_units(source_filter))
     new_upc = metrics["units_per_new_customer"]
-    rep_upc = metrics["units_per_repeat_customer"]
-    # Use new-customer-specific AOV for converting spend→customers.
-    # The overall AOV includes repeat customers (who buy smaller orders),
-    # which would overcount new customers from media spend.
     new_customer_aov = metrics.get("new_customer_aov") or metrics["aov"] or 25.0
+    new_rev_per_unit = metrics.get("new_customer_rev_per_unit") or new_customer_aov
+    rep_rev_per_unit = metrics.get("repeat_rev_per_unit") or new_rev_per_unit
 
-    historical_customers = _get_cached(f"new_custs_{source_filter}", lambda: get_monthly_new_customers(source_filter))
-
-    # Detect contaminated cohorts and get their actual return rates
-    matrix = _get_cached(f"cohort_matrix_{source_filter}", lambda: get_customer_cohort_data(source_filter=source_filter))
-    contaminated = _detect_contaminated_cohorts(matrix) if not matrix.empty else set()
-    contaminated_rates = _get_cached(
-        f"contam_rates_{source_filter}_{tuple(sorted(contaminated))}",
-        lambda: _get_contaminated_cohort_rates(contaminated, source_filter)
+    # Historical cohort data: need both customer counts and first-order revenue
+    historical_customers = _get_cached(
+        f"new_custs_{source_filter}",
+        lambda: get_monthly_new_customers(source_filter)
     )
 
-    # Organic baseline (used only for months with no media spend)
+    # Get first-order revenue per cohort for the revenue-based projection
+    rev_data = _get_cached(
+        f"rev_retention_{source_filter}",
+        lambda: get_revenue_retention_data(source_filter=source_filter)
+    )
+    historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
+
+    # Exclude pre-2020 cohorts to match spreadsheet scope
+    historical_first_order_rev = historical_first_order_rev[historical_first_order_rev.index >= '2020-01']
+
+    # Organic baseline
     organic_per_month = _get_organic_baseline(historical_customers)
 
     now = datetime.utcnow()
     current_month = _month_str(now)
     future_months = [_add_months(current_month, i) for i in range(horizon_months)]
 
-    # Parse media plan: spend × ROAS = new customer revenue, then ÷ new customer AOV = customers
+    # Parse media plan: spend × ROAS = 1st order revenue for that cohort
+    media_first_order_rev = {}
     media_custs_by_month = {}
     for entry in media_plan:
         m = entry["month"]
         spend = entry.get("spend", 0)
         roas = entry.get("new_customer_roas") or entry.get("roas", 1.0)
         if spend > 0:
-            media_custs_by_month[m] = (spend * roas) / new_customer_aov
+            first_order_rev = spend * roas
+            media_first_order_rev[m] = first_order_rev
+            media_custs_by_month[m] = first_order_rev / new_customer_aov
 
-    # When media spend is present, it IS the new customer plan (includes organic).
-    # Only fall back to organic baseline for months with zero spend.
+    # Future new customers and their first-order revenue
     future_new_customers = {}
+    future_first_order_rev = {}
     for m in future_months:
         if m in media_custs_by_month:
             future_new_customers[m] = media_custs_by_month[m]
+            future_first_order_rev[m] = media_first_order_rev[m]
         else:
             future_new_customers[m] = organic_per_month
+            future_first_order_rev[m] = organic_per_month * new_customer_aov
 
     rows = []
     for offset, month in enumerate(future_months):
-        repeat_units = 0.0
+        repeat_revenue = 0.0
 
-        # 1) Historical cohorts
-        for cohort_month, cohort_size in historical_customers.items():
+        # 1) Historical cohorts: project repeat revenue using
+        #    1st_Order_Total * retention_curve[age] * seasonality
+        for cohort_month in historical_first_order_rev.index:
+            fo_rev = historical_first_order_rev.get(cohort_month, 0)
+            if fo_rev <= 0:
+                continue
             months_since = _month_diff(month, cohort_month)
             if months_since <= 0:
                 continue
-
-            if cohort_month in contaminated_rates:
-                # Contaminated cohort: use observed return rate
-                rate = contaminated_rates[cohort_month]
-            else:
-                rate = retention.get(months_since, 0)
-
-            repeat_units += cohort_size * rate * rep_upc
+            rate = retention.get(months_since, 0)
+            cohort_repeat_rev = fo_rev * rate
+            repeat_revenue += cohort_repeat_rev
 
         # 2) Future cohorts (acquired in earlier forecast months)
         for prev_offset in range(offset):
             prev_month = future_months[prev_offset]
-            new_custs = future_new_customers.get(prev_month, 0)
-            if new_custs <= 0:
+            fo_rev = future_first_order_rev.get(prev_month, 0)
+            if fo_rev <= 0:
                 continue
             months_since = _month_diff(month, prev_month)
             if months_since <= 0:
                 continue
             rate = retention.get(months_since, 0)
-            repeat_units += new_custs * rate * rep_upc
+            repeat_revenue += fo_rev * rate
 
-        # 3) New customer first-order demand
-        total_new_custs = future_new_customers.get(month, 0)
-        new_units = total_new_custs * new_upc
-
-        # 4) Apply seasonal adjustment (if enabled)
+        # 3) Apply seasonal adjustment to repeat revenue only (not first-order)
         if seasonal_indices:
             cal_month = _parse_month(month).month  # 1-12
             factor = seasonal_indices.get(cal_month, 1.0)
-            repeat_units *= factor
-            new_units *= factor
+            repeat_revenue *= factor
+
+        # 4) New customer first-order revenue (no seasonality applied, per spreadsheet)
+        total_new_custs = future_new_customers.get(month, 0)
+        new_revenue = future_first_order_rev.get(month, 0)
+
+        # Convert revenue to units for SKU allocation
+        repeat_units = repeat_revenue / rep_rev_per_unit if rep_rev_per_unit > 0 else 0
+        new_units = total_new_custs * new_upc
 
         rows.append({
             "month": month,
@@ -554,6 +606,9 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
             "new_customer_units": round(new_units, 0),
             "total_units": round(repeat_units + new_units, 0),
             "new_customers_acquired": round(total_new_custs, 0),
+            "repeat_revenue": round(repeat_revenue, 2),
+            "new_customer_revenue": round(new_revenue, 2),
+            "total_revenue": round(repeat_revenue + new_revenue, 2),
         })
 
     return pd.DataFrame(rows)

@@ -118,7 +118,7 @@ def render(ctx):
                     _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
                     _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
                 import json as _json_mkt
-                _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), None, _mkt_horizon, _seasonal_json_mkt)
+                _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), 'shopify', _mkt_horizon, _seasonal_json_mkt)
                 if _mkt_wf is not None and not _mkt_wf.empty:
                     _mkt_sku_table = _cached_sku_forecast(
                         _mkt_wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json_mkt,

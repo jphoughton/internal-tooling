@@ -2,6 +2,7 @@
 Shopify Admin API integration.
 Fetches orders and line items, normalizes to common schema.
 """
+import logging
 import requests
 import time
 from etl.retry import with_retry
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta
 import config as cfg
 from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
 from etl.customer_id import generate_customer_id
+
+logger = logging.getLogger(__name__)
 
 
 def get_base_url():
@@ -128,6 +131,38 @@ def _get_orders_page(url, headers, params):
     return requests.get(url, headers=headers, params=params, timeout=30)
 
 
+def _replay_order(conn, order):
+    """Re-execute upserts for a single order (used after deadlock rollback)."""
+    shopify_order_id = str(order["id"])
+    order_date = order["created_at"][:10]
+    total = float(order.get("total_price", 0))
+    currency = order.get("currency", "USD")
+    customer_data = order.get("customer")
+    customer_id = generate_customer_id(customer_data)
+    customer_email = customer_data.get("email") if customer_data else None
+    customer_first_date = (
+        customer_data.get("created_at", "")[:10] if customer_data else None
+    ) or order_date
+    if customer_id:
+        upsert_customer(conn, customer_id, customer_email, "shopify", customer_first_date)
+    order_id = f"shp-{shopify_order_id}"
+    upsert_order(conn, order_id, "shopify", shopify_order_id,
+                 customer_id, order_date, total, currency)
+    for item in order.get("line_items", []):
+        sku = str(item.get("sku") or item.get("variant_id") or "UNKNOWN")
+        product_name = item.get("title", "")
+        variant_title = item.get("variant_title", "")
+        if variant_title:
+            product_name = f"{product_name} - {variant_title}"
+        quantity = int(item.get("quantity", 1))
+        gross_price = float(item.get("price", 0))
+        line_discount = sum(float(d.get("amount", 0)) for d in item.get("discount_allocations", []))
+        net_total = (quantity * gross_price) - line_discount
+        unit_price = net_total / quantity if quantity else gross_price
+        upsert_order_item(conn, order_id, sku, product_name, quantity, unit_price)
+        upsert_sku(conn, sku, product_name, None, order_date, "shopify")
+
+
 def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
                  commit_per_page=False):
     """
@@ -235,7 +270,22 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             order_count += 1
 
         if commit_per_page:
-            conn.commit()
+            for _attempt in range(5):
+                try:
+                    conn.commit()
+                    break
+                except Exception as e:
+                    if 'deadlock' in str(e).lower() and _attempt < 4:
+                        logger.warning('Deadlock on commit (attempt %d), retrying in %ds...', _attempt + 1, _attempt + 1)
+                        conn.rollback()
+                        time.sleep(_attempt + 1)
+                        # Re-execute the page's upserts after rollback
+                        for order in orders:
+                            if order.get("financial_status") in ("refunded", "voided"):
+                                continue
+                            _replay_order(conn, order)
+                    else:
+                        raise
 
         if on_progress:
             on_progress(order_count, page_number)

@@ -84,7 +84,7 @@ def render_pacing(ctx):
             _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
             _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
         import json as _json_pac
-        _wf = _cached_waterfall(_json_pac.dumps(_mkt_media, sort_keys=True), None, 12, _seasonal_json)
+        _wf = _cached_waterfall(_json_pac.dumps(_mkt_media, sort_keys=True), 'shopify', 12, _seasonal_json)
         if _wf is not None and not _wf.empty:
             _sku_table = _cached_sku_forecast(
                 _wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json,

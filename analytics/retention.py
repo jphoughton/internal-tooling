@@ -14,31 +14,61 @@ from db import get_db, read_sql
 def get_customer_cohort_data(sku_filter=None, source_filter=None):
     """
     Build customer repurchase cohort matrix.
-    Groups customers by their first-purchase month, then tracks what %
+    Groups customers by their first *paid* purchase month, then tracks what %
     made another purchase in months 1, 2, 3... 12 after.
+
+    Uses the same paid-order cohort definition as ``build_cohort_matrices``.
 
     Returns:
         DataFrame with index=cohort month, columns=months since first purchase,
         values=retention rate (0-1).
     """
     with get_db() as conn:
-        query = """
-            SELECT
-                o.customer_id,
-                DATE(o.order_date) as order_date,
-                c.first_order_date
-            FROM orders o
-            JOIN customers c ON o.customer_id = c.customer_id
-            JOIN order_items oi ON o.order_id = oi.order_id
-            WHERE 1=1
-        """
-        params = []
-        if sku_filter:
-            query += " AND oi.sku = ?"
-            params.append(sku_filter)
+        source_clause = ''
+        source_params = []
         if source_filter:
-            query += " AND o.source = ?"
-            params.append(source_filter)
+            source_clause = ' AND o.source = ?'
+            source_params.append(source_filter)
+
+        cohort_cte = f"""
+            effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY o.customer_id
+            )
+        """
+
+        if sku_filter:
+            query = f"""
+                WITH {cohort_cte}
+                SELECT o.customer_id,
+                       DATE(o.order_date) AS order_date,
+                       ec.first_paid_date AS first_order_date
+                FROM orders o
+                JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+                JOIN order_items oi ON o.order_id = oi.order_id
+                WHERE o.total_amount > 0 AND oi.sku = ?
+            """
+            params = list(source_params) + [sku_filter]
+            if source_filter:
+                query += ' AND o.source = ?'
+                params.append(source_filter)
+        else:
+            query = f"""
+                WITH {cohort_cte}
+                SELECT o.customer_id,
+                       DATE(o.order_date) AS order_date,
+                       ec.first_paid_date AS first_order_date
+                FROM orders o
+                JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+                WHERE o.total_amount > 0
+            """
+            params = list(source_params)
+            if source_filter:
+                query += ' AND o.source = ?'
+                params.append(source_filter)
 
         df = read_sql(query, conn, params=params)
 
@@ -81,74 +111,283 @@ def get_customer_cohort_data(sku_filter=None, source_filter=None):
 
 
 def get_cohort_sizes(source_filter=None):
-    """Get the size of each monthly cohort."""
+    """Get the size of each monthly cohort (paid orders only)."""
     with get_db() as conn:
-        query = """
-            SELECT
-                strftime('%Y-%m', first_order_date) as cohort,
-                COUNT(*) as cohort_size
-            FROM customers
-            WHERE 1=1
-        """
+        source_clause = ''
         params = []
         if source_filter:
-            query += " AND source = ?"
+            source_clause = ' AND o.source = ?'
             params.append(source_filter)
-        query += " GROUP BY strftime('%Y-%m', first_order_date) ORDER BY cohort"
+        query = f"""
+            WITH effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY o.customer_id
+            )
+            SELECT strftime('%Y-%m', first_paid_date) AS cohort,
+                   COUNT(*) AS cohort_size
+            FROM effective_cohort
+            GROUP BY cohort ORDER BY cohort
+        """
         df = read_sql(query, conn, params=params)
     return df
 
 
-@st.cache_data(ttl=300)
-def build_cohort_matrices(sku_filter=None, source_filter=None):
-    """Build revenue and customer-count matrices for TW-style cohort analysis.
+def get_revenue_retention_data(source_filter=None):
+    """
+    Build revenue-based retention matrix matching the spreadsheet methodology.
 
-    Returns dict with:
-        revenue:      DataFrame (cohort x month_offset) — total revenue
-        customers:    DataFrame (cohort x month_offset) — unique customer count
-        cohort_sizes: Series (cohort -> total customers)
+    For each cohort, computes:
+        retention[N] = (CumulativeRevenue[N] - CumulativeRevenue[N-1]) / 1st_Order_Revenue
+
+    This measures incremental revenue in month N as a fraction of first-order
+    dollars — NOT customer count retention.
+
+    Returns:
+        dict with:
+            matrix: DataFrame (cohort x month_offset) — incremental revenue retention rates
+            first_order_revenue: Series (cohort -> 1st order revenue)
+            cohort_sizes: Series (cohort -> number of customers)
     """
     with get_db() as conn:
-        query = """
-            SELECT
-                o.customer_id,
-                strftime('%Y-%m', c.first_order_date) as cohort,
-                strftime('%Y-%m', o.order_date) as order_month,
-                SUM(oi.total_price) as revenue
-            FROM orders o
-            JOIN customers c ON o.customer_id = c.customer_id
-            JOIN order_items oi ON o.order_id = oi.order_id
-            WHERE 1=1
-        """
-        params = []
-        if sku_filter:
-            query += ' AND oi.sku = ?'
-            params.append(sku_filter)
+        source_clause = ''
+        source_params = []
         if source_filter:
-            query += ' AND o.source = ?'
+            source_clause = ' AND o.source = ?'
+            source_params.append(source_filter)
+
+        # Effective cohort: first paid order per customer
+        cohort_cte = f"""
+            effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY o.customer_id
+            )
+        """
+
+        # Get cumulative revenue per (cohort, month_offset)
+        query = f"""
+            WITH {cohort_cte}
+            SELECT
+                strftime('%Y-%m', ec.first_paid_date) AS cohort,
+                strftime('%Y-%m', o.order_date) AS order_month,
+                SUM(o.total_amount) AS revenue
+            FROM orders o
+            JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+            WHERE o.total_amount > 0 {source_clause}
+            GROUP BY cohort, order_month
+            ORDER BY cohort, order_month
+        """
+        params = list(source_params)
+        if source_filter:
             params.append(source_filter)
-        query += ' GROUP BY o.customer_id, cohort, order_month'
         df = read_sql(query, conn, params=params)
 
-        # Cohort sizes from customers table (all customers, not just those with
-        # orders matching the sku/source filter — matches TW's definition)
-        size_query = """
-            SELECT strftime('%Y-%m', first_order_date) as cohort,
-                   COUNT(*) as cohort_size
-            FROM customers
-            WHERE 1=1
+        # First-order-only revenue: revenue from orders where order_month == cohort_month
+        first_order_query = f"""
+            WITH {cohort_cte},
+            first_orders AS (
+                SELECT ec.customer_id,
+                       ec.first_paid_date,
+                       o.order_id,
+                       o.total_amount
+                FROM orders o
+                JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+                WHERE o.total_amount > 0
+                  AND strftime('%Y-%m', o.order_date) = strftime('%Y-%m', ec.first_paid_date)
+                  {source_clause}
+            )
+            SELECT strftime('%Y-%m', first_paid_date) AS cohort,
+                   SUM(total_amount) AS first_order_revenue
+            FROM (
+                SELECT customer_id, first_paid_date,
+                       MIN(order_id) AS first_order_id,
+                       total_amount
+                FROM first_orders
+                GROUP BY customer_id, first_paid_date, total_amount
+            )
+            GROUP BY cohort ORDER BY cohort
         """
-        size_params = []
+        fo_params = list(source_params)
         if source_filter:
-            size_query += ' AND source = ?'
-            size_params.append(source_filter)
-        size_query += ' GROUP BY cohort ORDER BY cohort'
-        sizes_df = read_sql(size_query, conn, params=size_params)
+            fo_params.append(source_filter)
+        fo_df = read_sql(first_order_query, conn, params=fo_params)
+
+        # Cohort sizes
+        size_query = f"""
+            WITH {cohort_cte}
+            SELECT strftime('%Y-%m', first_paid_date) AS cohort,
+                   COUNT(*) AS cohort_size
+            FROM effective_cohort
+            GROUP BY cohort ORDER BY cohort
+        """
+        sizes_df = read_sql(size_query, conn, params=list(source_params))
+
+    if df.empty:
+        return {'matrix': pd.DataFrame(), 'first_order_revenue': pd.Series(dtype=float),
+                'cohort_sizes': pd.Series(dtype=float)}
+
+    # Compute month offsets
+    df['cohort_dt'] = pd.to_datetime(df['cohort'] + '-01')
+    df['order_dt'] = pd.to_datetime(df['order_month'] + '-01')
+    df['month_offset'] = (
+        (df['order_dt'].dt.year - df['cohort_dt'].dt.year) * 12
+        + df['order_dt'].dt.month - df['cohort_dt'].dt.month
+    )
+    df['revenue'] = df['revenue'].astype(float)
+
+    # Pivot to cumulative revenue matrix: cohort × month_offset
+    rev_matrix = df.pivot_table(
+        index='cohort', columns='month_offset', values='revenue', aggfunc='sum'
+    )
+    rev_matrix.columns = rev_matrix.columns.astype(int)
+    rev_matrix = rev_matrix[sorted(rev_matrix.columns)]
+
+    # Make it cumulative across month offsets
+    cum_matrix = rev_matrix.cumsum(axis=1)
+
+    # First order revenue series
+    first_order_rev = pd.Series(
+        fo_df['first_order_revenue'].astype(float).values,
+        index=fo_df['cohort'].values,
+    )
+
+    # Cohort sizes series
+    cohort_sizes = pd.Series(
+        sizes_df['cohort_size'].astype(float).values,
+        index=sizes_df['cohort'].values,
+    )
+
+    # Convert cumulative revenue to incremental retention rates:
+    # retention[N] = (Cum[N] - Cum[N-1]) / 1st_Order_Revenue
+    # For M0: retention[0] = (Cum[0] - 1st_Order_Rev) / 1st_Order_Rev
+    #   (same-month repeat above the first order)
+    retention_matrix = pd.DataFrame(index=cum_matrix.index, columns=cum_matrix.columns, dtype=float)
+
+    for cohort in cum_matrix.index:
+        fo_rev = first_order_rev.get(cohort, 0)
+        if fo_rev <= 0:
+            continue
+        for col in cum_matrix.columns:
+            cum_val = cum_matrix.loc[cohort, col]
+            if pd.isna(cum_val):
+                continue
+            if col == 0:
+                # M0 = (total month-0 revenue - 1st order revenue) / 1st order revenue
+                retention_matrix.loc[cohort, col] = (cum_val - fo_rev) / fo_rev
+            else:
+                prev_col = col - 1
+                prev_val = cum_matrix.loc[cohort, prev_col] if prev_col in cum_matrix.columns else 0
+                if pd.isna(prev_val):
+                    prev_val = 0
+                retention_matrix.loc[cohort, col] = (cum_val - prev_val) / fo_rev
+
+    return {
+        'matrix': retention_matrix,
+        'first_order_revenue': first_order_rev,
+        'cohort_sizes': cohort_sizes,
+    }
+
+
+@st.cache_data(ttl=300)
+def build_cohort_matrices(sku_filter=None, source_filter=None):
+    """Build revenue, order-count, and customer-count matrices for TW-style
+    cohort analysis.
+
+    Cohort assignment uses each customer's first *paid* order (total_amount > 0)
+    so that $0 orders (cancelled, test, subscription activations) don't inflate
+    cohort sizes.  Revenue comes from ``orders.total_amount`` (order-level total
+    including shipping/taxes) to match Triple Whale's methodology, except when
+    a SKU filter is applied — in that case line-item revenue is used since
+    order-level totals can't be attributed to a single SKU.
+
+    Returns dict with:
+        revenue:            DataFrame (cohort x month_offset) — total revenue
+        orders:             DataFrame (cohort x month_offset) — distinct order count
+        customers:          DataFrame (cohort x month_offset) — unique customer count
+        cohort_sizes:       Series   (cohort -> total customers)
+        first_order_revenue: Series  (cohort -> revenue from first order only)
+    """
+    with get_db() as conn:
+        # -- Effective cohort assignment: first paid order per customer ------
+        cohort_cte = """
+            effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0
+        """
+        cohort_params = []
+        if source_filter:
+            cohort_cte += ' AND o.source = ?'
+            cohort_params.append(source_filter)
+        cohort_cte += ' GROUP BY o.customer_id)'
+
+        if sku_filter:
+            # SKU filter: join order_items, use line-item revenue
+            query = f"""
+                WITH {cohort_cte}
+                SELECT
+                    o.customer_id,
+                    o.order_id,
+                    strftime('%Y-%m', ec.first_paid_date) AS cohort,
+                    strftime('%Y-%m', o.order_date) AS order_month,
+                    SUM(oi.total_price) AS revenue
+                FROM orders o
+                JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+                JOIN order_items oi ON o.order_id = oi.order_id
+                WHERE o.total_amount > 0
+                  AND oi.sku = ?
+            """
+            params = list(cohort_params) + [sku_filter]
+            if source_filter:
+                query += ' AND o.source = ?'
+                params.append(source_filter)
+            query += ' GROUP BY o.customer_id, o.order_id, cohort, order_month'
+        else:
+            # No SKU filter: use order-level total_amount (no order_items join)
+            query = f"""
+                WITH {cohort_cte}
+                SELECT
+                    o.customer_id,
+                    o.order_id,
+                    strftime('%Y-%m', ec.first_paid_date) AS cohort,
+                    strftime('%Y-%m', o.order_date) AS order_month,
+                    o.total_amount AS revenue
+                FROM orders o
+                JOIN effective_cohort ec ON o.customer_id = ec.customer_id
+                WHERE o.total_amount > 0
+            """
+            params = list(cohort_params)
+            if source_filter:
+                query += ' AND o.source = ?'
+                params.append(source_filter)
+
+        df = read_sql(query, conn, params=params)
+
+        # -- Cohort sizes: customers with at least one paid order -----------
+        size_query = f"""
+            WITH {cohort_cte}
+            SELECT strftime('%Y-%m', ec.first_paid_date) AS cohort,
+                   COUNT(*) AS cohort_size
+            FROM effective_cohort ec
+            GROUP BY cohort ORDER BY cohort
+        """
+        sizes_df = read_sql(size_query, conn, params=list(cohort_params))
 
     if df.empty:
         empty = pd.DataFrame()
-        return {'revenue': empty, 'customers': empty,
-                'cohort_sizes': pd.Series(dtype=float)}
+        return {
+            'revenue': empty, 'orders': empty, 'customers': empty,
+            'cohort_sizes': pd.Series(dtype=float),
+            'first_order_revenue': pd.Series(dtype=float),
+        }
+
+    df['revenue'] = df['revenue'].astype(float)
 
     # Compute month offsets
     df['cohort_period'] = pd.to_datetime(df['cohort'] + '-01')
@@ -160,14 +399,20 @@ def build_cohort_matrices(sku_filter=None, source_filter=None):
 
     # Revenue matrix: sum revenue per (cohort, month_offset)
     rev_agg = df.groupby(['cohort', 'months_since'])['revenue'].sum()
-    revenue_matrix = rev_agg.unstack(fill_value=np.nan)
-    # Re-introduce NaN for months that weren't observed (unstack fill_value
-    # only fills where the multi-index key existed)
     revenue_matrix = rev_agg.unstack()
+
+    # Order-count matrix: distinct orders per (cohort, month_offset)
+    order_agg = df.groupby(['cohort', 'months_since'])['order_id'].nunique()
+    order_matrix = order_agg.unstack()
 
     # Customer matrix: unique customers per (cohort, month_offset)
     cust_agg = df.groupby(['cohort', 'months_since'])['customer_id'].nunique()
     customer_matrix = cust_agg.unstack()
+
+    # First-order-only revenue per cohort
+    first_order_idx = df.groupby('customer_id')['order_period'].idxmin()
+    first_orders = df.loc[first_order_idx]
+    first_order_revenue = first_orders.groupby('cohort')['revenue'].sum()
 
     # Cohort sizes as a Series indexed by cohort string
     cohort_sizes = pd.Series(
@@ -179,75 +424,84 @@ def build_cohort_matrices(sku_filter=None, source_filter=None):
     # Ensure matrices have the same index as cohort_sizes (fill missing cohorts)
     all_cohorts = sorted(set(cohort_sizes.index) | set(revenue_matrix.index))
     revenue_matrix = revenue_matrix.reindex(all_cohorts)
+    order_matrix = order_matrix.reindex(all_cohorts)
     customer_matrix = customer_matrix.reindex(all_cohorts)
     cohort_sizes = cohort_sizes.reindex(all_cohorts)
+    first_order_revenue = first_order_revenue.reindex(all_cohorts)
 
     # Ensure integer column headers sorted
-    revenue_matrix.columns = revenue_matrix.columns.astype(int)
-    customer_matrix.columns = customer_matrix.columns.astype(int)
+    for m in (revenue_matrix, order_matrix, customer_matrix):
+        m.columns = m.columns.astype(int)
     revenue_matrix = revenue_matrix[sorted(revenue_matrix.columns)]
+    order_matrix = order_matrix[sorted(order_matrix.columns)]
     customer_matrix = customer_matrix[sorted(customer_matrix.columns)]
 
     return {
         'revenue': revenue_matrix,
+        'orders': order_matrix,
         'customers': customer_matrix,
         'cohort_sizes': cohort_sizes,
+        'first_order_revenue': first_order_revenue,
     }
 
 
 @st.cache_data(ttl=300)
-def get_cohort_summary(sku_filter=None, source_filter=None):
-    """Compute per-cohort summary metrics: customers, NCPA, AOV, 1st order %.
+def get_cohort_summary(source_filter=None):
+    """Compute per-cohort summary metrics: customers, NCPA, RPR.
 
-    Returns DataFrame with columns: cohort, customers, ncpa, aov, first_order_pct.
+    Uses the same paid-order cohort definition as ``build_cohort_matrices``.
+
+    Returns DataFrame with columns: cohort, customers, ncpa, rpr.
     """
     with get_db() as conn:
-        # Cohort sizes
-        size_query = """
-            SELECT strftime('%Y-%m', first_order_date) as cohort,
-                   COUNT(*) as customers
-            FROM customers WHERE 1=1
-        """
-        size_params = []
+        # Effective cohort: first paid order
+        source_clause = ''
+        source_params = []
         if source_filter:
-            size_query += ' AND source = ?'
-            size_params.append(source_filter)
-        size_query += ' GROUP BY cohort ORDER BY cohort'
-        sizes = read_sql(size_query, conn, params=size_params)
+            source_clause = ' AND o.source = ?'
+            source_params.append(source_filter)
 
-        # First-month AOV: revenue and order count for orders in the cohort's first month
-        aov_query = """
-            SELECT
-                strftime('%Y-%m', c.first_order_date) as cohort,
-                SUM(oi.total_price) as first_month_revenue,
-                COUNT(DISTINCT o.order_id) as first_month_orders
-            FROM orders o
-            JOIN customers c ON o.customer_id = c.customer_id
-            JOIN order_items oi ON o.order_id = oi.order_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
+        # Cohort sizes from paid orders
+        size_query = f"""
+            WITH effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY o.customer_id
+            )
+            SELECT strftime('%Y-%m', first_paid_date) AS cohort,
+                   COUNT(*) AS customers
+            FROM effective_cohort
+            GROUP BY cohort ORDER BY cohort
         """
-        aov_params = []
-        if sku_filter:
-            aov_query += ' AND oi.sku = ?'
-            aov_params.append(sku_filter)
-        if source_filter:
-            aov_query += ' AND o.source = ?'
-            aov_params.append(source_filter)
-        aov_query += ' GROUP BY cohort'
-        aov_df = read_sql(aov_query, conn, params=aov_params)
+        sizes = read_sql(size_query, conn, params=list(source_params))
 
-        # Total ordering customers per month (for 1st order %)
-        total_cust_query = """
-            SELECT strftime('%Y-%m', o.order_date) as month,
-                   COUNT(DISTINCT o.customer_id) as total_customers
-            FROM orders o WHERE 1=1
+        # RPR: repeat purchase rate (% of cohort with 2+ distinct paid orders)
+        rpr_query = f"""
+            WITH effective_cohort AS (
+                SELECT o.customer_id,
+                       MIN(o.order_date) AS first_paid_date
+                FROM orders o
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY o.customer_id
+            ),
+            order_counts AS (
+                SELECT ec.customer_id,
+                       strftime('%Y-%m', ec.first_paid_date) AS cohort,
+                       COUNT(DISTINCT o.order_id) AS order_count
+                FROM effective_cohort ec
+                JOIN orders o ON ec.customer_id = o.customer_id
+                WHERE o.total_amount > 0 {source_clause}
+                GROUP BY ec.customer_id, cohort
+            )
+            SELECT cohort,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN order_count >= 2 THEN 1 ELSE 0 END) AS repeaters
+            FROM order_counts
+            GROUP BY cohort ORDER BY cohort
         """
-        tc_params = []
-        if source_filter:
-            total_cust_query += ' AND o.source = ?'
-            tc_params.append(source_filter)
-        total_cust_query += ' GROUP BY month'
-        total_cust = read_sql(total_cust_query, conn, params=tc_params)
+        rpr_df = read_sql(rpr_query, conn, params=list(source_params) + list(source_params))
 
         # Media spend for NCPA
         try:
@@ -257,25 +511,19 @@ def get_cohort_summary(sku_filter=None, source_filter=None):
             media = []
 
     if sizes.empty:
-        return pd.DataFrame(columns=['cohort', 'customers', 'ncpa', 'aov', 'first_order_pct'])
+        return pd.DataFrame(columns=['cohort', 'customers', 'ncpa', 'rpr'])
 
     result = sizes.copy()
 
-    # AOV
-    if not aov_df.empty:
-        aov_map = dict(zip(aov_df['cohort'], aov_df['first_month_revenue'] / aov_df['first_month_orders']))
-        result['aov'] = result['cohort'].map(aov_map)
+    # RPR
+    if not rpr_df.empty:
+        rpr_map = dict(zip(
+            rpr_df['cohort'],
+            rpr_df['repeaters'].astype(float) / rpr_df['total'].astype(float),
+        ))
+        result['rpr'] = result['cohort'].map(rpr_map).fillna(0)
     else:
-        result['aov'] = np.nan
-
-    # 1st order %: new customers / total ordering customers that month
-    if not total_cust.empty:
-        tc_map = dict(zip(total_cust['month'], total_cust['total_customers']))
-        result['first_order_pct'] = result.apply(
-            lambda r: r['customers'] / tc_map.get(r['cohort'], 1) * 100, axis=1
-        )
-    else:
-        result['first_order_pct'] = np.nan
+        result['rpr'] = 0.0
 
     # NCPA: media spend / new customers
     if media:
@@ -289,7 +537,7 @@ def get_cohort_summary(sku_filter=None, source_filter=None):
     else:
         result['ncpa'] = np.nan
 
-    return result[['cohort', 'customers', 'ncpa', 'aov', 'first_order_pct']]
+    return result[['cohort', 'customers', 'ncpa', 'rpr']]
 
 
 @st.cache_data(ttl=300)

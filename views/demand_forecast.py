@@ -201,9 +201,9 @@ def render(ctx):
     with st.spinner('Computing demand forecast...'):
         _seasonal_json = _load_seasonal_json()
         _sku_seasonal_json = _load_sku_seasonal_json()
-        waterfall_df = _cached_waterfall(media_plan_json, None, horizon, _seasonal_json)
+        waterfall_df = _cached_waterfall(media_plan_json, 'shopify', horizon, _seasonal_json)
         shopify_sku_table = _cached_sku_forecast(
-            waterfall_df.to_json(), None, _sku_seasonal_json, _seasonal_json,
+            waterfall_df.to_json(), 'shopify', _sku_seasonal_json, _seasonal_json,
         ) if not waterfall_df.empty else pd.DataFrame()
 
         # Master DTC forecast
