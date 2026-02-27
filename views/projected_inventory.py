@@ -117,9 +117,9 @@ def render(ctx):
             pi_amz_dict = {r['month']: r['revenue'] for r in pi_amz_rev if r.get('revenue', 0) > 0} if pi_amz_rev else None
 
             pi_media_json = _json_pi.dumps(pi_spend, sort_keys=True)
-            pi_wf = _cached_waterfall(pi_media_json, None, 12, _load_seasonal_json())
+            pi_wf = _cached_waterfall(pi_media_json, 'shopify', 12, _load_seasonal_json())
             pi_sku_fc = _cached_sku_forecast(
-                pi_wf.to_json(), None, _load_sku_seasonal_json(), _load_seasonal_json(),
+                pi_wf.to_json(), 'shopify', _load_sku_seasonal_json(), _load_seasonal_json(),
             ) if not pi_wf.empty else pd.DataFrame()
 
             _bv_pi = ctx.get('biz_vars', {})

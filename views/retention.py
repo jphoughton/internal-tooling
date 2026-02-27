@@ -413,7 +413,7 @@ def render(ctx):
                 _seasonal_json = _load_seasonal_json() if _load_seasonal_json else None
 
             _media_plan_json = _json.dumps(_media_plan_raw, sort_keys=True)
-            _wf = _cached_waterfall(_media_plan_json, None, 12, _seasonal_json)
+            _wf = _cached_waterfall(_media_plan_json, 'shopify', 12, _seasonal_json)
             _metrics = _cached_aov(None)
 
             if not _wf.empty and _metrics:

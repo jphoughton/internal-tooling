@@ -197,17 +197,27 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
         clean_cohorts = sorted(matrix.index.tolist())
     matrix = matrix.loc[clean_cohorts]
 
+    # Clip extreme per-cohort retention values before averaging.
+    # A single month returning >50% of first-order revenue is an artifact.
+    MAX_RETENTION_PER_MONTH = 0.50
+    matrix = matrix.clip(upper=MAX_RETENTION_PER_MONTH)
+
     # --- Recency weighting (60/30/10) ---
     sorted_cohorts = sorted(matrix.index.tolist())
     n = len(sorted_cohorts)
     weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
 
-    # Weighted average across cohorts for each month offset
+    # Weighted average across cohorts for each month offset.
+    # Only trust offsets where enough recent cohorts contribute data.
+    # Beyond ~M36, only old (noisy) cohorts have data — use extrapolation.
+    MAX_DATA_OFFSET = 36
     curve = {}
     for col in matrix.columns:
         offset = int(col)
+        if offset > MAX_DATA_OFFSET:
+            continue  # Will be filled by extrapolation
         values = matrix[col].dropna()
-        if len(values) == 0:
+        if len(values) < min_cohorts:
             continue
 
         if recency_weighted and n >= 6:
@@ -227,7 +237,7 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
             elif len(values) > 0:
                 curve[offset] = float(values.mean())
 
-    # Extrapolate beyond available data
+    # Extrapolate beyond MAX_DATA_OFFSET using geometric decay
     curve = _extrapolate_curve(curve)
     return curve
 
