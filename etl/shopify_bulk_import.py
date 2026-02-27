@@ -109,11 +109,6 @@ def download_and_import(url, on_progress=None):
 
     with get_db() as conn:
         for order_gid, order in orders.items():
-            financial_status = (order.get("displayFinancialStatus") or "").upper()
-            if financial_status in ("REFUNDED", "VOIDED"):
-                skipped += 1
-                continue
-
             order_date = order["createdAt"][:10]
             money = order.get("totalPriceSet", {}).get("shopMoney", {})
             total = float(money.get("amount", 0))
@@ -147,10 +142,6 @@ def download_and_import(url, on_progress=None):
             if not order:
                 continue
 
-            financial_status = (order.get("displayFinancialStatus") or "").upper()
-            if financial_status in ("REFUNDED", "VOIDED"):
-                continue
-
             order_date = order["createdAt"][:10]
             shopify_order_id = parent_gid.split("/")[-1]
             order_id = f"shp-{shopify_order_id}"
@@ -170,7 +161,7 @@ def download_and_import(url, on_progress=None):
             upsert_sku(conn, sku, product_name, None, order_date, "shopify")
 
         conn.commit()
-        logger.info('Imported %d orders, skipped %d refunded/voided', imported, skipped)
+        logger.info('Imported %d orders', imported)
 
         # Rebuild daily sales aggregates
         logger.info('Rebuilding daily sales aggregates...')

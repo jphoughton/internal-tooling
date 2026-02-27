@@ -90,9 +90,6 @@ def backfill(since_date='2018-01-01', until_date=None):
                 with get_db() as conn:
                     conn.execute('SET statement_timeout = 300000')
                     for order in orders:
-                        if order.get("financial_status") in ("refunded", "voided"):
-                            continue
-
                         shopify_order_id = str(order["id"])
                         order_date = order["created_at"][:10]
                         total = float(order.get("total_price", 0))
