@@ -158,12 +158,12 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
     first-order revenue:
         retention[N] = (CumulativeRevenue[N] - CumulativeRevenue[N-1]) / 1st_Order_Revenue
 
-    This captures both return rate AND order value changes over time, producing
-    a single curve that can be multiplied by a cohort's 1st_Order_Total to
-    project future revenue directly.
-
-    Weighting: Last 12 months = 60%, Next 12 = 30%, Rest = 10%
-    Extrapolation: geometric decay at 0.98x/month, floor 0.5%.
+    Methodology (matches Dynamic_Cohort_Model_FINAL spreadsheet exactly):
+    - Only cohorts from 2020-01 onwards (spreadsheet starts Jan 2020)
+    - Weighted average across all cohorts that have data at each offset
+    - Weighting: Last 12 months = 60%, Next 12 = 30%, Rest = 10%
+    - No clipping or contamination filtering (spreadsheet includes all cohorts)
+    - Extrapolation beyond observed data: 0.98 decay, 0.50% floor
     """
     rev_data = _get_cached(
         f"rev_retention_{source_filter}",
@@ -171,36 +171,14 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
     )
     matrix = rev_data['matrix']
     if matrix.empty:
-        # Fall back to customer-count retention if no revenue data
         return _get_customer_retention_curve(source_filter, min_cohorts, recency_weighted)
 
-    # Auto-detect contaminated cohorts
-    # Two signals for contamination in revenue retention:
-    # 1. M1 retention > 50% (abnormally high same-quarter repeat)
-    # 2. Small cohorts with <50 customers (noisy, unreliable rates)
-    cohort_sizes = rev_data.get('cohort_sizes', pd.Series(dtype=float))
-    contaminated = set()
-    for cohort in matrix.index:
-        # Exclude tiny cohorts — their rates are too noisy
-        size = cohort_sizes.get(cohort, 0)
-        if size < 50:
-            contaminated.add(cohort)
-            continue
-        m1 = matrix.loc[cohort, 1] if 1 in matrix.columns else float('nan')
-        if pd.isna(m1):
-            continue
-        if m1 > 0.50:
-            contaminated.add(cohort)
-
-    clean_cohorts = [c for c in sorted(matrix.index.tolist()) if c not in contaminated]
-    if len(clean_cohorts) < 3:
-        clean_cohorts = sorted(matrix.index.tolist())
-    matrix = matrix.loc[clean_cohorts]
-
-    # Clip extreme per-cohort retention values before averaging.
-    # A single month returning >50% of first-order revenue is an artifact.
-    MAX_RETENTION_PER_MONTH = 0.50
-    matrix = matrix.clip(upper=MAX_RETENTION_PER_MONTH)
+    # Only include cohorts from 2020-01 onwards (matching spreadsheet scope)
+    all_cohorts = sorted(matrix.index.tolist())
+    cohorts = [c for c in all_cohorts if c >= '2020-01']
+    if len(cohorts) < min_cohorts:
+        cohorts = all_cohorts  # Fall back to all if not enough post-2020
+    matrix = matrix.loc[cohorts]
 
     # --- Recency weighting (60/30/10) ---
     sorted_cohorts = sorted(matrix.index.tolist())
@@ -208,14 +186,10 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
     weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
 
     # Weighted average across cohorts for each month offset.
-    # Only trust offsets where enough recent cohorts contribute data.
-    # Beyond ~M36, only old (noisy) cohorts have data — use extrapolation.
-    MAX_DATA_OFFSET = 36
+    # Use ALL offsets where data exists (no cutoff — spreadsheet computes all).
     curve = {}
     for col in matrix.columns:
         offset = int(col)
-        if offset > MAX_DATA_OFFSET:
-            continue  # Will be filled by extrapolation
         values = matrix[col].dropna()
         if len(values) < min_cohorts:
             continue
@@ -230,14 +204,9 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
             if w_sum > 0:
                 curve[offset] = val_sum / w_sum
         else:
-            recent_cohorts_24 = sorted_cohorts[-24:] if n > 24 else sorted_cohorts
-            recent_values = values[values.index.isin(recent_cohorts_24)]
-            if len(recent_values) >= min_cohorts:
-                curve[offset] = float(recent_values.mean())
-            elif len(values) > 0:
-                curve[offset] = float(values.mean())
+            curve[offset] = float(values.mean())
 
-    # Extrapolate beyond MAX_DATA_OFFSET using geometric decay
+    # Extrapolate beyond observed data: 0.98 decay per month, floor 0.50%
     curve = _extrapolate_curve(curve)
     return curve
 
@@ -274,27 +243,19 @@ def _compute_recency_weights(sorted_cohorts, recency_weighted=True):
 
 
 def _extrapolate_curve(curve):
-    """Extend retention curve beyond observed data using geometric decay."""
+    """Extend retention curve beyond observed data.
+
+    Uses fixed 0.98 decay per month with 0.50% floor, matching
+    the spreadsheet's Decay Rate and Terminal Floor parameters.
+    """
     if not curve:
         return curve
 
     max_offset = max((o for o in curve if o > 0), default=0)
-    late_offsets = sorted(o for o in curve if 12 <= o <= max_offset and curve[o] > 0)
-
-    if len(late_offsets) >= 2:
-        first_o, first_r = late_offsets[0], curve[late_offsets[0]]
-        last_o, last_r = late_offsets[-1], curve[late_offsets[-1]]
-        span = last_o - first_o
-        if span > 0 and first_r > 0 and last_r > 0:
-            decay = (last_r / first_r) ** (1.0 / span)
-            decay = min(decay, 0.99)
-        else:
-            decay = 0.98
-    else:
-        decay = 0.98
+    decay = 0.98
+    floor = 0.005
 
     last_known = curve.get(max_offset, 0.05)
-    floor = 0.005
     for m in range(max_offset + 1, max_offset + 60):
         last_known *= decay
         last_known = max(last_known, floor)
@@ -563,6 +524,9 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
     )
     historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
 
+    # Exclude pre-2020 cohorts to match spreadsheet scope
+    historical_first_order_rev = historical_first_order_rev[historical_first_order_rev.index >= '2020-01']
+
     # Organic baseline
     organic_per_month = _get_organic_baseline(historical_customers)
 
@@ -609,18 +573,6 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
             rate = retention.get(months_since, 0)
             cohort_repeat_rev = fo_rev * rate
             repeat_revenue += cohort_repeat_rev
-
-        # Also include historical cohorts that have customers but no
-        # first_order_revenue data (shouldn't happen but be safe)
-        for cohort_month, cohort_size in historical_customers.items():
-            if cohort_month in historical_first_order_rev.index:
-                continue  # Already handled above
-            months_since = _month_diff(month, cohort_month)
-            if months_since <= 0:
-                continue
-            rate = retention.get(months_since, 0)
-            # Estimate first-order revenue from cohort size × AOV
-            repeat_revenue += cohort_size * new_customer_aov * rate
 
         # 2) Future cohorts (acquired in earlier forecast months)
         for prev_offset in range(offset):
