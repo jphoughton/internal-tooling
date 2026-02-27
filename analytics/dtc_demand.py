@@ -561,7 +561,7 @@ def build_repeat_customer_sku_month_table(waterfall_df, horizon_months=12, forec
     # The waterfall's repeat_units uses ALL-item rep_upc. Scale to forecast-SKU-only.
     # ratio = forecast_rep_upc / all_item_rep_upc
     from analytics.waterfall import get_aov_and_units
-    all_metrics = get_aov_and_units(None)
+    all_metrics = get_aov_and_units()
     all_rep_upc = all_metrics["units_per_repeat_customer"]
     scale = forecast_rep_upc / all_rep_upc if all_rep_upc > 0 and forecast_rep_upc > 0 else 1.0
 
@@ -706,7 +706,7 @@ def build_master_dtc_forecast(
 
     # --- Revenue computation ---
     from analytics.waterfall import get_aov_and_units
-    metrics = get_aov_and_units(None)
+    metrics = get_aov_and_units()
     new_customer_rev_per_unit = metrics.get("new_customer_rev_per_unit", 0)
     repeat_rev_per_unit = metrics.get("repeat_rev_per_unit", 0)
 

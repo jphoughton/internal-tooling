@@ -83,7 +83,7 @@ def check_retention_curve():
     """Compare our retention curve to Google Sheet values."""
     print("\n=== Retention Curve Comparison ===")
     clear_waterfall_cache()
-    curve = get_average_retention_curve(source_filter="shopify")
+    curve = get_average_retention_curve()
 
     max_diff = 0
     all_ok = True
@@ -105,7 +105,7 @@ def check_waterfall_output():
     """Check Feb 2026 repeat revenue against spreadsheet target."""
     print("\n=== Waterfall Output ===")
     clear_waterfall_cache()
-    wf = build_waterfall(media_plan=[], source_filter="shopify", horizon_months=12)
+    wf = build_waterfall(media_plan=[], horizon_months=12)
 
     if wf.empty:
         print("  ERROR: waterfall returned empty DataFrame")
@@ -130,7 +130,7 @@ def check_first_order_revenue():
     """Check first_order_revenue per cohort for reasonableness."""
     print("\n=== First Order Revenue Per Cohort (2020-2022) ===")
     clear_waterfall_cache()
-    rev_data = get_revenue_retention_data(source_filter="shopify")
+    rev_data = get_revenue_retention_data(source_filter='shopify')
     hist_for = rev_data.get("first_order_revenue")
     hist_for = hist_for[hist_for.index >= "2020-01"]
 

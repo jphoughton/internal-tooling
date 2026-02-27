@@ -284,32 +284,38 @@ class TestSeasonalForecastIntegration:
         """Waterfall build_waterfall() applies seasonal_indices to scale units."""
         import pandas as pd
         from analytics.waterfall import build_waterfall
-        from utils.date_helpers import parse_month
 
-        # Create a simple media plan for one month
+        # Create a media plan — need horizon long enough to reach July
         media_plan = [{'month': '2026-07', 'spend': 10000, 'new_customer_roas': 2.0}]
 
-        # Build with no seasonal adjustment
-        wf_base = build_waterfall(media_plan, source_filter=None, horizon_months=1,
+        # Build with no seasonal adjustment (6 months to reach July from Feb)
+        wf_base = build_waterfall(media_plan, horizon_months=6,
                                   seasonal_indices=None)
 
         # Build with summer boost (July = 1.20)
         summer_indices = {m: 1.0 for m in range(1, 13)}
         summer_indices[7] = 1.20
-        wf_seasonal = build_waterfall(media_plan, source_filter=None, horizon_months=1,
+        wf_seasonal = build_waterfall(media_plan, horizon_months=6,
                                        seasonal_indices=summer_indices)
 
         if wf_base.empty or wf_seasonal.empty:
             pytest.skip('Waterfall returned empty — likely no retention data')
 
-        base_total = float(wf_base['total_units'].iloc[0])
-        seasonal_total = float(wf_seasonal['total_units'].iloc[0])
+        # Find the July row
+        july_base = wf_base[wf_base['month'] == '2026-07']
+        july_seasonal = wf_seasonal[wf_seasonal['month'] == '2026-07']
 
-        if base_total > 0:
-            ratio = seasonal_total / base_total
-            # July with 1.20 factor should produce ~20% more units
+        if july_base.empty or july_seasonal.empty:
+            pytest.skip('July 2026 not in waterfall output')
+
+        base_repeat = float(july_base['repeat_revenue'].iloc[0])
+        seasonal_repeat = float(july_seasonal['repeat_revenue'].iloc[0])
+
+        if base_repeat > 0:
+            ratio = seasonal_repeat / base_repeat
+            # July with 1.20 factor should produce ~20% more repeat revenue
             assert 1.15 <= ratio <= 1.25, (
-                f'Expected ~1.20x seasonal boost, got {ratio:.3f}'
+                f'Expected ~1.20x seasonal boost on repeat revenue, got {ratio:.3f}'
             )
 
     def test_sku_forecast_table_with_seasonal_redistributes(self):
