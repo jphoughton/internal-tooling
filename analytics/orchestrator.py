@@ -63,11 +63,13 @@ def _run_model(model_name, fn, triggered_by='scheduler'):
 def run_retention_cohorts(triggered_by='scheduler'):
     """Recompute retention cohort matrix and cache it."""
     def _compute():
-        from analytics.retention import get_customer_cohort_data
+        from analytics.retention import get_customer_cohort_data, get_revenue_retention_data
         # Run for all sources (no filter) to prime the cache
         get_customer_cohort_data(source_filter=None)
+        get_revenue_retention_data(source_filter=None)
         # Also run for shopify specifically (used by waterfall)
         get_customer_cohort_data(source_filter='shopify')
+        get_revenue_retention_data(source_filter='shopify')
     return _run_model(MODEL_RETENTION, _compute, triggered_by)
 
 

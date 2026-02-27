@@ -43,8 +43,9 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
     Returns (display_df, month_col_names) or (None, []) if no data.
     """
     revenue = matrices['revenue']
-    customers = matrices['customers']
+    orders = matrices['orders']
     cohort_sizes = matrices['cohort_sizes']
+    first_order_revenue = matrices['first_order_revenue']
 
     if revenue.empty:
         return None, []
@@ -56,17 +57,19 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
         return None, []
 
     revenue = revenue.loc[filtered]
-    customers = customers.loc[filtered]
+    orders = orders.loc[filtered]
     sizes = cohort_sizes.reindex(filtered)
+    fo_rev = first_order_revenue.reindex(filtered)
 
-    # Compute metric matrix
+    # Compute metric matrix (Month 0, Month 1, ... columns)
     if metric == 'Total Sales':
         if cumulative:
             data = revenue.cumsum(axis=1)
         else:
             data = revenue.copy()
     elif metric == 'Retention Rate':
-        retention = customers.div(sizes, axis=0)
+        # Retention = cumulative order count / cohort size (matches TW)
+        retention = orders.div(sizes, axis=0)
         if cumulative:
             data = retention.cumsum(axis=1)
         else:
@@ -77,6 +80,21 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
         else:
             data = revenue.div(sizes, axis=0)
 
+    # Compute "1st order" column value per cohort
+    first_order_vals = {}
+    for cohort in filtered:
+        fo = fo_rev.get(cohort, np.nan)
+        sz = sizes.get(cohort, np.nan)
+        if pd.isna(fo) or pd.isna(sz) or sz == 0:
+            first_order_vals[cohort] = np.nan
+            continue
+        if metric == 'Total Sales':
+            first_order_vals[cohort] = fo
+        elif metric == 'Retention Rate':
+            first_order_vals[cohort] = 1.0  # 100% — every customer has a 1st order
+        else:  # LTV
+            first_order_vals[cohort] = fo / sz
+
     # Build summary columns
     summary_filtered = summary[summary['cohort'].isin(filtered)].set_index('cohort')
     display_rows = []
@@ -86,13 +104,22 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
             s = summary_filtered.loc[cohort]
             row['Customers'] = f'{int(s["customers"]):,}' if pd.notna(s['customers']) else ''
             row['NCPA'] = f'${s["ncpa"]:.2f}' if pd.notna(s['ncpa']) else ''
-            row['AOV'] = f'${s["aov"]:.2f}' if pd.notna(s['aov']) else ''
-            row['1st Order %'] = f'{s["first_order_pct"]:.2f}%' if pd.notna(s['first_order_pct']) else ''
+            row['RPR'] = f'{s["rpr"]:.1%}' if pd.notna(s['rpr']) else ''
         else:
             row['Customers'] = ''
             row['NCPA'] = ''
-            row['AOV'] = ''
-            row['1st Order %'] = ''
+            row['RPR'] = ''
+
+        # "1st order" column (before month columns)
+        fo_val = first_order_vals.get(cohort, np.nan)
+        if pd.isna(fo_val):
+            row['1st order'] = ''
+        elif metric == 'Total Sales':
+            row['1st order'] = f'${fo_val:,.0f}'
+        elif metric == 'Retention Rate':
+            row['1st order'] = f'{fo_val * 100:.2f}%'
+        else:
+            row['1st order'] = f'${fo_val:,.2f}'
 
         # Month columns
         if cohort in data.index:
@@ -110,7 +137,7 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
         display_rows.append(row)
 
     display_df = pd.DataFrame(display_rows)
-    month_cols = [c for c in display_df.columns if c.startswith('M') and c[1:].isdigit()]
+    month_cols = ['1st order'] + [c for c in display_df.columns if c.startswith('M') and c[1:].isdigit()]
     return display_df, month_cols
 
 
@@ -156,7 +183,7 @@ def render(ctx):
 
     # --- Cohort Analysis Table ---
     matrices = build_cohort_matrices(sku_filter=sku_val, source_filter=source_val)
-    summary = get_cohort_summary(sku_filter=sku_val, source_filter=source_val)
+    summary = get_cohort_summary(source_filter=source_val)
 
     if matrices['revenue'].empty:
         st.warning('No retention data available with current filters.')
@@ -214,7 +241,7 @@ def render(ctx):
             else:
                 style_fn = None
 
-            summary_cols = ['Cohort', 'Customers', 'NCPA', 'AOV', '1st Order %']
+            summary_cols = ['Cohort', 'Customers', 'NCPA', 'RPR']
             column_groups = [
                 ('', summary_cols),
                 ('Month', month_cols),

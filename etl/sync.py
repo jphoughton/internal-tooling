@@ -342,6 +342,9 @@ def _backfill_shopify_chunk(since, until, chunk_label):
     logger.info('[Shopify %s] %s → %s', chunk_label, since, until)
     try:
         with get_db() as conn:
+            # Raise statement timeout for backfill — each page can have 250 orders
+            # with multiple upserts each, easily exceeding the default 30s
+            conn.execute('SET statement_timeout = 300000')  # 5 minutes
             count = fetch_orders(conn, since_date=since, until_date=until,
                                  on_progress=_progress, commit_per_page=True)
         logger.info('[Shopify %s] Done: %d orders', chunk_label, count)

@@ -714,10 +714,16 @@ def build_master_dtc_forecast(
     amz_rev_data = get_amazon_monthly_revenue()
     amz_rev_per_unit = amz_rev_data["rev_per_unit"]
 
-    # New customer revenue: media spend × ROAS per month
-    # This is the TOTAL new customer revenue, not just forecast-SKU revenue
+    # Check if waterfall has direct revenue output
+    has_waterfall_rev = (shopify_waterfall_df is not None and not shopify_waterfall_df.empty
+                         and 'repeat_revenue' in shopify_waterfall_df.columns)
+
+    # New customer revenue: use waterfall's output when available, else media plan
     new_rev_by_month = {}
-    if media_plan:
+    if has_waterfall_rev:
+        for _, row in shopify_waterfall_df.iterrows():
+            new_rev_by_month[row["month"]] = round(row["new_customer_revenue"], 2)
+    elif media_plan:
         plan_map = {e["month"]: e for e in media_plan}
         for m in months:
             entry = plan_map.get(m)
@@ -726,16 +732,19 @@ def build_master_dtc_forecast(
             else:
                 new_rev_by_month[m] = 0
     else:
-        # Fallback: use new customer rev_per_unit × units
         for m in months:
             new_units = new_table[m].sum() if not new_table.empty and m in new_table.columns else 0
             new_rev_by_month[m] = round(new_units * new_customer_rev_per_unit, 2)
 
-    # Repeat customer revenue: units × rev_per_unit
+    # Repeat customer revenue: use waterfall's revenue-based output when available
     repeat_rev_by_month = {}
-    for m in months:
-        rep_units = repeat_table[m].sum() if not repeat_table.empty and m in repeat_table.columns else 0
-        repeat_rev_by_month[m] = round(rep_units * repeat_rev_per_unit, 2)
+    if has_waterfall_rev:
+        for _, row in shopify_waterfall_df.iterrows():
+            repeat_rev_by_month[row["month"]] = round(row["repeat_revenue"], 2)
+    else:
+        for m in months:
+            rep_units = repeat_table[m].sum() if not repeat_table.empty and m in repeat_table.columns else 0
+            repeat_rev_by_month[m] = round(rep_units * repeat_rev_per_unit, 2)
 
     # Amazon revenue: use input forecast if provided, otherwise units × rev_per_unit
     amz_rev_by_month = {}
