@@ -18,6 +18,109 @@ from ui.components import render_html_table, render_freshness_badge, smart_date_
 from utils.constants import FORECAST_SKUS
 
 
+@st.cache_data(ttl=300)
+def _load_shopify_daily_metrics():
+    """Load daily DTC metrics from Shopify DB (revenue, orders, new/repeat customers).
+
+    Uses MIN(order_date) from orders table for accurate first-order classification
+    (matches Shopify admin's new vs returning definition).
+    """
+    with get_db() as conn:
+        rev_df = read_sql(
+            "SELECT sale_date, SUM(revenue) AS revenue, SUM(units_sold) AS units "
+            "FROM daily_sku_sales WHERE source = %s "
+            "GROUP BY sale_date ORDER BY sale_date",
+            conn, params=('shopify',),
+        )
+        cust_df = read_sql(
+            "SELECT DATE(o.order_date) AS sale_date, "
+            "COUNT(DISTINCT o.order_id) AS total_orders, "
+            "COUNT(DISTINCT o.customer_id) AS total_customers, "
+            "COUNT(DISTINCT CASE WHEN DATE(cf.actual_first) = DATE(o.order_date) "
+            "THEN o.customer_id END) AS new_customers, "
+            "SUM(oi.total_price) AS oi_total_rev, "
+            "SUM(CASE WHEN DATE(cf.actual_first) = DATE(o.order_date) "
+            "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+            "FROM orders o "
+            "JOIN (SELECT customer_id, MIN(order_date) AS actual_first "
+            "      FROM orders WHERE source = %s GROUP BY customer_id) cf "
+            "  ON o.customer_id = cf.customer_id "
+            "JOIN order_items oi ON o.order_id = oi.order_id "
+            "WHERE o.source = %s "
+            "GROUP BY DATE(o.order_date)",
+            conn, params=('shopify', 'shopify'),
+        )
+    if rev_df.empty:
+        return pd.DataFrame()
+
+    rev_df['sale_date'] = pd.to_datetime(rev_df['sale_date'])
+    cust_df['sale_date'] = pd.to_datetime(cust_df['sale_date'])
+
+    df = rev_df.merge(cust_df, on='sale_date', how='left')
+    df['total_orders'] = df['total_orders'].fillna(0).astype(int)
+    df['new_customers'] = df['new_customers'].fillna(0).astype(int)
+    df['total_customers'] = df['total_customers'].fillna(0).astype(int)
+
+    # Derive new/repeat revenue using order_items fraction applied to daily_sku_sales revenue
+    oi_total = df['oi_total_rev'].fillna(0)
+    oi_new = df['oi_new_rev'].fillna(0)
+    frac_new = (oi_new / oi_total).fillna(0).clip(0, 1)
+    df['_revenue'] = df['revenue']
+    df['_units'] = df['units']
+    df['_orders'] = df['total_orders']
+    df['_nc_orders'] = df['new_customers']
+    df['_ret_orders'] = df['_orders'] - df['_nc_orders']
+    df['_nc_revenue'] = df['_revenue'] * frac_new
+    df['_ret_revenue'] = df['_revenue'] * (1 - frac_new)
+    df['_date'] = df['sale_date']
+    return df
+
+
+@st.cache_data(ttl=300)
+def _load_gs_spend():
+    """Load ad spend and sessions from Google Sheet (the only columns we still use from TW)."""
+    with get_db() as conn:
+        try:
+            cols = [d["column_name"] for d in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'google_sheet_data'"
+            ).fetchall()]
+            if "date" not in cols:
+                return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+        df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
+    if df.empty:
+        return df
+
+    def _clean_num(val):
+        if pd.isna(val):
+            return 0.0
+        s = str(val).replace("$", "").replace(",", "").replace("%", "").strip()
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
+    df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
+    df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
+    df['_fb_spend'] = df.get('facebook_ads_spend', pd.Series(0)).apply(_clean_num)
+    df['_goog_spend'] = df.get('google_ads_spend', pd.Series(0)).apply(_clean_num)
+    df['_sessions'] = df.get('sessions', pd.Series(0)).apply(_clean_num)
+    df['_atc'] = df.get('sessions_with_add_to_carts', pd.Series(0)).apply(_clean_num)
+    df['_nc_aov'] = df.get('nc_aov', pd.Series(0)).apply(_clean_num)
+    df['_nc_cpa'] = df.get('new_customers_cpa', pd.Series(0)).apply(_clean_num)
+    df['_nc_roas'] = df.get('new_customer_roas', pd.Series(0)).apply(_clean_num)
+
+    # Keep subscription columns if present
+    for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions']:
+        if sub_col in df.columns:
+            df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
+
+    return df[['_date', '_ad_spend', '_fb_spend', '_goog_spend', '_sessions', '_atc',
+               '_nc_aov', '_nc_cpa', '_nc_roas'] + [c for c in df.columns if c.startswith('_subscriptions') or c.startswith('_subscription') or c.startswith('_active_')]].copy()
+
+
 def render(ctx):
     """Render the Marketing page."""
     _cached_waterfall = ctx['cached_waterfall']
@@ -43,33 +146,27 @@ def render(ctx):
     with get_db() as conn:
         _mkt_klaviyo_key = get_setting(conn, "klaviyo_api_key", "")
 
-    with get_db() as conn:
-        try:
-            _mkt_cols = [d["column_name"] for d in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'google_sheet_data'"
-            ).fetchall()]
-            _has_gs_data = "date" in _mkt_cols
-        except Exception:
-            _has_gs_data = False
+    # Load Shopify DB metrics (revenue, orders, new/repeat customers)
+    _shopify_daily = _load_shopify_daily_metrics()
+    _gs_spend = _load_gs_spend()
+    _has_shopify_data = not _shopify_daily.empty
 
-    if _has_gs_data:
-        with get_db() as conn:
-            mkt_df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
+    # Merge: Shopify DB for revenue/customers, Google Sheet for spend/sessions
+    if _has_shopify_data:
+        mkt_df = _shopify_daily.copy()
+        if not _gs_spend.empty:
+            mkt_df = mkt_df.merge(
+                _gs_spend, on='_date', how='left', suffixes=('', '_gs')
+            )
+        else:
+            mkt_df['_ad_spend'] = 0
+            mkt_df['_fb_spend'] = 0
+            mkt_df['_goog_spend'] = 0
+            mkt_df['_sessions'] = 0
+            mkt_df['_atc'] = 0
+        mkt_df = mkt_df.sort_values('_date')
 
         if not mkt_df.empty:
-            mkt_df["_date"] = pd.to_datetime(mkt_df["date"], format="mixed", dayfirst=False)
-            mkt_df = mkt_df.sort_values("_date")
-
-            def _clean_num(val):
-                if pd.isna(val):
-                    return 0.0
-                s = str(val).replace("$", "").replace(",", "").replace("%", "").strip()
-                try:
-                    return float(s)
-                except (ValueError, TypeError):
-                    return 0.0
-
             # Date range with smart presets — default to MTD
             mkt_start, mkt_end = smart_date_filter(
                 mkt_df["_date"].min().date(), mkt_df["_date"].max().date(), "mkt",
@@ -77,27 +174,7 @@ def render(ctx):
             )
             mkt_df = mkt_df[(mkt_df["_date"].dt.date >= mkt_start) & (mkt_df["_date"].dt.date <= mkt_end)]
 
-            # Compute all metrics
-            # NOTE: Triple Whale "blended" metrics use dual-attribution that
-            # reports ~2x the actual platform spend & Shopify revenue.
-            # We halve the affected columns to align with actual Shopify/ad-platform data.
-            mkt_df["_ad_spend"] = mkt_df["blended_ad_spend"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_revenue"] = mkt_df["total_sales"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_orders"] = mkt_df["orders"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_nc_orders"] = mkt_df["new_customer_orders"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_nc_revenue"] = mkt_df["new_customer_revenue"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_ret_revenue"] = mkt_df["returning_customer_revenue"].apply(_clean_num) * _TW_ADJ
-            mkt_df["_ret_orders"] = mkt_df["_orders"] - mkt_df["_nc_orders"]
-            mkt_df["_fb_spend"] = mkt_df.get("facebook_ads_spend", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-            mkt_df["_goog_spend"] = mkt_df.get("google_ads_spend", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-            mkt_df["_sessions"] = mkt_df.get("sessions", pd.Series(0)).apply(_clean_num)  # Sessions not doubled
-            mkt_df["_atc"] = mkt_df.get("sessions_with_add_to_carts", pd.Series(0)).apply(_clean_num)
-            mkt_df["_units"] = mkt_df.get("units_sold", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-            mkt_df["_nc_aov"] = mkt_df.get("nc_aov", pd.Series(0)).apply(_clean_num)  # AOV is a ratio, not doubled
-            mkt_df["_nc_cpa"] = mkt_df.get("new_customers_cpa", pd.Series(0)).apply(_clean_num)  # CPA is a ratio
-            mkt_df["_nc_roas"] = mkt_df.get("new_customer_roas", pd.Series(0)).apply(_clean_num)  # ROAS is a ratio
-
-            total_spend = mkt_df["_ad_spend"].sum()
+            total_spend = mkt_df["_ad_spend"].fillna(0).sum()
             total_rev = mkt_df["_revenue"].sum()
             total_orders = int(mkt_df["_orders"].sum())
             total_nc = int(mkt_df["_nc_orders"].sum())
@@ -861,25 +938,18 @@ def render(ctx):
 
             # --- Aggregate helpers ---
             # We use the full (unfiltered by date range) dataset for these tabs
-            # Reload the full data to avoid date-filter distortion
-            with get_db() as _perf_conn:
-                _perf_df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", _perf_conn)
-            _perf_df["_date"] = pd.to_datetime(_perf_df["date"], format="mixed", dayfirst=False)
-            _perf_df = _perf_df.sort_values("_date")
-            # Apply same Triple Whale 0.5x adjustment
-            for _pc in ["blended_ad_spend", "total_sales", "new_customer_orders",
-                         "new_customer_revenue", "returning_customer_revenue",
-                         "sessions", "orders", "units_sold"]:
-                if _pc in _perf_df.columns:
-                    _perf_df[f"_{_pc}_n"] = _perf_df[_pc].apply(_clean_num)
-            _perf_df["_ad_spend"] = _perf_df.get("_blended_ad_spend_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_revenue"] = _perf_df.get("_total_sales_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_nc_orders"] = _perf_df.get("_new_customer_orders_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_nc_revenue"] = _perf_df.get("_new_customer_revenue_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_ret_revenue"] = _perf_df.get("_returning_customer_revenue_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_sessions"] = _perf_df.get("_sessions_n", pd.Series(0, index=_perf_df.index))  # Sessions not doubled
-            _perf_df["_orders"] = _perf_df.get("_orders_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
-            _perf_df["_units"] = _perf_df.get("_units_sold_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
+            # Shopify DB for revenue/customers, Google Sheet for spend/sessions
+            _perf_df = _shopify_daily.copy()
+            if not _gs_spend.empty:
+                _perf_df = _perf_df.merge(
+                    _gs_spend, on='_date', how='left', suffixes=('', '_gs')
+                )
+            else:
+                _perf_df['_ad_spend'] = 0
+                _perf_df['_sessions'] = 0
+            _perf_df = _perf_df.sort_values('_date')
+            _perf_df['_ad_spend'] = _perf_df['_ad_spend'].fillna(0)
+            _perf_df['_sessions'] = _perf_df['_sessions'].fillna(0)
 
             # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup
             _amz_daily = pd.DataFrame()
@@ -1259,9 +1329,9 @@ def render(ctx):
             fn4.metric("Units Sold", f"{int(mkt_df['_units'].sum()):,}")
 
         else:
-            st.info("No marketing data available. Sync your Google Sheet from the Settings page.")
+            st.info("No marketing data available. Check that Shopify data has been synced.")
     else:
-        st.info("No marketing data available. Sync your Google Sheet from the **Settings** page.")
+        st.info("No marketing data available. Sync Shopify data from the **Settings** page.")
 
     # --- Klaviyo Email Dashboard ---
     st.divider()

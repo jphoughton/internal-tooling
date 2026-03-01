@@ -1,6 +1,7 @@
 """Settings page — API credentials, data management, imports."""
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from db import (
     get_db, read_sql,
@@ -714,3 +715,102 @@ def render(ctx):
                 st.rerun()
         except Exception as e:
             st.error(f"Failed to parse CSV: {e}")
+
+    # --- QA Data Table ---
+    st.divider()
+    st.subheader("QA Data Table")
+    st.caption(
+        "Monthly breakdown of new vs repeat customers and revenue by channel. "
+        "Uses MIN(order_date) for first-order classification (matches Shopify admin)."
+    )
+
+    try:
+        with get_db() as conn:
+            # DTC (Shopify) — new/repeat customers and revenue
+            dtc_df = read_sql("""
+                WITH cust_first AS (
+                    SELECT customer_id, MIN(order_date) AS first_order_date
+                    FROM orders WHERE source = ?
+                    GROUP BY customer_id
+                )
+                SELECT
+                    LEFT(o.order_date, 7) AS month,
+                    COUNT(DISTINCT CASE WHEN LEFT(cf.first_order_date, 7) = LEFT(o.order_date, 7)
+                                        THEN o.customer_id END) AS dtc_new_customers,
+                    COUNT(DISTINCT CASE WHEN LEFT(cf.first_order_date, 7) < LEFT(o.order_date, 7)
+                                        THEN o.customer_id END) AS dtc_repeat_customers,
+                    SUM(CASE WHEN LEFT(cf.first_order_date, 7) = LEFT(o.order_date, 7)
+                             THEN oi.total_price ELSE 0 END) AS dtc_new_rev,
+                    SUM(CASE WHEN LEFT(cf.first_order_date, 7) < LEFT(o.order_date, 7)
+                             THEN oi.total_price ELSE 0 END) AS dtc_repeat_rev
+                FROM orders o
+                JOIN cust_first cf  ON o.customer_id = cf.customer_id
+                JOIN order_items oi ON o.order_id    = oi.order_id
+                WHERE o.source = ?
+                GROUP BY LEFT(o.order_date, 7)
+                ORDER BY month
+            """, conn, params=('shopify', 'shopify'))
+
+            # DTC spend from media_spend table
+            spend_df = read_sql("""
+                SELECT month, spend AS dtc_spend
+                FROM media_spend
+                WHERE source = 'google_sheet'
+                ORDER BY month
+            """, conn)
+
+            # Amazon — new/repeat customers and revenue
+            amz_df = read_sql("""
+                WITH cust_first AS (
+                    SELECT customer_id, MIN(order_date) AS first_order_date
+                    FROM orders WHERE source = ?
+                    GROUP BY customer_id
+                )
+                SELECT
+                    LEFT(o.order_date, 7) AS month,
+                    COUNT(DISTINCT CASE WHEN LEFT(cf.first_order_date, 7) = LEFT(o.order_date, 7)
+                                        THEN o.customer_id END) AS amz_new_customers,
+                    COUNT(DISTINCT CASE WHEN LEFT(cf.first_order_date, 7) < LEFT(o.order_date, 7)
+                                        THEN o.customer_id END) AS amz_repeat_customers,
+                    SUM(CASE WHEN LEFT(cf.first_order_date, 7) = LEFT(o.order_date, 7)
+                             THEN oi.total_price ELSE 0 END) AS amz_new_rev,
+                    SUM(CASE WHEN LEFT(cf.first_order_date, 7) < LEFT(o.order_date, 7)
+                             THEN oi.total_price ELSE 0 END) AS amz_repeat_rev
+                FROM orders o
+                JOIN cust_first cf  ON o.customer_id = cf.customer_id
+                JOIN order_items oi ON o.order_id    = oi.order_id
+                WHERE o.source = ?
+                GROUP BY LEFT(o.order_date, 7)
+                ORDER BY month
+            """, conn, params=('amazon', 'amazon'))
+
+        # Merge all into one table
+        qa = dtc_df.copy() if not dtc_df.empty else pd.DataFrame(columns=['month'])
+        if not spend_df.empty:
+            qa = qa.merge(spend_df, on='month', how='left')
+        else:
+            qa['dtc_spend'] = np.nan
+        if not amz_df.empty:
+            qa = qa.merge(amz_df, on='month', how='outer')
+        else:
+            for c in ['amz_new_customers', 'amz_repeat_customers', 'amz_new_rev', 'amz_repeat_rev']:
+                qa[c] = np.nan
+
+        qa = qa.sort_values('month', ascending=False).head(18).reset_index(drop=True)
+
+        # Format for display
+        display = pd.DataFrame()
+        display['Month'] = qa['month']
+        display['DTC New NC'] = qa.get('dtc_new_customers', 0).fillna(0).astype(int)
+        display['DTC Repeat'] = qa.get('dtc_repeat_customers', 0).fillna(0).astype(int)
+        display['DTC New Rev'] = qa.get('dtc_new_rev', 0).fillna(0).apply(lambda x: f'${x:,.0f}')
+        display['DTC Repeat Rev'] = qa.get('dtc_repeat_rev', 0).fillna(0).apply(lambda x: f'${x:,.0f}')
+        display['DTC Spend'] = qa.get('dtc_spend', 0).fillna(0).apply(lambda x: f'${x:,.0f}' if x > 0 else '-')
+        display['AMZ New NC'] = qa.get('amz_new_customers', 0).fillna(0).astype(int)
+        display['AMZ Repeat'] = qa.get('amz_repeat_customers', 0).fillna(0).astype(int)
+        display['AMZ New Rev'] = qa.get('amz_new_rev', 0).fillna(0).apply(lambda x: f'${x:,.0f}')
+        display['AMZ Repeat Rev'] = qa.get('amz_repeat_rev', 0).fillna(0).apply(lambda x: f'${x:,.0f}')
+
+        render_html_table(display)
+    except Exception as e:
+        st.warning(f"Could not load QA data: {e}")

@@ -220,8 +220,19 @@ def get_aov_and_units(source_filter=None):
             WHERE 1=1 {source_clause}
         """, params).fetchone()
 
+        # CTE: true first order date from orders table
+        first_cte = """
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = ?
+                GROUP BY customer_id
+            )
+        """
+        cte_params = ['shopify']
+
         # New customer metrics (last 12 months)
         new_metrics = conn.execute(f"""
+            {first_cte}
             SELECT
                 SUM(oi.total_price) as total_rev,
                 SUM(oi.quantity) as total_units,
@@ -229,40 +240,42 @@ def get_aov_and_units(source_filter=None):
                 COUNT(DISTINCT o.order_id) as num_orders
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
+            JOIN cust_first cf ON o.customer_id = cf.customer_id
+            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', cf.first_order_date)
               {source_clause}
               AND o.order_date >= date('now', '-12 months')
-        """, params).fetchone()
+        """, cte_params + params).fetchone()
 
         # Repeat customer metrics (last 12 months)
         rep_metrics = conn.execute(f"""
+            {first_cte}
             SELECT
                 SUM(oi.total_price) as total_rev,
                 SUM(oi.quantity) as total_units,
                 COUNT(DISTINCT o.customer_id) as num_customers
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
+            JOIN cust_first cf ON o.customer_id = cf.customer_id
+            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
               {source_clause}
               AND o.order_date >= date('now', '-12 months')
-        """, params).fetchone()
+        """, cte_params + params).fetchone()
 
         # Units per repeat customer per month
         rep_upc_rows = conn.execute(f"""
+            {first_cte}
             SELECT AVG(monthly_upc) as upc FROM (
                 SELECT strftime('%Y-%m', o.order_date) as month,
                        CAST(SUM(oi.quantity) AS REAL) / COUNT(DISTINCT o.customer_id) as monthly_upc
                 FROM orders o
                 JOIN order_items oi ON o.order_id = oi.order_id
-                JOIN customers c ON o.customer_id = c.customer_id
-                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
+                JOIN cust_first cf ON o.customer_id = cf.customer_id
+                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
                   {source_clause}
                   AND o.order_date >= date('now', '-12 months')
                 GROUP BY strftime('%Y-%m', o.order_date)
             )
-        """, params).fetchone()
+        """, cte_params + params).fetchone()
 
     avg_units = float(row["avg_units"] or 1)
 
@@ -303,11 +316,15 @@ def get_monthly_new_customers(source_filter=None):
     """
     with get_db() as conn:
         rows = conn.execute("""
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = ?
+                GROUP BY customer_id
+            )
             SELECT
                 strftime('%Y-%m', first_order_date) as month,
                 COUNT(*) as new_customers
-            FROM customers
-            WHERE source = ?
+            FROM cust_first
             GROUP BY strftime('%Y-%m', first_order_date)
             ORDER BY month
         """, ['shopify']).fetchall()
