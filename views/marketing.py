@@ -283,7 +283,8 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            _chan_sel = "All"  # default; overridden by widget below when goals are present
+            _nav_channel = ctx.get('channel', 'Rollup')
+            _chan_sel = {'DTC': 'DTC', 'Amazon': 'Amazon', 'Rollup': 'All'}.get(_nav_channel, 'All')
 
             if _has_goals:
                 # Build pacing row helper
@@ -488,15 +489,8 @@ def render(ctx):
                 # ============================================================
                 # CHANNEL FILTER — toggle between All / Roll Up / DTC / Amazon
                 # ============================================================
-                _chan_sel = st.segmented_control(
-                    "Channel",
-                    options=["All", "Roll Up", "DTC", "Amazon"],
-                    default="All",
-                    key="_mkt_channel",
-                    label_visibility="collapsed",
-                )
-                if _chan_sel is None:
-                    _chan_sel = "All"
+                _nav_channel = ctx.get('channel', 'Rollup')
+                _chan_sel = {'DTC': 'DTC', 'Amazon': 'Amazon', 'Rollup': 'All'}.get(_nav_channel, 'All')
 
                 # ============================================================
                 # ROLL UP — DTC + Amazon combined
@@ -655,25 +649,39 @@ def render(ctx):
                     # Roll Up: combine with Amazon if available
                     amz_rev_val = 0
                     amz_spend_val = 0
+                    amz_new_cust = 0
+                    amz_repeat_cust = 0
+                    amz_new_rev_val = 0
+                    amz_repeat_rev_val = 0
                     if amz_agg is not None and period_col in amz_agg.columns:
                         amz_match = amz_agg[amz_agg[period_col] == period_label]
                         if not amz_match.empty:
                             amz_rev_val = float(amz_match.iloc[0].get("_amz_revenue", 0))
                             amz_spend_val = float(amz_match.iloc[0].get("_amz_spend", 0))
+                            amz_new_cust = int(amz_match.iloc[0].get("_amz_new_cust", 0))
+                            amz_repeat_cust = int(amz_match.iloc[0].get("_amz_repeat_cust", 0))
+                            amz_new_rev_val = float(amz_match.iloc[0].get("_amz_new_rev", 0))
+                            amz_repeat_rev_val = float(amz_match.iloc[0].get("_amz_repeat_rev", 0))
 
                     combined_rev = total_rev + amz_rev_val
                     combined_spend = spend + amz_spend_val
-                    nc_mer = nc_rev / combined_spend if combined_spend > 0 else 0
+                    combined_new_cust = int(nc_orders) + amz_new_cust
+                    combined_new_rev = nc_rev + amz_new_rev_val
+                    combined_total_cust = int(nc_orders) + amz_new_cust + amz_repeat_cust
+                    nc_mer = combined_new_rev / combined_spend if combined_spend > 0 else 0
                     mer = combined_rev / combined_spend if combined_spend > 0 else 0
+                    combined_nc_cpa = combined_spend / combined_new_cust if combined_new_cust > 0 else 0
 
                     rows_rollup.append({
                         period_col: period_label,
                         "Spend": f"${combined_spend:,.0f}",
                         "Revenue": f"${combined_rev:,.0f}",
-                        "NC Rev": f"${nc_rev:,.0f}",
-                        "NC Orders": int(nc_orders),
+                        "New Cust": combined_new_cust,
+                        "Repeat Cust": amz_repeat_cust,
+                        "Total Cust": combined_total_cust,
+                        "New Rev": f"${combined_new_rev:,.0f}",
                         "NC MER": f"{nc_mer:.2f}x",
-                        "NC CPA": f"${nc_cpa:,.0f}",
+                        "NC CPA": f"${combined_nc_cpa:,.0f}",
                         "MER": f"{mer:.2f}x",
                     })
 
@@ -682,6 +690,10 @@ def render(ctx):
                         period_col: period_label,
                         "Spend": f"${amz_spend_val:,.0f}",
                         "Total Revenue": f"${amz_rev_val:,.0f}",
+                        "New Cust": amz_new_cust,
+                        "Repeat Cust": amz_repeat_cust,
+                        "New Rev": f"${amz_new_rev_val:,.0f}",
+                        "Repeat Rev": f"${amz_repeat_rev_val:,.0f}",
                     })
 
                 return (
@@ -701,7 +713,12 @@ def render(ctx):
                 "Total Rev": True,
                 "Total Revenue": True,
                 "NC Rev": True,         # more NC revenue = good
+                "New Rev": True,        # more new revenue = good
+                "Repeat Rev": True,     # more repeat revenue = good
                 "NC Orders": True,      # more new customers = good
+                "New Cust": True,       # more new customers = good
+                "Repeat Cust": True,    # more repeat customers = good
+                "Total Cust": True,     # more total customers = good
                 "New Users": True,
                 "NC MER": True,         # higher efficiency = good
                 "MER": True,            # higher efficiency = good
@@ -881,7 +898,8 @@ def render(ctx):
             _perf_df["_orders"] = _perf_df.get("_orders_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
             _perf_df["_units"] = _perf_df.get("_units_sold_n", pd.Series(0, index=_perf_df.index)) * _TW_ADJ
 
-            # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup
+            # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup,
+            # new/repeat customer counts and revenue from orders/customers/order_items
             _amz_daily = pd.DataFrame()
             try:
                 with get_db() as _amz_perf_conn:
@@ -896,6 +914,23 @@ def render(ctx):
                         "FROM amazon_daily_rollup ORDER BY date",
                         _amz_perf_conn,
                     )
+                    # New/repeat customer counts and order_items revenue by day
+                    _amz_cust_daily = read_sql(
+                        "SELECT DATE(o.order_date) AS sale_date, "
+                        "COUNT(DISTINCT o.customer_id) AS total_customers, "
+                        "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                        "THEN o.customer_id END) AS new_customers, "
+                        "SUM(oi.total_price) AS oi_total_rev, "
+                        "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                        "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+                        "FROM orders o "
+                        "JOIN customers c ON o.customer_id = c.customer_id "
+                        "JOIN order_items oi ON o.order_id = oi.order_id "
+                        "WHERE o.source = %s "
+                        "GROUP BY DATE(o.order_date)",
+                        _amz_perf_conn,
+                        params=('amazon',),
+                    )
                 if not _amz_rev_daily.empty:
                     _amz_daily = _amz_rev_daily
                     if not _amz_spend_daily.empty:
@@ -903,6 +938,29 @@ def render(ctx):
                     if "_amz_spend" not in _amz_daily.columns:
                         _amz_daily["_amz_spend"] = 0
                     _amz_daily["_amz_spend"] = _amz_daily["_amz_spend"].fillna(0)
+
+                    # Merge customer data and derive new/repeat counts + proportionally scaled revenue
+                    if not _amz_cust_daily.empty:
+                        _amz_cust_daily["sale_date"] = _amz_cust_daily["sale_date"].astype(str)
+                        _amz_daily = _amz_daily.merge(
+                            _amz_cust_daily[["sale_date", "total_customers", "new_customers",
+                                             "oi_total_rev", "oi_new_rev"]],
+                            on="sale_date", how="left",
+                        )
+                    for _col in ["total_customers", "new_customers", "oi_total_rev", "oi_new_rev"]:
+                        if _col not in _amz_daily.columns:
+                            _amz_daily[_col] = 0
+                        _amz_daily[_col] = _amz_daily[_col].fillna(0)
+
+                    _amz_daily["_amz_new_cust"] = _amz_daily["new_customers"].astype(int)
+                    _amz_daily["_amz_repeat_cust"] = (_amz_daily["total_customers"] - _amz_daily["new_customers"]).clip(lower=0).astype(int)
+
+                    # Scale new/repeat revenue proportionally from daily_sku_sales total
+                    _oi_total = _amz_daily["oi_total_rev"]
+                    _new_frac = (_amz_daily["oi_new_rev"] / _oi_total).where(_oi_total > 0, 0)
+                    _amz_daily["_amz_new_rev"] = _amz_daily["_amz_revenue"] * _new_frac
+                    _amz_daily["_amz_repeat_rev"] = _amz_daily["_amz_revenue"] * (1 - _new_frac)
+
                     _amz_daily["_date"] = pd.to_datetime(_amz_daily["sale_date"])
             except Exception:
                 pass
@@ -917,14 +975,24 @@ def render(ctx):
                 _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
 
                 # Amazon daily
-                _amz_dod = pd.DataFrame(columns=["Day", "_amz_revenue", "_amz_spend"])
+                _amz_dod = pd.DataFrame(columns=["Day", "_amz_revenue", "_amz_spend",
+                                                  "_amz_new_cust", "_amz_repeat_cust",
+                                                  "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
                     _amz_dod = _amz_daily.copy()
                     _amz_dod["Day"] = _amz_dod["_date"].dt.strftime("%Y-%m-%d")
-                    _amz_dod = _amz_dod.groupby("Day", sort=True).agg(
-                        _amz_revenue=("_amz_revenue", "sum"),
-                        _amz_spend=("_amz_spend", "sum"),
-                    ).reset_index()
+                    _amz_dod_agg = {
+                        "_amz_revenue": ("_amz_revenue", "sum"),
+                        "_amz_spend": ("_amz_spend", "sum"),
+                    }
+                    if "_amz_new_cust" in _amz_dod.columns:
+                        _amz_dod_agg.update({
+                            "_amz_new_cust": ("_amz_new_cust", "sum"),
+                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
+                            "_amz_new_rev": ("_amz_new_rev", "sum"),
+                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
+                        })
+                    _amz_dod = _amz_dod.groupby("Day", sort=True).agg(**_amz_dod_agg).reset_index()
 
                 _dtc_dod, _rollup_dod, _amz_tbl_dod = _build_perf_table(_dod_agg, "Day", _amz_dod)
 
@@ -951,15 +1019,25 @@ def render(ctx):
                 ).reset_index()
 
                 # Amazon weekly
-                _amz_wow = pd.DataFrame(columns=["Week", "_amz_revenue", "_amz_spend"])
+                _amz_wow = pd.DataFrame(columns=["Week", "_amz_revenue", "_amz_spend",
+                                                  "_amz_new_cust", "_amz_repeat_cust",
+                                                  "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
                     _amz_wow_tmp = _amz_daily.copy()
                     _amz_wow_tmp["_week_start"] = _amz_wow_tmp["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
                     _amz_wow_tmp["Week"] = _amz_wow_tmp["_week_start"].dt.strftime("%Y-%m-%d")
-                    _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(
-                        _amz_revenue=("_amz_revenue", "sum"),
-                        _amz_spend=("_amz_spend", "sum"),
-                    ).reset_index()
+                    _amz_wow_agg = {
+                        "_amz_revenue": ("_amz_revenue", "sum"),
+                        "_amz_spend": ("_amz_spend", "sum"),
+                    }
+                    if "_amz_new_cust" in _amz_wow_tmp.columns:
+                        _amz_wow_agg.update({
+                            "_amz_new_cust": ("_amz_new_cust", "sum"),
+                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
+                            "_amz_new_rev": ("_amz_new_rev", "sum"),
+                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
+                        })
+                    _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(**_amz_wow_agg).reset_index()
 
                 _dtc_wow, _rollup_wow, _amz_tbl_wow = _build_perf_table(_wow_agg, "Week", _amz_wow)
 
@@ -985,14 +1063,24 @@ def render(ctx):
                 ).reset_index()
 
                 # Amazon monthly
-                _amz_mom = pd.DataFrame(columns=["Month", "_amz_revenue", "_amz_spend"])
+                _amz_mom = pd.DataFrame(columns=["Month", "_amz_revenue", "_amz_spend",
+                                                  "_amz_new_cust", "_amz_repeat_cust",
+                                                  "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
                     _amz_mom_tmp = _amz_daily.copy()
                     _amz_mom_tmp["Month"] = _amz_mom_tmp["_date"].dt.to_period("M").astype(str)
-                    _amz_mom = _amz_mom_tmp.groupby("Month", sort=True).agg(
-                        _amz_revenue=("_amz_revenue", "sum"),
-                        _amz_spend=("_amz_spend", "sum"),
-                    ).reset_index()
+                    _amz_mom_agg = {
+                        "_amz_revenue": ("_amz_revenue", "sum"),
+                        "_amz_spend": ("_amz_spend", "sum"),
+                    }
+                    if "_amz_new_cust" in _amz_mom_tmp.columns:
+                        _amz_mom_agg.update({
+                            "_amz_new_cust": ("_amz_new_cust", "sum"),
+                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
+                            "_amz_new_rev": ("_amz_new_rev", "sum"),
+                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
+                        })
+                    _amz_mom = _amz_mom_tmp.groupby("Month", sort=True).agg(**_amz_mom_agg).reset_index()
 
                 _dtc_mom, _rollup_mom, _amz_tbl_mom = _build_perf_table(_mom_agg, "Month", _amz_mom)
 

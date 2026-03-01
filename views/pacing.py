@@ -430,15 +430,8 @@ def render_pacing(ctx):
     # ============================================================
     # CHANNEL FILTER
     # ============================================================
-    _chan_sel = st.segmented_control(
-        "Channel",
-        options=["All", "Roll Up", "DTC", "Amazon"],
-        default="All",
-        key="_pacing_channel",
-        label_visibility="collapsed",
-    )
-    if _chan_sel is None:
-        _chan_sel = "All"
+    _nav_channel = ctx.get('channel', 'Rollup')
+    _chan_sel = {'DTC': 'DTC', 'Amazon': 'Amazon', 'Rollup': 'All'}.get(_nav_channel, 'All')
 
     # ============================================================
     # ROLL UP — DTC + Amazon combined

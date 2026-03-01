@@ -10,7 +10,7 @@ from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 import config
 
 
-def render(ctx):
+def render(ctx, embedded=False):
     """Render the 3PL Inventory page."""
     FORECAST_SKUS = ctx['forecast_skus']
     _cached_waterfall = ctx['cached_waterfall']
@@ -18,13 +18,15 @@ def render(ctx):
     _load_seasonal_json = ctx['load_seasonal_json']
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
 
-    _title_col, _badge_col = st.columns([7, 3])
-    with _title_col:
-        st.title("3PL Inventory")
+    if not embedded:
+        _title_col, _badge_col = st.columns([7, 3])
+        with _title_col:
+            st.title("3PL Inventory")
     if not config.PACKIYO_API_TOKEN:
-        with _badge_col:
-            render_freshness_badge(is_fallback=True, source='Packiyo (no token)')
-        st.caption("Showing cached sales velocity — Packiyo API token not configured.")
+        if not embedded:
+            with _badge_col:
+                render_freshness_badge(is_fallback=True, source='Packiyo (no token)')
+            st.caption("Showing cached sales velocity — Packiyo API token not configured.")
         st.info("Live 3PL inventory requires a Packiyo API token. Add it in **Settings** or set the `PACKIYO_API_TOKEN` environment variable.")
 
         # Fallback: show recent sales velocity from database
@@ -55,17 +57,18 @@ def render(ctx):
             inv = None
             st.error(f"Failed to fetch inventory: {e}")
 
-        with _badge_col:
-            if inv:
-                render_freshness_badge(
-                    is_live=True,
-                    source='Packiyo API',
-                    last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-                    new_rows=len(inv),
-                )
-            else:
-                render_freshness_badge(is_fallback=True, source='Packiyo API (error)')
-        st.caption("Live stock from Packiyo.")
+        if not embedded:
+            with _badge_col:
+                if inv:
+                    render_freshness_badge(
+                        is_live=True,
+                        source='Packiyo API',
+                        last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                        new_rows=len(inv),
+                    )
+                else:
+                    render_freshness_badge(is_fallback=True, source='Packiyo API (error)')
+            st.caption("Live stock from Packiyo.")
 
         if inv:
             inv_df = pd.DataFrame(inv)

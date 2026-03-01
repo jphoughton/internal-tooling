@@ -13,21 +13,22 @@ from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 from analytics.dtc_demand import get_amazon_sku_velocity
 
 
-def render(ctx):
+def render(ctx, embedded=False):
     """Render the FBA Transfers page."""
     FORECAST_SKUS = ctx['forecast_skus']
 
-    _title_col, _badge_col = st.columns([7, 3])
-    with _title_col:
-        st.title("FBA Transfers")
-    with _badge_col:
-        with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, ['amazon'])
-            _new = get_new_rows_since_yesterday(conn, ['amazon'])
-            _srcs = get_synced_sources(conn, ['amazon'])
-        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-        render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-    st.caption("When to ship inventory from your 3PL (Packiyo) to Amazon FBA.")
+    if not embedded:
+        _title_col, _badge_col = st.columns([7, 3])
+        with _title_col:
+            st.title("FBA Transfers")
+        with _badge_col:
+            with get_db() as conn:
+                _ts = get_last_sync_timestamp(conn, ['amazon'])
+                _new = get_new_rows_since_yesterday(conn, ['amazon'])
+                _srcs = get_synced_sources(conn, ['amazon'])
+            _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+            render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+        st.caption("When to ship inventory from your 3PL (Packiyo) to Amazon FBA.")
 
     # --- Business Variables (from sidebar panel) ---
     bv = ctx['biz_vars']

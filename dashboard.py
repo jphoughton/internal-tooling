@@ -27,7 +27,7 @@ from analytics.waterfall import (
 from analytics.sku_flavors import get_flavor
 from ui.styles import inject_global_styles, get_nav_section_css
 from ui.components import check_password
-from ui.business_vars import get_business_vars, render_sidebar_panel
+from ui.business_vars import get_business_vars
 
 
 # --- Cached wrappers for expensive computations ---
@@ -350,20 +350,39 @@ st.sidebar.markdown(
 )
 st.sidebar.caption("Command Center")
 
-# ── Navigation with section grouping ──
+# ── Navigation with section grouping (channel-first) ──
 _NAV_ICONS = {
-    "Overview": "\U0001F4CA", "Marketing": "\U0001F4C8", "Retention": "\U0001F504",
-    "Demand Forecast": "\U0001F52E", "Projected Inventory": "\U0001F4E6",
-    "Reorder Alerts": "\U0001F6A8", "FBA Transfers": "\U0001F69A",
-    "3PL Inventory": "\U0001F3ED", "Amazon Inventory": "\U0001F6D2",
-    "Financials": "\U0001F4B0", "Settings": "\u2699\uFE0F",
+    'DTC Overview': '\U0001F4CA', 'DTC Marketing': '\U0001F4C8', 'DTC Retention': '\U0001F504', 'DTC Ops': '\U0001F4E6',
+    'Amazon Overview': '\U0001F4CA', 'Amazon Marketing': '\U0001F4C8', 'Amazon Retention': '\U0001F504', 'Amazon Ops': '\U0001F4E6',
+    'Rollup Overview': '\U0001F4CA', 'Rollup Marketing': '\U0001F4C8', 'Rollup Retention': '\U0001F504', 'Rollup Ops': '\U0001F4E6',
+    'Financials': '\U0001F4B0', 'Settings': '\u2699\uFE0F', 'Variables': '\U0001F4DD',
 }
 
 _NAV_GROUPS = [
-    ("Analytics", ["Overview", "Marketing", "Retention"]),
-    ("Inventory", ["Demand Forecast", "Projected Inventory", "Reorder Alerts", "FBA Transfers", "3PL Inventory", "Amazon Inventory"]),
-    ("Finance & Config", ["Financials", "Settings"]),
+    ('DTC', ['DTC Overview', 'DTC Marketing', 'DTC Retention', 'DTC Ops']),
+    ('Amazon', ['Amazon Overview', 'Amazon Marketing', 'Amazon Retention', 'Amazon Ops']),
+    ('Rollup', ['Rollup Overview', 'Rollup Marketing', 'Rollup Retention', 'Rollup Ops']),
+    ('Finance & Config', ['Financials', 'Settings', 'Variables']),
 ]
+
+_STANDALONE_PAGES = {'Financials', 'Settings', 'Variables'}
+
+# Legacy URL redirect map (old page names → new)
+_LEGACY_PAGE_MAP = {
+    'Overview': 'Rollup Overview', 'Marketing': 'Rollup Marketing',
+    'Retention': 'Rollup Retention', 'Demand Forecast': 'Rollup Ops',
+    'Projected Inventory': 'Rollup Ops', 'Reorder Alerts': 'Rollup Ops',
+    'FBA Transfers': 'Amazon Ops', '3PL Inventory': 'DTC Ops',
+    'Amazon Inventory': 'Amazon Ops',
+}
+
+def _nav_format(x):
+    """Strip channel prefix for display: 'DTC Overview' → '📊  Overview'."""
+    icon = _NAV_ICONS.get(x, '')
+    if x in _STANDALONE_PAGES:
+        return f'{icon}  {x}'
+    parts = x.split(' ', 1)
+    return f'{icon}  {parts[1]}' if len(parts) == 2 else f'{icon}  {x}'
 
 # Flatten all pages for the single radio
 _ALL_NAV_PAGES = []
@@ -372,25 +391,37 @@ for _grp_name, _grp_pages in _NAV_GROUPS:
 
 # Restore page from URL query params (survives browser refresh)
 _qp = st.query_params
-_default_page = _qp.get("page", "Overview")
+_default_page = _qp.get('page', 'DTC Overview')
+# Handle legacy bookmarks
+if _default_page in _LEGACY_PAGE_MAP:
+    _default_page = _LEGACY_PAGE_MAP[_default_page]
+    st.query_params['page'] = _default_page
 _default_idx = _ALL_NAV_PAGES.index(_default_page) if _default_page in _ALL_NAV_PAGES else 0
 
 # Single radio drives actual selection (hidden, styled via CSS)
 page = st.sidebar.radio(
-    "Navigate",
+    'Navigate',
     _ALL_NAV_PAGES,
     index=_default_idx,
-    format_func=lambda x: f"{_NAV_ICONS.get(x, '')}  {x}",
-    label_visibility="collapsed",
-    key="_nav_radio",
+    format_func=_nav_format,
+    label_visibility='collapsed',
+    key='_nav_radio',
 )
 
 # Persist selected page to URL query params
 if page != _default_page:
-    st.query_params["page"] = page
+    st.query_params['page'] = page
+
+# Extract channel and page type from the selected page
+if page in _STANDALONE_PAGES:
+    _channel = None
+    _source_filter = None
+    _page_type = page
+else:
+    _channel, _page_type = page.split(' ', 1)
+    _source_filter = {'DTC': 'shopify', 'Amazon': 'amazon', 'Rollup': None}[_channel]
 
 # Inject section headers via JS/CSS after the radio renders
-# Build a mapping: for each page index, which group it belongs to
 _section_js_map = {}
 _idx = 0
 for _grp_name, _grp_pages in _NAV_GROUPS:
@@ -417,12 +448,6 @@ if configured_sources:
     st.sidebar.caption(f"Connected: {_src_labels}")
 else:
     st.sidebar.caption("\u2699\uFE0F No sources \u2014 go to Settings")
-
-# --- Business Variables panel (persistent across all pages) ---
-if render_sidebar_panel(forecast_skus=FORECAST_SKUS):
-    clear_waterfall_cache()
-    st.cache_data.clear()
-    st.rerun()
 
 # --- Auto-sync: trigger if no successful sync since 5 AM PST today ---
 if configured_sources:
@@ -781,7 +806,7 @@ if _all_urgent:
 
     _extra = ""
     if _n_total > 1:
-        _extra = f'<span style="opacity:0.85;margin-left:8px;">+{_n_total - 1} more \u2192 Reorder Alerts</span>'
+        _extra = f'<span style="opacity:0.85;margin-left:8px;">+{_n_total - 1} more \u2192 Rollup Ops</span>'
 
     st.markdown(
         f'<div style="'
@@ -818,6 +843,8 @@ _ctx = {
     'biz_vars': _biz_vars,
     'media_spend': _ctx_media_spend,
     'amazon_revenue_forecast': _ctx_amz_rev_forecast,
+    'channel': _channel,
+    'source_filter': _source_filter,
 }
 
 # --- Pre-warm critical caches (first load only) ---
@@ -842,36 +869,24 @@ if 'caches_warmed' not in st.session_state:
     except Exception:
         pass
 
-if page == "Overview":
+if _page_type == 'Overview':
     from views.overview import render
     render(_ctx)
-elif page == "Retention":
-    from views.retention import render
-    render(_ctx)
-elif page == "Demand Forecast":
-    from views.demand_forecast import render
-    render(_ctx)
-elif page == "Projected Inventory":
-    from views.projected_inventory import render
-    render(_ctx)
-elif page == "3PL Inventory":
-    from views.inventory_3pl import render
-    render(_ctx)
-elif page == "Amazon Inventory":
-    from views.inventory_amazon import render
-    render(_ctx)
-elif page == "Reorder Alerts":
-    from views.reorder_alerts import render
-    render(_ctx)
-elif page == "FBA Transfers":
-    from views.fba_transfers import render
-    render(_ctx)
-elif page == "Marketing":
+elif _page_type == 'Marketing':
     from views.marketing import render
     render(_ctx)
-elif page == "Financials":
+elif _page_type == 'Retention':
+    from views.retention import render
+    render(_ctx)
+elif _page_type == 'Ops':
+    from views.ops import render
+    render(_ctx)
+elif _page_type == 'Financials':
     from views.financials import render
     render(_ctx)
-elif page == "Settings":
+elif _page_type == 'Settings':
     from views.settings import render
+    render(_ctx)
+elif _page_type == 'Variables':
+    from views.variables import render
     render(_ctx)
