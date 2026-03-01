@@ -13,7 +13,6 @@ from db import (
 )
 from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
-import config
 
 
 def render(ctx):
@@ -81,27 +80,23 @@ def render(ctx):
     has_3pl = False
     has_amz_inv = False
 
-    with st.spinner("Fetching live inventory..."):
-        # Packiyo 3PL
-        if config.PACKIYO_API_TOKEN:
-            try:
-                from etl.packiyo_client import get_inventory as get_3pl_inventory
-                inv_data_3pl = get_3pl_inventory()
-                has_3pl = True
-            except Exception as e:
-                st.warning(f"Could not fetch 3PL inventory: {e}")
+    # Packiyo 3PL
+    try:
+        _3pl_result = ctx['cached_3pl_inventory']()
+        if _3pl_result:
+            inv_data_3pl = _3pl_result
+            has_3pl = True
+    except Exception as e:
+        st.warning(f"Could not fetch 3PL inventory: {e}")
 
-        # Amazon FBA
-        has_amazon_creds_ro = all(getattr(config, k, "") for k in [
-            "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-        ])
-        if has_amazon_creds_ro:
-            try:
-                from etl.amazon_inventory import get_inventory as get_fba_inventory
-                inv_data_amz = get_fba_inventory()
-                has_amz_inv = True
-            except Exception as e:
-                st.warning(f"Could not fetch Amazon FBA inventory: {e}")
+    # Amazon FBA
+    try:
+        _amz_result = ctx['cached_amazon_inventory']()
+        if _amz_result:
+            inv_data_amz = _amz_result
+            has_amz_inv = True
+    except Exception as e:
+        st.warning(f"Could not fetch Amazon FBA inventory: {e}")
 
     # Merge: combine available stock across both sources per SKU
     combined_inv = {}

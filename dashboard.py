@@ -754,6 +754,28 @@ _ctx = {
     'amazon_revenue_forecast': _ctx_amz_rev_forecast,
 }
 
+# --- Pre-warm critical caches (first load only) ---
+# Trigger cached functions so data is ready before the page renders.
+# These are no-ops if the cache is already warm (within TTL).
+if 'caches_warmed' not in st.session_state:
+    st.session_state['caches_warmed'] = True
+    try:
+        _cached_3pl_inventory()
+    except Exception:
+        pass
+    try:
+        _cached_amazon_inventory()
+    except Exception:
+        pass
+    try:
+        if _ctx_media_spend:
+            import json as _json_warm
+            _warm_seasonal = _load_seasonal_json()
+            _warm_media = _json_warm.dumps(_ctx_media_spend, sort_keys=True)
+            _cached_waterfall(_warm_media, None, 12, _warm_seasonal)
+    except Exception:
+        pass
+
 if page == "Overview":
     from views.overview import render
     render(_ctx)

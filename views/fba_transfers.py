@@ -11,7 +11,6 @@ from db import (
 from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 from analytics.dtc_demand import get_amazon_sku_velocity
-import config
 
 
 def render(ctx):
@@ -40,24 +39,20 @@ def render(ctx):
     inv_data_amz_fba = []
     has_amz_inv_fba = False
 
-    with st.spinner("Fetching live inventory..."):
-        if config.PACKIYO_API_TOKEN:
-            try:
-                from etl.packiyo_client import get_inventory as get_3pl_inventory
-                inv_data_3pl_fba = get_3pl_inventory()
-            except Exception as e:
-                st.warning(f"Could not fetch 3PL inventory: {e}")
+    try:
+        _3pl_result = ctx['cached_3pl_inventory']()
+        if _3pl_result:
+            inv_data_3pl_fba = _3pl_result
+    except Exception as e:
+        st.warning(f"Could not fetch 3PL inventory: {e}")
 
-        has_amazon_creds_fba = all(getattr(config, k, "") for k in [
-            "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
-        ])
-        if has_amazon_creds_fba:
-            try:
-                from etl.amazon_inventory import get_inventory as get_fba_inventory
-                inv_data_amz_fba = get_fba_inventory()
-                has_amz_inv_fba = True
-            except Exception as e:
-                st.warning(f"Could not fetch Amazon FBA inventory: {e}")
+    try:
+        _amz_result = ctx['cached_amazon_inventory']()
+        if _amz_result:
+            inv_data_amz_fba = _amz_result
+            has_amz_inv_fba = True
+    except Exception as e:
+        st.warning(f"Could not fetch Amazon FBA inventory: {e}")
 
     if not has_amz_inv_fba:
         st.info("Live FBA transfer alerts require Amazon SP-API credentials. Add them in **Settings** or set the environment variables.")

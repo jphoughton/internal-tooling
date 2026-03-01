@@ -55,14 +55,11 @@ def render(ctx):
             _amz_fb_display["Revenue (30d)"] = _amz_fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
             render_html_table(_amz_fb_display, max_height=min(len(_amz_fb_display) * 35 + 38, 700))
     else:
-        from etl.amazon_inventory import get_inventory as get_amz_inventory
-
-        with st.spinner("Fetching FBA inventory from Amazon..."):
-            try:
-                amz_inv = get_amz_inventory()
-            except Exception as e:
-                amz_inv = None
-                st.error(f"Failed to fetch Amazon inventory: {e}")
+        try:
+            amz_inv = ctx['cached_amazon_inventory']()
+        except Exception as e:
+            amz_inv = None
+            st.error(f"Failed to fetch Amazon inventory: {e}")
 
         with _badge_col:
             if amz_inv:
