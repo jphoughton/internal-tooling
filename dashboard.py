@@ -34,6 +34,7 @@ from ui.business_vars import get_business_vars, render_sidebar_panel
 # Data updates once daily (6AM sync). All caches use 24h TTL and are
 # explicitly cleared after sync / refresh / settings edits.
 _CACHE_TTL = 86400  # 24 hours — data only changes once per day
+_CACHE_VERSION = 'v2'  # bump to force cache invalidation on deploy
 
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_retention_curve(source_filter):
