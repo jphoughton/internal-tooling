@@ -197,6 +197,7 @@ def _maybe_run_startup() -> None:
         st.stop()
 
 
+@st.cache_data(ttl=600)
 def _load_seasonal_json():
     """Load seasonal indices from DB and return as JSON string for cache key, or None if disabled."""
     import json as _json_s
@@ -210,6 +211,7 @@ def _load_seasonal_json():
     return _json_s.dumps(indices, sort_keys=True)
 
 
+@st.cache_data(ttl=600)
 def _load_sku_seasonal_json():
     """Load per-SKU seasonal indices from DB as JSON string for cache key, or None if empty."""
     import json as _json_s
@@ -221,6 +223,28 @@ def _load_sku_seasonal_json():
     if not indices:
         return None
     return _json_s.dumps(indices, sort_keys=True)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_3pl_inventory():
+    """Cached wrapper for Packiyo 3PL inventory API."""
+    import config as _cfg
+    if not _cfg.PACKIYO_API_TOKEN:
+        return None
+    from etl.packiyo_client import get_inventory
+    return get_inventory()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_amazon_inventory():
+    """Cached wrapper for Amazon FBA inventory API."""
+    import config as _cfg
+    if not all(getattr(_cfg, k, '') for k in [
+        'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
+    ]):
+        return None
+    from etl.amazon_inventory import get_inventory
+    return get_inventory()
 
 
 st.set_page_config(
@@ -531,11 +555,13 @@ def _compute_global_alerts():
         if "Flavor" not in _sku_alert.columns:
             _sku_alert.insert(1, "Flavor", _sku_alert["SKU"].map(lambda s: get_flavor(s)))
 
-        # Load inventory
+        # Load inventory (use cached API wrappers)
         combined_inv = {}
         try:
-            from etl.packiyo_client import get_inventory as _alert_3pl
-            for item in _alert_3pl():
+            _3pl_items = _cached_3pl_inventory()
+            if not _3pl_items:
+                _3pl_items = []
+            for item in _3pl_items:
                 sku = item["sku"]
                 if sku in FORECAST_SKUS:
                     combined_inv.setdefault(sku, {"sku": sku, "name": item.get("name", ""),
@@ -550,8 +576,7 @@ def _compute_global_alerts():
 
         _amz_inv_items = []
         try:
-            from etl.amazon_inventory import get_inventory as _alert_fba
-            _amz_inv_items = _alert_fba()
+            _amz_inv_items = _cached_amazon_inventory() or []
             for item in _amz_inv_items:
                 sku = item["sku"]
                 if sku in FORECAST_SKUS:
@@ -720,12 +745,36 @@ _ctx = {
     'cached_aov_and_units': _cached_aov_and_units,
     'load_seasonal_json': _load_seasonal_json,
     'load_sku_seasonal_json': _load_sku_seasonal_json,
+    'cached_3pl_inventory': _cached_3pl_inventory,
+    'cached_amazon_inventory': _cached_amazon_inventory,
     'active_sources': active_sources,
     'configured_sources': configured_sources,
     'biz_vars': _biz_vars,
     'media_spend': _ctx_media_spend,
     'amazon_revenue_forecast': _ctx_amz_rev_forecast,
 }
+
+# --- Pre-warm critical caches (first load only) ---
+# Trigger cached functions so data is ready before the page renders.
+# These are no-ops if the cache is already warm (within TTL).
+if 'caches_warmed' not in st.session_state:
+    st.session_state['caches_warmed'] = True
+    try:
+        _cached_3pl_inventory()
+    except Exception:
+        pass
+    try:
+        _cached_amazon_inventory()
+    except Exception:
+        pass
+    try:
+        if _ctx_media_spend:
+            import json as _json_warm
+            _warm_seasonal = _load_seasonal_json()
+            _warm_media = _json_warm.dumps(_ctx_media_spend, sort_keys=True)
+            _cached_waterfall(_warm_media, None, 12, _warm_seasonal)
+    except Exception:
+        pass
 
 if page == "Overview":
     from views.overview import render

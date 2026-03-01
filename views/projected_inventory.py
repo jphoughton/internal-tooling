@@ -16,7 +16,6 @@ from analytics.dtc_demand import (
     get_current_month_progress,
 )
 from ui.components import render_html_table, render_freshness_badge
-import config
 
 
 def render(ctx):
@@ -45,25 +44,21 @@ def render(ctx):
     pi_has_3pl = False
     pi_has_amz = False
 
-    with st.spinner('Fetching live inventory...'):
-        if config.PACKIYO_API_TOKEN:
-            try:
-                from etl.packiyo_client import get_inventory as pi_get_3pl
-                pi_inv_3pl = pi_get_3pl()
-                pi_has_3pl = True
-            except Exception as e:
-                st.warning(f'Could not fetch 3PL inventory: {e}')
+    try:
+        _3pl_result = ctx['cached_3pl_inventory']()
+        if _3pl_result:
+            pi_inv_3pl = _3pl_result
+            pi_has_3pl = True
+    except Exception as e:
+        st.warning(f'Could not fetch 3PL inventory: {e}')
 
-        pi_has_amz_creds = all(getattr(config, k, '') for k in [
-            'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
-        ])
-        if pi_has_amz_creds:
-            try:
-                from etl.amazon_inventory import get_inventory as pi_get_fba
-                pi_inv_amz = pi_get_fba()
-                pi_has_amz = True
-            except Exception as e:
-                st.warning(f'Could not fetch Amazon FBA inventory: {e}')
+    try:
+        _amz_result = ctx['cached_amazon_inventory']()
+        if _amz_result:
+            pi_inv_amz = _amz_result
+            pi_has_amz = True
+    except Exception as e:
+        st.warning(f'Could not fetch Amazon FBA inventory: {e}')
 
     pi_has_inv = pi_has_3pl or pi_has_amz
 

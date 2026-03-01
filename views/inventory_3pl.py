@@ -49,14 +49,11 @@ def render(ctx):
             _fb_display["Revenue (30d)"] = _fb_display["Revenue (30d)"].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "")
             render_html_table(_fb_display, max_height=min(len(_fb_display) * 35 + 38, 700))
     else:
-        from etl.packiyo_client import get_inventory
-
-        with st.spinner("Fetching inventory from Packiyo..."):
-            try:
-                inv = get_inventory()
-            except Exception as e:
-                inv = None
-                st.error(f"Failed to fetch inventory: {e}")
+        try:
+            inv = ctx['cached_3pl_inventory']()
+        except Exception as e:
+            inv = None
+            st.error(f"Failed to fetch inventory: {e}")
 
         with _badge_col:
             if inv:

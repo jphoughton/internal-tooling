@@ -398,6 +398,10 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_order_items_sku ON order_items(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_sku ON daily_sku_sales(sku)",
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_date ON daily_sku_sales(sale_date)",
+    "CREATE INDEX IF NOT EXISTS idx_daily_sales_source_date ON daily_sku_sales(source, sale_date)",
+    "CREATE INDEX IF NOT EXISTS idx_daily_sales_sku_date ON daily_sku_sales(sku, sale_date)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_customer_date ON orders(customer_id, order_date)",
+    "CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",

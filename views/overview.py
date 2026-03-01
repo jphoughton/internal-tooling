@@ -13,7 +13,6 @@ from analytics.sku_flavors import get_flavor
 from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue, get_projected_new_repeat_summary
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 from views.pacing import render_pacing
-import config
 
 
 @st.cache_data(ttl=300)
@@ -367,26 +366,21 @@ def render(ctx):
     _ov_3pl_ok = False
     _ov_fba_ok = False
 
-    if config.PACKIYO_API_TOKEN:
-        try:
-            from etl.packiyo_client import get_inventory as _ov_get_3pl
-            _ov_3pl = _ov_get_3pl()
+    try:
+        _ov_3pl = ctx['cached_3pl_inventory']()
+        if _ov_3pl:
             _ov_3pl_total = sum(i.get('quantity_available', 0) or 0 for i in _ov_3pl)
             _ov_3pl_ok = True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-    _ov_has_amz = all(getattr(config, k, '') for k in [
-        'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
-    ])
-    if _ov_has_amz:
-        try:
-            from etl.amazon_inventory import get_inventory as _ov_get_fba
-            _ov_fba = _ov_get_fba()
+    try:
+        _ov_fba = ctx['cached_amazon_inventory']()
+        if _ov_fba:
             _ov_fba_total = sum(i.get('total_quantity', 0) or 0 for i in _ov_fba)
             _ov_fba_ok = True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # Demand forecast rollup
     _ov_demand_3mo = 0

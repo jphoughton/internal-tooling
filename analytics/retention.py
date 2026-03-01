@@ -288,7 +288,7 @@ def get_revenue_retention_data(source_filter=None):
     }
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def build_cohort_matrices(sku_filter=None, source_filter=None):
     """Build revenue, order-count, and customer-count matrices for TW-style
     cohort analysis.
@@ -440,7 +440,7 @@ def build_cohort_matrices(sku_filter=None, source_filter=None):
     }
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_cohort_summary(source_filter=None):
     """Compute per-cohort summary metrics: customers, NCPA, RPR.
 
@@ -535,7 +535,7 @@ def get_cohort_summary(source_filter=None):
     return result[['cohort', 'customers', 'ncpa', 'rpr']]
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_repeat_rate_summary(source_filter=None):
     """Compute per-cohort repeat purchase metrics.
 
@@ -698,7 +698,7 @@ def classify_sku_trend(sku):
 # New vs Repeat customer summary helpers
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_new_repeat_summary(start_date, end_date, source_filter=None):
     """Compute new vs repeat customer summary for a date range.
 
@@ -778,7 +778,7 @@ def get_new_repeat_summary(start_date, end_date, source_filter=None):
     }
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
     """Daily new vs repeat revenue for charting.
 
@@ -820,7 +820,7 @@ def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
 # Data-freshness detection + DOW-adjusted projection
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_last_order_date(source_filter=None):
     """Return the most recent order_date in the DB for a given channel."""
     clause = ""
@@ -842,7 +842,7 @@ def get_last_order_date(source_filter=None):
     return val
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def _get_dow_daily_new_customers(start_date, end_date, source_filter=None):
     """Return a DataFrame with first_order_date and new_customer count per day,
     plus dow (0=Mon … 6=Sun) for building DOW indices."""
@@ -909,7 +909,7 @@ def _project_missing_days(actuals_df, last_data_date, projection_end, nc_aov):
     return projected_nc, projected_rev, gap_days, 'dow_adjusted'
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def get_projected_new_repeat_summary(start_date, end_date, source_filter=None):
     """Like get_new_repeat_summary but adds projected values when data is stale.
 
