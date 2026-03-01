@@ -377,11 +377,16 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
     with get_db() as conn:
         # Mix from recent data
         rows = conn.execute(f"""
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = 'shopify'
+                GROUP BY customer_id
+            )
             SELECT oi.sku, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
+            JOIN cust_first cf ON o.customer_id = cf.customer_id
+            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', cf.first_order_date)
               AND o.order_date >= date('now', '-{lookback_months} months')
             GROUP BY oi.sku
             ORDER BY qty DESC
@@ -389,12 +394,17 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
 
         # UPC from 12-month window (matches waterfall metrics timeframe)
         upc_data = conn.execute("""
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = 'shopify'
+                GROUP BY customer_id
+            )
             SELECT SUM(oi.quantity) as total_units,
                    COUNT(DISTINCT o.customer_id) as customers
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', c.first_order_date)
+            JOIN cust_first cf ON o.customer_id = cf.customer_id
+            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', cf.first_order_date)
               AND o.order_date >= date('now', '-12 months')
               AND oi.sku IN ({})
         """.format(','.join('?' * len(forecast_skus))), list(forecast_skus)).fetchone() if forecast_skus else None
@@ -492,11 +502,16 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
     with get_db() as conn:
         # Mix from recent data
         rows = conn.execute(f"""
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = 'shopify'
+                GROUP BY customer_id
+            )
             SELECT oi.sku, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN customers c ON o.customer_id = c.customer_id
-            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
+            JOIN cust_first cf ON o.customer_id = cf.customer_id
+            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
               AND o.order_date >= date('now', '-{lookback_months} months')
             GROUP BY oi.sku
             ORDER BY qty DESC
@@ -504,13 +519,18 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
 
         # UPC from 12-month window, forecast SKUs only (matches waterfall)
         upc_row = conn.execute("""
+            WITH cust_first AS (
+                SELECT customer_id, MIN(order_date) AS first_order_date
+                FROM orders WHERE source = 'shopify'
+                GROUP BY customer_id
+            )
             SELECT AVG(monthly_upc) as upc FROM (
                 SELECT strftime('%Y-%m', o.order_date) as month,
                        CAST(SUM(oi.quantity) AS REAL) / COUNT(DISTINCT o.customer_id) as monthly_upc
                 FROM orders o
                 JOIN order_items oi ON o.order_id = oi.order_id
-                JOIN customers c ON o.customer_id = c.customer_id
-                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', c.first_order_date)
+                JOIN cust_first cf ON o.customer_id = cf.customer_id
+                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
                   AND o.order_date >= date('now', '-12 months')
                   AND oi.sku IN ({})
                 GROUP BY strftime('%Y-%m', o.order_date)
