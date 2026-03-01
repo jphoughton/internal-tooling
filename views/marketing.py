@@ -29,14 +29,24 @@ def render(ctx):
     _mkt_horizon = _bv.get('forecast_horizon', 12)
     _mkt_amz_growth = _bv.get('amazon_growth_pct', 0.0)
 
+    channel = ctx.get('channel', 'Rollup')
+    source_filter = ctx.get('source_filter')
+
+    _title_text = f'{channel} Marketing' if channel != 'Rollup' else 'Marketing'
+
+    if source_filter:
+        _badge_sources = [source_filter]
+    else:
+        _badge_sources = ['shopify', 'amazon']
+
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
-        st.title("Marketing")
+        st.title(_title_text)
     with _badge_col:
         with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
-            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+            _ts = get_last_sync_timestamp(conn, _badge_sources)
+            _new = get_new_rows_since_yesterday(conn, _badge_sources)
+            _srcs = get_synced_sources(conn, _badge_sources)
         _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
         render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
 
@@ -283,7 +293,13 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            _chan_sel = "All"  # default; overridden by widget below when goals are present
+            # Map channel from ctx to pacing channel selection
+            if channel == 'DTC':
+                _chan_sel = 'DTC'
+            elif channel == 'Amazon':
+                _chan_sel = 'Amazon'
+            else:  # Rollup
+                _chan_sel = 'All'
 
             if _has_goals:
                 # Build pacing row helper
@@ -486,17 +502,8 @@ def render(ctx):
                     _goal_amz_spend = float(_amz_spend_plan[0].get("spend", 0))
 
                 # ============================================================
-                # CHANNEL FILTER — toggle between All / Roll Up / DTC / Amazon
+                # CHANNEL FILTER — driven by ctx['channel'] from navigation
                 # ============================================================
-                _chan_sel = st.segmented_control(
-                    "Channel",
-                    options=["All", "Roll Up", "DTC", "Amazon"],
-                    default="All",
-                    key="_mkt_channel",
-                    label_visibility="collapsed",
-                )
-                if _chan_sel is None:
-                    _chan_sel = "All"
 
                 # ============================================================
                 # ROLL UP — DTC + Amazon combined
