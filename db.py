@@ -383,6 +383,12 @@ _SCHEMA_SQL = [
         synced_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS inventory_snapshot (
+        source TEXT PRIMARY KEY,
+        snapshot_data TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     """CREATE TABLE IF NOT EXISTS model_runs (
         model_name TEXT PRIMARY KEY,
         last_run_at TEXT NOT NULL,
@@ -1212,6 +1218,58 @@ def get_order_items_page(
         raise
     except Exception as exc:
         raise DatabaseError(f'get_order_items_page failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Inventory snapshots (pre-computed by 6AM scheduler)
+# ---------------------------------------------------------------------------
+def save_inventory_snapshot(
+    conn: ConnectionWrapper,
+    source: str,
+    data: list[dict[str, Any]],
+) -> None:
+    """Upsert a JSON inventory snapshot for the given source ('packiyo' or 'amazon')."""
+    import json as _json_snap
+    try:
+        conn.execute("""
+            INSERT INTO inventory_snapshot (source, snapshot_data, created_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(source) DO UPDATE SET
+                snapshot_data = excluded.snapshot_data,
+                created_at = CURRENT_TIMESTAMP::text
+        """, (source, _json_snap.dumps(data)))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('save_inventory_snapshot failed for source=%s: %s', source, exc)
+        raise DatabaseError(f'save_inventory_snapshot failed: {exc}') from exc
+
+
+def get_inventory_snapshot(
+    conn: ConnectionWrapper,
+    source: str,
+    max_age_hours: float = 6,
+) -> Optional[list[dict[str, Any]]]:
+    """Return parsed inventory list if a fresh snapshot exists, else None."""
+    import json as _json_snap
+    try:
+        row = conn.execute(
+            "SELECT snapshot_data, created_at FROM inventory_snapshot WHERE source = %s",
+            (source,),
+        ).fetchone()
+        if row is None:
+            return None
+        from datetime import datetime as _dt_snap, timezone as _tz_snap
+        created = _dt_snap.strptime(row['created_at'][:19], '%Y-%m-%d %H:%M:%S')
+        age_hours = (_dt_snap.now() - created).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return None
+        return _json_snap.loads(row['snapshot_data'])
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_inventory_snapshot failed for source=%s: %s', source, exc)
+        return None
 
 
 # ---------------------------------------------------------------------------

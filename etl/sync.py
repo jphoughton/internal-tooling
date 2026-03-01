@@ -7,7 +7,7 @@ date ranges into chunks and processes them concurrently.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync
+from db import get_db, init_db, rebuild_daily_sales, get_last_sync_date, log_sync, save_inventory_snapshot
 import config as cfg
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,10 @@ def run_daily_sync(full_refresh=False, on_status=None):
     with get_db() as conn:
         rebuild_daily_sales(conn)
 
+    # --- Snapshot live inventory for fast dashboard reads ---
+    _report(step_idx, "Snapshotting live inventory...")
+    _snapshot_inventory()
+
     # --- Event-driven: rerun waterfall if new repeat data arrived ---
     _report(step_idx, "Checking for model reruns...")
     try:
@@ -153,6 +157,40 @@ def run_daily_sync(full_refresh=False, on_status=None):
     _report(total_steps, "Sync complete!")
     logger.info("Sync complete: %s", results)
     return results
+
+
+def _snapshot_inventory():
+    """Snapshot Packiyo and Amazon inventory APIs into the DB.
+
+    Called after daily ETL sync so the dashboard can read from DB
+    instead of hitting live APIs on first load.
+    """
+    has_packiyo = bool(getattr(cfg, 'PACKIYO_API_TOKEN', ''))
+    has_amazon = all(getattr(cfg, k, '') for k in [
+        'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
+    ])
+
+    if has_packiyo:
+        try:
+            from etl.packiyo_client import get_inventory
+            items = get_inventory()
+            if items is not None:
+                with get_db() as conn:
+                    save_inventory_snapshot(conn, 'packiyo', items)
+                logger.info('Inventory snapshot: packiyo — %d items', len(items))
+        except Exception as e:
+            logger.error('Inventory snapshot failed (packiyo): %s', e)
+
+    if has_amazon:
+        try:
+            from etl.amazon_inventory import get_inventory
+            items = get_inventory()
+            if items is not None:
+                with get_db() as conn:
+                    save_inventory_snapshot(conn, 'amazon', items)
+                logger.info('Inventory snapshot: amazon — %d items', len(items))
+        except Exception as e:
+            logger.error('Inventory snapshot failed (amazon): %s', e)
 
 
 def _sync_amazon(full_refresh):
