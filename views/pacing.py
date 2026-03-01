@@ -428,17 +428,15 @@ def render_pacing(ctx):
         _goal_amz_spend = float(_amz_spend_plan[0].get("spend", 0))
 
     # ============================================================
-    # CHANNEL FILTER
+    # CHANNEL FILTER — driven by ctx['channel'] from navigation
     # ============================================================
-    _chan_sel = st.segmented_control(
-        "Channel",
-        options=["All", "Roll Up", "DTC", "Amazon"],
-        default="All",
-        key="_pacing_channel",
-        label_visibility="collapsed",
-    )
-    if _chan_sel is None:
-        _chan_sel = "All"
+    channel = ctx.get('channel', 'Rollup')
+    if channel == 'DTC':
+        _chan_sel = 'DTC'
+    elif channel == 'Amazon':
+        _chan_sel = 'Amazon'
+    else:  # Rollup or None
+        _chan_sel = 'All'
 
     # ============================================================
     # ROLL UP — DTC + Amazon combined
