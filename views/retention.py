@@ -23,7 +23,6 @@ from analytics.retention import (
     get_repeat_rate_summary,
 )
 from analytics.waterfall import clear_waterfall_cache
-from analytics.dtc_demand import build_repeat_customer_sku_month_table
 from ui.components import render_freshness_badge, render_model_freshness, smart_date_filter, render_html_table
 from ui.tables import make_cohort_cell_style
 
@@ -417,23 +416,13 @@ def render(ctx):
             _metrics = _cached_aov(None)
 
             if not _wf.empty and _metrics:
-                _repeat_rpu = _metrics.get('repeat_rev_per_unit', 0)
                 _new_rpu = _metrics.get('new_customer_rev_per_unit', 0)
                 _media_map = {e['month']: e for e in _media_plan_raw} if _media_plan_raw else {}
-
-                _forecast_skus = ctx.get('forecast_skus')
-                _rep_sku_table = build_repeat_customer_sku_month_table(
-                    _wf, horizon_months=12, forecast_skus=_forecast_skus,
-                )
-                _month_cols = [c for c in _rep_sku_table.columns if c.startswith('20')] if not _rep_sku_table.empty else []
-                _rep_units_by_month = {}
-                for m in _month_cols:
-                    _rep_units_by_month[m] = _rep_sku_table[m].sum()
 
                 _rev_rows = []
                 for _, row in _wf.iterrows():
                     m = row['month']
-                    repeat_rev = round(_rep_units_by_month.get(m, 0) * _repeat_rpu)
+                    repeat_rev = round(row.get('repeat_revenue', 0))
                     entry = _media_map.get(m, {})
                     spend = entry.get('spend', 0) or 0
                     roas = entry.get('new_customer_roas', 0) or 0
