@@ -344,15 +344,17 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
     if f'{key_prefix}_end' not in st.session_state:
         st.session_state[f'{key_prefix}_end'] = _def_end
 
-    default_start = st.session_state[f'{key_prefix}_start']
-    default_end = st.session_state[f'{key_prefix}_end']
+    # Clamp to valid range — must happen BEFORE st.date_input reads session
+    # state, otherwise stale values (e.g. today > data_max) cause a crash.
+    st.session_state[f'{key_prefix}_start'] = max(
+        min(st.session_state[f'{key_prefix}_start'], data_max), data_min
+    )
+    st.session_state[f'{key_prefix}_end'] = max(
+        min(st.session_state[f'{key_prefix}_end'], data_max), data_min
+    )
 
-    # Clamp to valid range (must also update session state so date_input
-    # widgets don't receive a default outside the min/max bounds)
-    default_start = max(default_start, data_min)
-    default_end = min(default_end, data_max)
-    st.session_state[f'{key_prefix}_start'] = default_start
-    st.session_state[f'{key_prefix}_end'] = default_end
+    current_start = st.session_state[f'{key_prefix}_start']
+    current_end = st.session_state[f'{key_prefix}_end']
 
     if show_presets:
         # Detect which preset matches current date range
@@ -360,7 +362,7 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
         for label, (ps, pe) in presets.items():
             clamped_s = max(ps, data_min)
             clamped_e = min(pe, data_max)
-            if default_start == clamped_s and default_end == clamped_e:
+            if current_start == clamped_s and current_end == clamped_e:
                 active_preset = label
                 break
 

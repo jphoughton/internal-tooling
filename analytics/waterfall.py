@@ -1,17 +1,29 @@
 """
-Waterfall demand forecast engine.
+Waterfall demand forecast engine (DTC / Shopify only).
+
 Splits forecast into repeat customer demand (base) + new customer demand (from media spend).
+Matches the gold standard Repeat Model spreadsheet methodology:
+  - Revenue-based retention curve with 60/30/10 recency weighting
+  - Decay rate 0.98, terminal floor 0.005
+  - Cohorts from 2020-01 onwards
+  - Revenue Matrix: cohort x calendar month
+  - Monthly Summary: Total / New / Repeat revenue
 """
 import pandas as pd
 import time
 from datetime import datetime
 from db import get_db
-from analytics.retention import get_customer_cohort_data, get_revenue_retention_data
+from analytics.retention import get_revenue_retention_data
 from utils.date_helpers import month_str as _month_str, parse_month as _parse_month, add_months as _add_months, month_diff as _month_diff
 
 # Simple TTL cache for expensive computations (survives within a Streamlit rerun cycle).
 _cache = {}
 _CACHE_TTL = 300  # 5 minutes
+
+# Gold standard parameters
+DECAY_RATE = 0.98
+TERMINAL_FLOOR = 0.005
+COHORT_START = '2020-01'
 
 
 def _get_cached(key, fn):
@@ -58,126 +70,36 @@ def get_configured_sources():
     return sources
 
 
-def _detect_contaminated_cohorts(matrix):
-    """
-    Auto-detect cohorts contaminated by data truncation.
-
-    The first months in a dataset contain pre-existing customers whose
-    real first order predates our data window. These appear as "new"
-    with artificially high retention.
-
-    Detection uses two signals:
-    - Month-1 retention > 40% (clearly pre-existing customers)
-    - Month-1 > 25% AND month-6 > 20% (sustained abnormal retention)
-
-    Returns:
-        set of cohort month strings (e.g. {"2024-02", "2024-03"})
-    """
-    if matrix.empty or 1 not in matrix.columns:
-        return set()
-
-    contaminated = set()
-    for cohort in matrix.index:
-        m1 = matrix.loc[cohort, 1] if 1 in matrix.columns else float('nan')
-        m6 = matrix.loc[cohort, 6] if 6 in matrix.columns else float('nan')
-
-        if m1 != m1:  # NaN
-            continue
-        if m1 > 0.40:
-            contaminated.add(cohort)
-        elif m1 > 0.25 and m6 == m6 and m6 > 0.20:
-            contaminated.add(cohort)
-
-    return contaminated
-
-
-def _get_contaminated_cohort_rates(contaminated_cohorts, source_filter=None):
-    """
-    For contaminated cohorts, compute their stable monthly return rate
-    based on recent actual behavior (last 6 months average).
-
-    Returns:
-        dict: {cohort_month: avg_monthly_return_rate}
-    """
-    if not contaminated_cohorts:
-        return {}
-
-    rates = {}
-    with get_db() as conn:
-        source_clause = ""
-        params_extra = []
-        if source_filter:
-            source_clause = "AND o.source = ?"
-            params_extra = [source_filter]
-
-        # Find the last 6 complete months
-        last_month_row = conn.execute(
-            "SELECT MAX(strftime('%Y-%m', order_date)) as m FROM orders"
-        ).fetchone()
-        if not last_month_row or not last_month_row["m"]:
-            return {}
-
-        from dateutil.relativedelta import relativedelta as rd
-        last_dt = datetime.strptime(last_month_row["m"], "%Y-%m")
-        lookback_months = []
-        for i in range(1, 7):
-            m = last_dt - rd(months=i)
-            lookback_months.append(m.strftime("%Y-%m"))
-
-        for cohort in contaminated_cohorts:
-            cohort_size = conn.execute(
-                "SELECT COUNT(*) as c FROM customers WHERE strftime('%Y-%m', first_order_date) = ?",
-                (cohort,)
-            ).fetchone()["c"]
-            if cohort_size == 0:
-                continue
-
-            monthly_rates = []
-            for target in lookback_months:
-                active = conn.execute(f"""
-                    SELECT COUNT(DISTINCT o.customer_id) as c
-                    FROM orders o
-                    JOIN customers c ON o.customer_id = c.customer_id
-                    WHERE strftime('%Y-%m', c.first_order_date) = ?
-                      AND strftime('%Y-%m', o.order_date) = ?
-                      {source_clause}
-                """, [cohort, target] + params_extra).fetchone()["c"]
-                monthly_rates.append(active / cohort_size)
-
-            if monthly_rates:
-                rates[cohort] = sum(monthly_rates) / len(monthly_rates)
-
-    return rates
-
-
 def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weighted=True):
     """
-    Build a revenue-based retention curve matching the spreadsheet methodology.
+    Build a revenue-based retention curve matching the gold standard spreadsheet.
 
     Retention is defined as incremental revenue per month as a fraction of
     first-order revenue:
         retention[N] = (CumulativeRevenue[N] - CumulativeRevenue[N-1]) / 1st_Order_Revenue
 
-    Methodology (matches Dynamic_Cohort_Model_FINAL spreadsheet exactly):
-    - Only cohorts from 2020-01 onwards (spreadsheet starts Jan 2020)
+    Methodology (matches gold standard exactly):
+    - Only cohorts from 2020-01 onwards
     - Weighted average across all cohorts that have data at each offset
     - Weighting: Last 12 months = 60%, Next 12 = 30%, Rest = 10%
-    - No clipping or contamination filtering (spreadsheet includes all cohorts)
     - Extrapolation beyond observed data: 0.98 decay, 0.50% floor
+
+    The source_filter parameter is accepted for API compatibility but the
+    repeat model always uses Shopify-only data internally.
     """
     rev_data = _get_cached(
-        f"rev_retention_{source_filter}",
-        lambda: get_revenue_retention_data(source_filter=source_filter)
+        "rev_retention_shopify",
+        lambda: get_revenue_retention_data(source_filter='shopify')
     )
     matrix = rev_data['matrix']
     if matrix.empty:
-        return _get_customer_retention_curve(source_filter, min_cohorts, recency_weighted)
+        return {}
 
     # Only include cohorts from 2020-01 onwards (matching spreadsheet scope)
     all_cohorts = sorted(matrix.index.tolist())
-    cohorts = [c for c in all_cohorts if c >= '2020-01']
+    cohorts = [c for c in all_cohorts if c >= COHORT_START]
     if len(cohorts) < min_cohorts:
-        cohorts = all_cohorts  # Fall back to all if not enough post-2020
+        cohorts = all_cohorts
     matrix = matrix.loc[cohorts]
 
     # --- Recency weighting (60/30/10) ---
@@ -186,7 +108,6 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
     weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
 
     # Weighted average across cohorts for each month offset.
-    # Use ALL offsets where data exists (no cutoff — spreadsheet computes all).
     curve = {}
     for col in matrix.columns:
         offset = int(col)
@@ -206,7 +127,7 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
         else:
             curve[offset] = float(values.mean())
 
-    # Extrapolate beyond observed data: 0.98 decay per month, floor 0.50%
+    # Extrapolate beyond observed data
     curve = _extrapolate_curve(curve)
     return curve
 
@@ -246,85 +167,32 @@ def _extrapolate_curve(curve):
     """Extend retention curve beyond observed data.
 
     Uses fixed 0.98 decay per month with 0.50% floor, matching
-    the spreadsheet's Decay Rate and Terminal Floor parameters.
+    the gold standard's Decay Rate and Terminal Floor parameters.
     """
     if not curve:
         return curve
 
     max_offset = max((o for o in curve if o > 0), default=0)
-    decay = 0.98
-    floor = 0.005
 
     last_known = curve.get(max_offset, 0.05)
     for m in range(max_offset + 1, max_offset + 60):
-        last_known *= decay
-        last_known = max(last_known, floor)
+        last_known *= DECAY_RATE
+        last_known = max(last_known, TERMINAL_FLOOR)
         curve[m] = last_known
 
     return curve
 
 
-def _get_customer_retention_curve(source_filter=None, min_cohorts=3, recency_weighted=True):
-    """Fallback: customer-count based retention curve (original method)."""
-    matrix = _get_cached(
-        f"cohort_matrix_{source_filter}",
-        lambda: get_customer_cohort_data(source_filter=source_filter)
-    )
-    if matrix.empty:
-        return {}
-
-    contaminated = _detect_contaminated_cohorts(matrix)
-    clean_cohorts = [c for c in sorted(matrix.index.tolist()) if c not in contaminated]
-    if len(clean_cohorts) < 3:
-        clean_cohorts = sorted(matrix.index.tolist())
-    matrix = matrix.loc[clean_cohorts]
-
-    sorted_cohorts = sorted(matrix.index.tolist())
-    n = len(sorted_cohorts)
-    weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
-
-    curve = {}
-    for col in matrix.columns:
-        offset = int(col)
-        values = matrix[col].dropna()
-        if len(values) == 0:
-            continue
-        if recency_weighted and n >= 6:
-            w_sum = 0.0
-            val_sum = 0.0
-            for cohort in values.index:
-                w = weights.get(cohort, 0)
-                val_sum += values[cohort] * w
-                w_sum += w
-            if w_sum > 0:
-                curve[offset] = val_sum / w_sum
-        else:
-            recent_cohorts_24 = sorted_cohorts[-24:] if n > 24 else sorted_cohorts
-            recent_values = values[values.index.isin(recent_cohorts_24)]
-            if len(recent_values) >= min_cohorts:
-                curve[offset] = float(recent_values.mean())
-            elif len(values) > 0:
-                curve[offset] = float(values.mean())
-
-    return _extrapolate_curve(curve)
-
-
 def get_aov_and_units(source_filter=None):
     """
-    Compute average order value (AOV) and unit-level metrics.
+    Compute average order value (AOV) and unit-level metrics from Shopify data.
 
-    The key insight: to convert ad spend → units, the correct formula is:
-        units = (spend × ROAS) / revenue_per_unit
-    NOT:
-        units = (spend × ROAS) / AOV × units_per_customer  (WRONG — mismatched denominators)
-
-    We also track new-customer-specific AOV for computing the number of new
-    customers acquired (needed for the retention cascade), and units-per-repeat-
-    customer-per-month for the repeat demand model.
+    The source_filter parameter is accepted for API compatibility but
+    the repeat model always uses Shopify-only data internally.
 
     Returns:
         dict with keys:
-            aov                        — overall avg order value (all orders)
+            aov                        — overall avg order value (all Shopify orders)
             avg_units_per_order        — overall units per order
             units_per_new_customer     — units per new customer in their first month
             units_per_repeat_customer  — units per repeat customer per return month
@@ -333,16 +201,11 @@ def get_aov_and_units(source_filter=None):
             repeat_rev_per_unit        — revenue per unit for repeat customer orders
     """
     with get_db() as conn:
-        # Prevent disk-spill crashes on large hash joins: disable parallel
-        # workers and give the query enough memory to run in-process.
         conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
         conn.execute("SET LOCAL work_mem = '256MB'")
 
-        source_clause = ""
-        params = []
-        if source_filter:
-            source_clause = "AND o.source = ?"
-            params.append(source_filter)
+        source_clause = "AND o.source = ?"
+        params = ['shopify']
 
         # Overall AOV and UPO
         row = conn.execute(f"""
@@ -357,8 +220,7 @@ def get_aov_and_units(source_filter=None):
             WHERE 1=1 {source_clause}
         """, params).fetchone()
 
-        # New customer metrics: AOV, units per customer, revenue per unit
-        # These are computed from first-month orders only (last 12 months)
+        # New customer metrics (last 12 months)
         new_metrics = conn.execute(f"""
             SELECT
                 SUM(oi.total_price) as total_rev,
@@ -373,7 +235,7 @@ def get_aov_and_units(source_filter=None):
               AND o.order_date >= date('now', '-12 months')
         """, params).fetchone()
 
-        # Repeat customer metrics: revenue per unit
+        # Repeat customer metrics (last 12 months)
         rep_metrics = conn.execute(f"""
             SELECT
                 SUM(oi.total_price) as total_rev,
@@ -387,7 +249,7 @@ def get_aov_and_units(source_filter=None):
               AND o.order_date >= date('now', '-12 months')
         """, params).fetchone()
 
-        # Units per repeat customer per month (for retention cascade)
+        # Units per repeat customer per month
         rep_upc_rows = conn.execute(f"""
             SELECT AVG(monthly_upc) as upc FROM (
                 SELECT strftime('%Y-%m', o.order_date) as month,
@@ -404,7 +266,6 @@ def get_aov_and_units(source_filter=None):
 
     avg_units = float(row["avg_units"] or 1)
 
-    # New customer derived metrics
     new_rev = float(new_metrics["total_rev"] or 0)
     new_units = float(new_metrics["total_units"] or 0)
     new_custs = float(new_metrics["num_customers"] or 0)
@@ -414,7 +275,6 @@ def get_aov_and_units(source_filter=None):
     new_rev_per_unit = new_rev / new_units if new_units > 0 else float(row["aov"] or 0)
     new_upc = new_units / new_custs if new_custs > 0 else avg_units
 
-    # Repeat customer derived metrics
     rep_rev = float(rep_metrics["total_rev"] or 0)
     rep_units_total = float(rep_metrics["total_units"] or 0)
     rep_rev_per_unit = rep_rev / rep_units_total if rep_units_total > 0 else new_rev_per_unit
@@ -433,27 +293,24 @@ def get_aov_and_units(source_filter=None):
 
 def get_monthly_new_customers(source_filter=None):
     """
-    Count new customers per month using first_order_date.
+    Count new Shopify customers per month using first_order_date.
+
+    The source_filter parameter is accepted for API compatibility but
+    the repeat model always uses Shopify-only data.
 
     Returns:
         dict: {month_str: count} e.g. {"2025-03": 45, "2025-04": 38}
     """
     with get_db() as conn:
-        where = ""
-        params = []
-        if source_filter:
-            where = "WHERE source = ?"
-            params.append(source_filter)
-
-        rows = conn.execute(f"""
+        rows = conn.execute("""
             SELECT
                 strftime('%Y-%m', first_order_date) as month,
                 COUNT(*) as new_customers
             FROM customers
-            {where}
+            WHERE source = ?
             GROUP BY strftime('%Y-%m', first_order_date)
             ORDER BY month
-        """, params).fetchall()
+        """, ['shopify']).fetchall()
 
     return {r["month"]: r["new_customers"] for r in rows}
 
@@ -475,19 +332,18 @@ def _get_organic_baseline(historical_customers, lookback_months=6):
 def build_waterfall(media_plan, source_filter=None, horizon_months=12,
                     seasonal_indices=None):
     """
-    Revenue-based waterfall forecast matching the spreadsheet methodology.
+    Revenue-based waterfall forecast matching the gold standard spreadsheet.
 
     Uses revenue retention: each month's repeat revenue is projected as
         1st_Order_Total * retention_curve[age] * seasonality[calendar_month]
-    instead of customer-count retention × units.
 
     Three sources of revenue:
     1. Repeat from historical cohorts (already acquired)
     2. Repeat from future cohorts (media-acquired + organic) that compound
     3. New customer first-order revenue (media + organic)
 
-    Still outputs units (for SKU allocation) by dividing revenue by
-    revenue-per-unit metrics, but the underlying model is revenue-first.
+    The source_filter parameter is accepted for API compatibility but
+    the repeat model always uses Shopify-only data.
 
     Args:
         seasonal_indices: optional dict {month_num(1-12): multiplier}.
@@ -499,34 +355,28 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
         [month, repeat_units, new_customer_units, total_units,
          new_customers_acquired, repeat_revenue, new_customer_revenue, total_revenue]
     """
-    # Revenue-based retention curve
-    cache_key = f"retention_{source_filter}"
-    retention = _get_cached(cache_key, lambda: get_average_retention_curve(source_filter))
+    # Revenue-based retention curve (always Shopify)
+    retention = _get_cached("retention_shopify", lambda: get_average_retention_curve())
     if not retention:
         return pd.DataFrame()
 
-    metrics = _get_cached(f"metrics_{source_filter}", lambda: get_aov_and_units(source_filter))
+    metrics = _get_cached("metrics_shopify", lambda: get_aov_and_units())
     new_upc = metrics["units_per_new_customer"]
     new_customer_aov = metrics.get("new_customer_aov") or metrics["aov"] or 25.0
     new_rev_per_unit = metrics.get("new_customer_rev_per_unit") or new_customer_aov
     rep_rev_per_unit = metrics.get("repeat_rev_per_unit") or new_rev_per_unit
 
-    # Historical cohort data: need both customer counts and first-order revenue
+    # Historical cohort data
     historical_customers = _get_cached(
-        f"new_custs_{source_filter}",
-        lambda: get_monthly_new_customers(source_filter)
+        "new_custs_shopify",
+        lambda: get_monthly_new_customers()
     )
 
-    # Get first-order revenue per cohort for the revenue-based projection
     rev_data = _get_cached(
-        f"rev_retention_{source_filter}",
-        lambda: get_revenue_retention_data(source_filter=source_filter)
+        "rev_retention_shopify",
+        lambda: get_revenue_retention_data(source_filter='shopify')
     )
     historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
-
-    # Include ALL historical cohorts (including pre-2020) for revenue projection.
-    # The retention curve is computed from 2020+ cohorts only, but we apply it
-    # to all past cohorts when projecting their repeat revenue contribution.
 
     # Organic baseline
     organic_per_month = _get_organic_baseline(historical_customers)
@@ -535,7 +385,7 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
     current_month = _month_str(now)
     future_months = [_add_months(current_month, i) for i in range(horizon_months)]
 
-    # Parse media plan: spend × ROAS = 1st order revenue for that cohort
+    # Parse media plan: spend x ROAS = 1st order revenue for that cohort
     media_first_order_rev = {}
     media_custs_by_month = {}
     for entry in media_plan:
@@ -562,8 +412,7 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
     for offset, month in enumerate(future_months):
         repeat_revenue = 0.0
 
-        # 1) Historical cohorts: project repeat revenue using
-        #    1st_Order_Total * retention_curve[age] * seasonality
+        # 1) Historical cohorts: project repeat revenue
         for cohort_month in historical_first_order_rev.index:
             fo_rev = historical_first_order_rev.get(cohort_month, 0)
             if fo_rev <= 0:
@@ -572,8 +421,7 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
             if months_since <= 0:
                 continue
             rate = retention.get(months_since, 0)
-            cohort_repeat_rev = fo_rev * rate
-            repeat_revenue += cohort_repeat_rev
+            repeat_revenue += fo_rev * rate
 
         # 2) Future cohorts (acquired in earlier forecast months)
         for prev_offset in range(offset):
@@ -587,13 +435,13 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
             rate = retention.get(months_since, 0)
             repeat_revenue += fo_rev * rate
 
-        # 3) Apply seasonal adjustment to repeat revenue only (not first-order)
+        # 3) Apply seasonal adjustment to repeat revenue only
         if seasonal_indices:
-            cal_month = _parse_month(month).month  # 1-12
+            cal_month = _parse_month(month).month
             factor = seasonal_indices.get(cal_month, 1.0)
             repeat_revenue *= factor
 
-        # 4) New customer first-order revenue (no seasonality applied, per spreadsheet)
+        # 4) New customer first-order revenue
         total_new_custs = future_new_customers.get(month, 0)
         new_revenue = future_first_order_rev.get(month, 0)
 
@@ -615,6 +463,138 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
     return pd.DataFrame(rows)
 
 
+def build_revenue_matrix(media_plan, horizon_months=36, seasonal_indices=None):
+    """
+    Build a full cohort x calendar month revenue matrix matching the
+    gold standard's Revenue Matrix sheet.
+
+    Each cell = 1st_order_revenue x retention[month_offset] for projected months,
+    or actual revenue for historical months.
+
+    Returns:
+        dict with:
+            matrix: DataFrame (rows=cohorts, cols=calendar months, values=revenue)
+            monthly_summary: DataFrame with [month, total_revenue, new_revenue,
+                             repeat_revenue, repeat_pct]
+    """
+    retention = _get_cached("retention_shopify", lambda: get_average_retention_curve())
+    if not retention:
+        return {'matrix': pd.DataFrame(), 'monthly_summary': pd.DataFrame()}
+
+    metrics = _get_cached("metrics_shopify", lambda: get_aov_and_units())
+    new_customer_aov = metrics.get("new_customer_aov") or metrics["aov"] or 75.0
+
+    # Get historical data
+    rev_data = _get_cached(
+        "rev_retention_shopify",
+        lambda: get_revenue_retention_data(source_filter='shopify')
+    )
+    historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
+
+    historical_customers = _get_cached(
+        "new_custs_shopify",
+        lambda: get_monthly_new_customers()
+    )
+    organic_per_month = _get_organic_baseline(historical_customers)
+
+    now = datetime.utcnow()
+    current_month = _month_str(now)
+
+    # Build list of all cohort months (historical + future)
+    historical_cohorts = sorted(historical_first_order_rev.index.tolist())
+
+    # Future cohorts from media plan
+    future_months = [_add_months(current_month, i) for i in range(horizon_months)]
+    future_fo_rev = {}
+
+    for entry in media_plan:
+        m = entry["month"]
+        spend = entry.get("spend", 0)
+        roas = entry.get("new_customer_roas") or entry.get("roas", 1.0)
+        if spend > 0 and m >= current_month:
+            future_fo_rev[m] = spend * roas
+
+    # Fill gaps with organic
+    for m in future_months:
+        if m not in future_fo_rev:
+            future_fo_rev[m] = organic_per_month * new_customer_aov
+
+    future_cohorts = [m for m in future_months if m not in historical_cohorts]
+    all_cohorts = historical_cohorts + future_cohorts
+
+    # Calendar months to cover
+    first_month = historical_cohorts[0] if historical_cohorts else current_month
+    last_future = future_months[-1] if future_months else current_month
+    cal_months = []
+    m = first_month
+    while m <= last_future:
+        cal_months.append(m)
+        m = _add_months(m, 1)
+
+    # Build the matrix
+    matrix_data = {}
+    for cohort in all_cohorts:
+        is_historical = cohort in historical_cohorts
+        fo_rev = (float(historical_first_order_rev.get(cohort, 0)) if is_historical
+                  else future_fo_rev.get(cohort, 0))
+        if fo_rev <= 0:
+            continue
+
+        row = {}
+        for cal_month in cal_months:
+            month_offset = _month_diff(cal_month, cohort)
+            if month_offset < 0:
+                continue
+            if month_offset == 0:
+                m0_rate = retention.get(0, 0)
+                row[cal_month] = fo_rev * (1 + m0_rate)
+            else:
+                rate = retention.get(month_offset, 0)
+                rev = fo_rev * rate
+                if seasonal_indices:
+                    cal_m = _parse_month(cal_month).month
+                    rev *= seasonal_indices.get(cal_m, 1.0)
+                row[cal_month] = rev
+
+        matrix_data[cohort] = row
+
+    matrix = pd.DataFrame.from_dict(matrix_data, orient='index')
+    if not matrix.empty:
+        matrix = matrix.reindex(columns=sorted(matrix.columns))
+        matrix = matrix.sort_index()
+
+    # Monthly summary
+    summary_rows = []
+    for cal_month in cal_months:
+        total = float(matrix[cal_month].sum()) if cal_month in matrix.columns else 0
+
+        # New revenue = first-order revenue for the cohort that starts this month
+        if cal_month in historical_first_order_rev.index:
+            new_rev = float(historical_first_order_rev.get(cal_month, 0))
+        elif cal_month in future_fo_rev:
+            new_rev = future_fo_rev[cal_month]
+        else:
+            new_rev = 0
+
+        repeat = total - new_rev if total > new_rev else 0
+        repeat_pct = repeat / total * 100 if total > 0 else 0
+
+        summary_rows.append({
+            "month": cal_month,
+            "total_revenue": round(total, 2),
+            "new_revenue": round(new_rev, 2),
+            "repeat_revenue": round(repeat, 2),
+            "repeat_pct": round(repeat_pct, 1),
+        })
+
+    monthly_summary = pd.DataFrame(summary_rows)
+
+    return {
+        'matrix': matrix,
+        'monthly_summary': monthly_summary,
+    }
+
+
 def _extract_variant(product_name):
     """Extract variant name from product name (text after last ' - ')."""
     if not product_name:
@@ -625,24 +605,19 @@ def _extract_variant(product_name):
 
 def _get_sku_mix(source_filter=None, lookback_months=3):
     """
-    Compute SKU % of sales from recent orders.
-
-    Uses the last N months of actual sales to determine what fraction
-    of total units each SKU represents. This is the same approach as
-    static % of sales spreadsheets — simple and accurate.
+    Compute SKU % of sales from recent Shopify orders.
 
     Returns:
-        dict: {sku: pct}  — sums to 1.0
+        dict: {sku: pct}  -- sums to 1.0
         dict: {sku: variant_name}
     """
     with get_db() as conn:
-        source_clause = f"AND o.source = '{source_filter}'" if source_filter else ""
         rows = conn.execute(f"""
             SELECT oi.sku, oi.product_name, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.order_date >= date('now', '-{lookback_months} months')
-              {source_clause}
+              AND o.source = 'shopify'
             GROUP BY oi.sku, oi.product_name
         """).fetchall()
 
@@ -661,17 +636,8 @@ def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005
     Allocate the waterfall total units to SKUs using recent % of sales,
     adjusted by per-SKU seasonal indices when available.
 
-    When sku_seasonal_indices are provided, the base mix % is adjusted each
-    month by the ratio of the SKU's seasonal index to the global seasonal
-    index for that calendar month. This shifts units between SKUs based on
-    their individual seasonality while preserving the monthly total.
-
-    Args:
-        waterfall_df: Output from build_waterfall()
-        source_filter: Optional source filter ('shopify', 'amazon', etc.)
-        min_mix_pct: Minimum mix % to include a SKU (default 0.5%)
-        sku_seasonal_indices: {sku: {month_num(1-12): index_value}} from DB
-        global_seasonal_indices: {month_num(1-12): index_value} from DB
+    The source_filter parameter is accepted for API compatibility but
+    always uses Shopify data internally.
 
     Returns:
         DataFrame with SKU rows and month columns showing units.
@@ -679,17 +645,14 @@ def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005
     if waterfall_df.empty:
         return pd.DataFrame()
 
-    sku_mix, sku_variants = _get_sku_mix(source_filter)
+    sku_mix, sku_variants = _get_sku_mix()
     if not sku_mix:
         return pd.DataFrame()
 
     months = waterfall_df["month"].tolist()
     total_by_month = dict(zip(waterfall_df["month"], waterfall_df["total_units"]))
 
-    # Filter to SKUs with meaningful share
     significant_skus = {sku for sku, pct in sku_mix.items() if pct >= min_mix_pct}
-
-    # If we have per-SKU seasonal data, compute month-varying mix
     has_sku_seasonal = bool(sku_seasonal_indices and global_seasonal_indices)
 
     rows = []
@@ -703,8 +666,6 @@ def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005
                 cal_month = _parse_month(m).month
                 sku_factor = sku_seasonal_indices[sku].get(cal_month, 1.0)
                 global_factor = global_seasonal_indices.get(cal_month, 1.0)
-                # Relative adjustment: how much more/less seasonal is this SKU
-                # compared to the global average for this month
                 if global_factor > 0:
                     relative_factor = sku_factor / global_factor
                 else:
@@ -718,8 +679,6 @@ def build_sku_forecast_table(waterfall_df, source_filter=None, min_mix_pct=0.005
     if not rows:
         return pd.DataFrame()
 
-    # Renormalize each month so SKU units sum to the waterfall total
-    # (the relative seasonal adjustments may have shifted the total)
     result = pd.DataFrame(rows)
     for m in months:
         col_total = result[m].sum()

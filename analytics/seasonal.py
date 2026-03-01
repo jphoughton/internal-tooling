@@ -27,77 +27,94 @@ def compute_sku_seasonal_indices(min_occurrences=MIN_MONTH_OCCURRENCES):
     """
     Compute seasonal index per SKU per calendar month from daily_sku_sales.
 
+    Uses a detrended approach: computes the seasonal shape within each
+    calendar year independently, then averages per-year shapes across years.
+    This prevents growth/decline trends from contaminating seasonality
+    (e.g., a SKU doubling in sales would otherwise make recent months look
+    "seasonal peaks").
+
     Returns:
         dict: {sku: {month_num(1-12): index_value}}
         Only includes SKUs that have enough data. Index values are normalized
         so the 12-month average is 1.0 for each SKU.
     """
     with get_db() as conn:
-        # Get monthly aggregates per SKU: total units and number of days
-        # for each (sku, calendar_month) combination, averaged across years.
+        # Get monthly aggregates per SKU per year
         rows = conn.execute("""
             SELECT
                 sku,
+                EXTRACT(YEAR FROM sale_date::date)::int AS cal_year,
                 EXTRACT(MONTH FROM sale_date::date)::int AS cal_month,
-                COUNT(DISTINCT TO_CHAR(sale_date::date, 'YYYY-MM')) AS num_year_months,
                 SUM(units_sold) AS total_units,
                 COUNT(DISTINCT sale_date) AS num_days
             FROM daily_sku_sales
             WHERE sku = ANY(%s)
               AND units_sold > 0
-            GROUP BY sku, EXTRACT(MONTH FROM sale_date::date)
-            ORDER BY sku, cal_month
+            GROUP BY sku, EXTRACT(YEAR FROM sale_date::date),
+                     EXTRACT(MONTH FROM sale_date::date)
+            ORDER BY sku, cal_year, cal_month
         """, (list(FORECAST_SKUS),)).fetchall()
 
-    # Organize: {sku: {cal_month: {total_units, num_days, num_year_months}}}
-    sku_data = {}
+    # Organize: {sku: {year: {cal_month: {total_units, num_days}}}}
+    sku_year_data = {}
     for r in rows:
         sku = r['sku']
+        year = int(r['cal_year'])
         cal_month = int(r['cal_month'])
-        if sku not in sku_data:
-            sku_data[sku] = {}
-        sku_data[sku][cal_month] = {
+        if sku not in sku_year_data:
+            sku_year_data[sku] = {}
+        if year not in sku_year_data[sku]:
+            sku_year_data[sku][year] = {}
+        sku_year_data[sku][year][cal_month] = {
             'total_units': float(r['total_units']),
             'num_days': int(r['num_days']),
-            'num_year_months': int(r['num_year_months']),
         }
 
     result = {}
-    for sku, months in sku_data.items():
-        # Check if we have enough data: need at least min_occurrences for
-        # a majority of calendar months (8 of 12) to compute a meaningful curve
-        months_with_enough_data = sum(
-            1 for m in range(1, 13)
-            if m in months and months[m]['num_year_months'] >= min_occurrences
-        )
-        if months_with_enough_data < 8:
+    for sku, years_data in sku_year_data.items():
+        # Only use years with at least 6 months of data (enough to compute
+        # a meaningful within-year seasonal shape)
+        valid_years = {
+            yr: months for yr, months in years_data.items()
+            if len(months) >= 6
+        }
+        if len(valid_years) < min_occurrences:
             continue
 
-        # Compute average daily rate per calendar month
-        daily_rates = {}
-        for cal_month in range(1, 13):
-            if cal_month in months and months[cal_month]['num_days'] > 0:
-                daily_rates[cal_month] = (
-                    months[cal_month]['total_units'] / months[cal_month]['num_days']
-                )
-            else:
-                daily_rates[cal_month] = None
+        # Compute within-year seasonal index for each valid year
+        # For each year: index[month] = daily_rate[month] / avg_daily_rate_that_year
+        per_year_indices = {}  # {year: {cal_month: index}}
+        for year, months in valid_years.items():
+            daily_rates = {}
+            for cal_month, data in months.items():
+                if data['num_days'] > 0:
+                    daily_rates[cal_month] = data['total_units'] / data['num_days']
 
-        # Grand average daily rate (only from months with data)
-        valid_rates = [r for r in daily_rates.values() if r is not None]
-        if not valid_rates:
-            continue
-        grand_avg = sum(valid_rates) / len(valid_rates)
-        if grand_avg <= 0:
+            if not daily_rates:
+                continue
+            year_avg = sum(daily_rates.values()) / len(daily_rates)
+            if year_avg <= 0:
+                continue
+
+            per_year_indices[year] = {
+                m: rate / year_avg for m, rate in daily_rates.items()
+            }
+
+        if not per_year_indices:
             continue
 
-        # Compute raw indices
+        # Average the per-year indices across years for each calendar month
+        # This detrends: each year contributes equally regardless of volume
         raw_indices = {}
         for cal_month in range(1, 13):
-            if daily_rates[cal_month] is not None:
-                raw_indices[cal_month] = daily_rates[cal_month] / grand_avg
+            year_vals = [
+                per_year_indices[yr][cal_month]
+                for yr in per_year_indices
+                if cal_month in per_year_indices[yr]
+            ]
+            if len(year_vals) >= min_occurrences:
+                raw_indices[cal_month] = sum(year_vals) / len(year_vals)
             else:
-                # Fall back to global default for missing months
                 raw_indices[cal_month] = DEFAULT_SEASONAL_INDICES.get(cal_month, 1.0)
 
         # Normalize so average is exactly 1.0
@@ -155,8 +172,13 @@ def refresh_sku_seasonal_indices(min_occurrences=MIN_MONTH_OCCURRENCES):
 
 def _update_global_from_sku_indices(sku_indices):
     """
-    Update the global seasonal_indices table with a sales-weighted average
-    of the per-SKU indices, so the waterfall total reflects actual data.
+    Update the global seasonal_indices table from actual Shopify repeat
+    revenue patterns, NOT from SKU unit sales.
+
+    The global indices are applied to the waterfall's repeat revenue
+    projection, so they must reflect repeat purchase seasonality specifically.
+    SKU-level unit sales include new customer acquisition timing which
+    distorts the seasonal signal.
     """
     from db import upsert_seasonal_index, get_setting
 
@@ -168,31 +190,54 @@ def _update_global_from_sku_indices(sku_indices):
         logger.info('[seasonal] Seasonality mode is manual — skipping global update')
         return
 
-    # Sales-weighted average: weight each SKU by its recent total units
+    # Compute global seasonal indices from actual Shopify repeat revenue
     with get_db() as conn:
-        sku_weights = {}
-        for sku in sku_indices:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(units_sold), 0) AS total "
-                "FROM daily_sku_sales WHERE sku = %s "
-                "AND sale_date::date >= CURRENT_DATE - INTERVAL '90 days'",
-                (sku,)
-            ).fetchone()
-            sku_weights[sku] = float(row['total']) if row else 0
+        rows = conn.execute("""
+            WITH first_orders AS (
+                SELECT customer_id, MIN(order_date) AS first_date
+                FROM orders
+                WHERE source = %s AND total_amount > 0
+                GROUP BY customer_id
+            )
+            SELECT
+                EXTRACT(MONTH FROM o.order_date::date)::int AS cal_month,
+                COUNT(DISTINCT EXTRACT(YEAR FROM o.order_date::date)) AS num_years,
+                SUM(o.total_amount) AS total_repeat_rev
+            FROM orders o
+            JOIN first_orders fo ON o.customer_id = fo.customer_id
+            WHERE o.source = %s
+              AND o.total_amount > 0
+              AND substr(o.order_date, 1, 7) <> substr(fo.first_date, 1, 7)
+              AND o.order_date >= %s
+            GROUP BY EXTRACT(MONTH FROM o.order_date::date)
+            ORDER BY cal_month
+        """, ('shopify', 'shopify', '2020-01-01')).fetchall()
 
-    total_weight = sum(sku_weights.values())
-    if total_weight <= 0:
+    if not rows or len(rows) < 10:
+        logger.warning('[seasonal] Not enough repeat revenue data for global indices')
         return
 
-    global_indices = {}
-    for cal_month in range(1, 13):
-        weighted_sum = sum(
-            sku_indices[sku].get(cal_month, 1.0) * sku_weights[sku]
-            for sku in sku_indices
-        )
-        global_indices[cal_month] = round(weighted_sum / total_weight, 4)
+    # Average yearly repeat revenue per calendar month
+    monthly_avgs = {}
+    for r in rows:
+        m = int(r['cal_month'])
+        monthly_avgs[m] = float(r['total_repeat_rev']) / int(r['num_years'])
 
-    # Normalize to mean 1.0
+    if not monthly_avgs:
+        return
+
+    grand_avg = sum(monthly_avgs.values()) / len(monthly_avgs)
+    if grand_avg <= 0:
+        return
+
+    # Compute and normalize indices
+    global_indices = {}
+    for m in range(1, 13):
+        if m in monthly_avgs:
+            global_indices[m] = monthly_avgs[m] / grand_avg
+        else:
+            global_indices[m] = 1.0
+
     avg = sum(global_indices.values()) / 12
     if avg > 0:
         global_indices = {m: round(v / avg, 4) for m, v in global_indices.items()}
@@ -201,4 +246,4 @@ def _update_global_from_sku_indices(sku_indices):
         for month_num, value in global_indices.items():
             upsert_seasonal_index(conn, month_num, value)
 
-    logger.info('[seasonal] Updated global seasonal indices from %d SKUs', len(sku_indices))
+    logger.info('[seasonal] Updated global seasonal indices from Shopify repeat revenue')

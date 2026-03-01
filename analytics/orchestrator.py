@@ -61,20 +61,17 @@ def _run_model(model_name, fn, triggered_by='scheduler'):
 
 
 def run_retention_cohorts(triggered_by='scheduler'):
-    """Recompute retention cohort matrix and cache it."""
+    """Recompute retention cohort matrix and cache it (Shopify/DTC only)."""
     def _compute():
         from analytics.retention import get_customer_cohort_data, get_revenue_retention_data
-        # Run for all sources (no filter) to prime the cache
-        get_customer_cohort_data(source_filter=None)
-        get_revenue_retention_data(source_filter=None)
-        # Also run for shopify specifically (used by waterfall)
+        # Repeat model is DTC-only: compute Shopify cohorts
         get_customer_cohort_data(source_filter='shopify')
         get_revenue_retention_data(source_filter='shopify')
     return _run_model(MODEL_RETENTION, _compute, triggered_by)
 
 
 def run_repeat_forecast(triggered_by='scheduler'):
-    """Recompute the average retention curve and AOV/units metrics."""
+    """Recompute the average retention curve and AOV/units metrics (DTC only)."""
     def _compute():
         from analytics.waterfall import (
             get_average_retention_curve,
@@ -84,14 +81,10 @@ def run_repeat_forecast(triggered_by='scheduler'):
         )
         # Clear stale cache before recomputing
         clear_waterfall_cache()
-        # Recompute core metrics (no filter = all sources)
-        get_average_retention_curve(source_filter=None)
-        get_aov_and_units(source_filter=None)
-        get_monthly_new_customers(source_filter=None)
-        # Also for shopify
-        get_average_retention_curve(source_filter='shopify')
-        get_aov_and_units(source_filter='shopify')
-        get_monthly_new_customers(source_filter='shopify')
+        # Repeat model is DTC-only: all functions use Shopify internally
+        get_average_retention_curve()
+        get_aov_and_units()
+        get_monthly_new_customers()
     return _run_model(MODEL_REPEAT_FORECAST, _compute, triggered_by)
 
 
@@ -119,12 +112,11 @@ def run_seasonality(triggered_by='scheduler'):
 
 
 def run_sku_sales_mix(triggered_by='scheduler'):
-    """Recompute SKU % of sales mix from recent order data."""
+    """Recompute SKU % of sales mix from recent Shopify order data."""
     def _compute():
         from analytics.waterfall import _get_sku_mix
-        # Recompute for all sources and shopify
-        _get_sku_mix(source_filter=None, lookback_months=3)
-        _get_sku_mix(source_filter='shopify', lookback_months=3)
+        # DTC-only: uses Shopify internally
+        _get_sku_mix(lookback_months=3)
     return _run_model(MODEL_SKU_MIX, _compute, triggered_by)
 
 
@@ -150,7 +142,7 @@ def run_waterfall(triggered_by='scheduler'):
             logger.warning('[orchestrator] No media plan found, skipping waterfall build')
             return
 
-        build_waterfall(media_plan, source_filter=None, horizon_months=12,
+        build_waterfall(media_plan, horizon_months=12,
                         seasonal_indices=seasonal)
 
     return _run_model(MODEL_WATERFALL, _compute, triggered_by)
