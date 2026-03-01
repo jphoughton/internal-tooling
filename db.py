@@ -1248,7 +1248,7 @@ def save_inventory_snapshot(
 def get_inventory_snapshot(
     conn: ConnectionWrapper,
     source: str,
-    max_age_hours: float = 6,
+    max_age_hours: float = 24,
 ) -> Optional[list[dict[str, Any]]]:
     """Return parsed inventory list if a fresh snapshot exists, else None."""
     import json as _json_snap

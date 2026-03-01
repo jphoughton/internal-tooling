@@ -31,16 +31,19 @@ from ui.business_vars import get_business_vars, render_sidebar_panel
 
 
 # --- Cached wrappers for expensive computations ---
-# These survive media spend changes (only cleared on full data refresh).
-@st.cache_data(ttl=600)
+# Data updates once daily (6AM sync). All caches use 24h TTL and are
+# explicitly cleared after sync / refresh / settings edits.
+_CACHE_TTL = 86400  # 24 hours — data only changes once per day
+
+@st.cache_data(ttl=_CACHE_TTL)
 def _cached_retention_curve(source_filter):
     return get_average_retention_curve(source_filter)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=_CACHE_TTL)
 def _cached_aov_and_units(source_filter):
     return get_aov_and_units(source_filter)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=_CACHE_TTL)
 def _cached_waterfall(media_plan_json, source_filter, horizon_months, seasonal_json=None):
     """Waterfall depends on media plan + seasonality, keyed on both JSON strings."""
     import json
@@ -53,7 +56,7 @@ def _cached_waterfall(media_plan_json, source_filter, horizon_months, seasonal_j
                            horizon_months=horizon_months,
                            seasonal_indices=seasonal)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=_CACHE_TTL)
 def _cached_sku_forecast(waterfall_json, source_filter, sku_seasonal_json=None, global_seasonal_json=None):
     """SKU forecast depends on waterfall output + per-SKU seasonal indices."""
     import json
@@ -71,6 +74,42 @@ def _cached_sku_forecast(waterfall_json, source_filter, sku_seasonal_json=None, 
                                     global_seasonal_indices=global_seasonal)
 
 from utils.constants import FORECAST_SKUS
+
+
+# --- Cached wrappers for queries that previously ran every rerun ---
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_active_sources():
+    return get_active_sources()
+
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_configured_sources():
+    return get_configured_sources()
+
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_business_vars():
+    return get_business_vars()
+
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_media_spend():
+    with get_db() as conn:
+        return get_media_spend(conn, source='All Sources')
+
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_amz_rev_forecast():
+    with get_db() as conn:
+        return get_amazon_revenue_forecast(conn)
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _cached_last_sync_ts():
+    """Last successful sync timestamp — used by auto-sync check."""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) as last_ts FROM sync_log WHERE status = 'success'"
+            ).fetchone()
+            return row['last_ts'] if row else None
+    except Exception:
+        return None
 
 # ---------------------------------------------------------------------------
 # Startup validation — runs once per process on first Streamlit boot
@@ -198,7 +237,7 @@ def _maybe_run_startup() -> None:
         st.stop()
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=_CACHE_TTL)
 def _load_seasonal_json():
     """Load seasonal indices from DB and return as JSON string for cache key, or None if disabled."""
     import json as _json_s
@@ -212,7 +251,7 @@ def _load_seasonal_json():
     return _json_s.dumps(indices, sort_keys=True)
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=_CACHE_TTL)
 def _load_sku_seasonal_json():
     """Load per-SKU seasonal indices from DB as JSON string for cache key, or None if empty."""
     import json as _json_s
@@ -226,7 +265,7 @@ def _load_sku_seasonal_json():
     return _json_s.dumps(indices, sort_keys=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _cached_3pl_inventory():
     """Cached wrapper for Packiyo 3PL inventory — reads DB snapshot first, falls back to live API."""
     import config as _cfg
@@ -235,7 +274,7 @@ def _cached_3pl_inventory():
     # Try DB snapshot first (written by 6AM scheduler)
     try:
         with get_db() as conn:
-            snapshot = get_inventory_snapshot(conn, 'packiyo', max_age_hours=6)
+            snapshot = get_inventory_snapshot(conn, 'packiyo', max_age_hours=24)
         if snapshot is not None:
             return snapshot
     except Exception:
@@ -253,7 +292,7 @@ def _cached_3pl_inventory():
     return result
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _cached_amazon_inventory():
     """Cached wrapper for Amazon FBA inventory — reads DB snapshot first, falls back to live API."""
     import config as _cfg
@@ -264,7 +303,7 @@ def _cached_amazon_inventory():
     # Try DB snapshot first (written by 6AM scheduler)
     try:
         with get_db() as conn:
-            snapshot = get_inventory_snapshot(conn, 'amazon', max_age_hours=6)
+            snapshot = get_inventory_snapshot(conn, 'amazon', max_age_hours=24)
         if snapshot is not None:
             return snapshot
     except Exception:
@@ -360,12 +399,12 @@ for _grp_name, _grp_pages in _NAV_GROUPS:
 st.sidebar.markdown(get_nav_section_css(_NAV_GROUPS), unsafe_allow_html=True)
 
 try:
-    active_sources = get_active_sources()
+    active_sources = _cached_active_sources()
 except Exception:
     active_sources = []
 
 try:
-    configured_sources = get_configured_sources()
+    configured_sources = _cached_configured_sources()
 except Exception:
     configured_sources = []
 
@@ -386,14 +425,7 @@ if render_sidebar_panel(forecast_skus=FORECAST_SKUS):
 
 # --- Auto-sync: trigger if no successful sync since 5 AM PST today ---
 if configured_sources:
-    try:
-        with get_db() as conn:
-            _last_any_sync = conn.execute(
-                "SELECT MAX(created_at) as last_ts FROM sync_log WHERE status = 'success'"
-            ).fetchone()
-            _last_ts = _last_any_sync["last_ts"] if _last_any_sync else None
-    except Exception:
-        _last_ts = None
+    _last_ts = _cached_last_sync_ts()
     _needs_auto_sync = False
     if _last_ts:
         try:
@@ -474,7 +506,7 @@ if st.sidebar.button("Refresh Data"):
 
 
 # --- Helper: load SKU list ---
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=_CACHE_TTL)
 def load_sku_list():
     with get_db() as conn:
         rows = conn.execute(
@@ -483,7 +515,7 @@ def load_sku_list():
     return pd.DataFrame([dict(r) for r in rows])
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=_CACHE_TTL)
 def load_overview_stats(date_start=None, date_end=None):
     date_clause = ""
     date_clause_orders = ""
@@ -559,8 +591,7 @@ def load_overview_stats(date_start=None, date_end=None):
 # ================================================================
 # GLOBAL NOTIFICATION BAR — Reorder & FBA Transfer Alerts
 # ================================================================
-# Lightweight check: only compute alerts if data exists, cache for 30 min
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _compute_global_alerts():
     """Compute reorder & FBA transfer urgency alerts for the notification bar."""
     alerts = {"reorder": [], "transfer": []}
@@ -767,11 +798,10 @@ if _all_urgent:
 # ================================================================
 # PAGE DISPATCH
 # ================================================================
-# Build shared context for page modules
-_biz_vars = get_business_vars()
-with get_db() as _ctx_conn:
-    _ctx_media_spend = get_media_spend(_ctx_conn, source='All Sources')
-    _ctx_amz_rev_forecast = get_amazon_revenue_forecast(_ctx_conn)
+# Build shared context for page modules (all cached — no DB queries on rerun)
+_biz_vars = _cached_business_vars()
+_ctx_media_spend = _cached_media_spend()
+_ctx_amz_rev_forecast = _cached_amz_rev_forecast()
 _ctx = {
     'forecast_skus': FORECAST_SKUS,
     'cached_waterfall': _cached_waterfall,
