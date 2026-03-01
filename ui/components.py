@@ -338,23 +338,19 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
     else:
         _def_start, _def_end = data_min, data_max
 
-    # Seed session state on first render so date_input widgets pick up the preset
-    if f'{key_prefix}_start' not in st.session_state:
-        st.session_state[f'{key_prefix}_start'] = _def_start
-    if f'{key_prefix}_end' not in st.session_state:
-        st.session_state[f'{key_prefix}_end'] = _def_end
+    # Track selected dates under our own keys (NOT the widget keys) so
+    # Streamlit's internal widget state can't inject stale out-of-range
+    # values that crash date_input validation.
+    sk = f'{key_prefix}_sel_start'
+    ek = f'{key_prefix}_sel_end'
+    if sk not in st.session_state:
+        st.session_state[sk] = _def_start
+    if ek not in st.session_state:
+        st.session_state[ek] = _def_end
 
-    # Clamp to valid range — must happen BEFORE st.date_input reads session
-    # state, otherwise stale values (e.g. today > data_max) cause a crash.
-    st.session_state[f'{key_prefix}_start'] = max(
-        min(st.session_state[f'{key_prefix}_start'], data_max), data_min
-    )
-    st.session_state[f'{key_prefix}_end'] = max(
-        min(st.session_state[f'{key_prefix}_end'], data_max), data_min
-    )
-
-    current_start = st.session_state[f'{key_prefix}_start']
-    current_end = st.session_state[f'{key_prefix}_end']
+    # Clamp to valid data range
+    current_start = max(min(st.session_state[sk], data_max), data_min)
+    current_end = max(min(st.session_state[ek], data_max), data_min)
 
     if show_presets:
         # Detect which preset matches current date range
@@ -377,19 +373,23 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
                 label, key=f'{key_prefix}_preset_{label}',
                 use_container_width=True, type=btn_type,
             ):
-                st.session_state[f'{key_prefix}_start'] = max(ps, data_min)
-                st.session_state[f'{key_prefix}_end'] = min(pe, data_max)
+                st.session_state[sk] = max(ps, data_min)
+                st.session_state[ek] = min(pe, data_max)
                 st.rerun()
 
     dc1, dc2, dc_spacer = st.columns([1, 1, 4])
     with dc1:
-        start = st.date_input('From', min_value=data_min,
-                               max_value=data_max, key=f'{key_prefix}_start',
+        start = st.date_input('From', value=current_start, min_value=data_min,
+                               max_value=data_max, key=f'{key_prefix}_start_w',
                                label_visibility='collapsed')
     with dc2:
-        end = st.date_input('To', min_value=data_min,
-                             max_value=data_max, key=f'{key_prefix}_end',
+        end = st.date_input('To', value=current_end, min_value=data_min,
+                             max_value=data_max, key=f'{key_prefix}_end_w',
                              label_visibility='collapsed')
+
+    # Persist user's widget selections back to our tracking keys
+    st.session_state[sk] = start
+    st.session_state[ek] = end
     return start, end
 
 
