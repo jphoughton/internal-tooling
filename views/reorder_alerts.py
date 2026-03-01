@@ -15,7 +15,7 @@ from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 
 
-def render(ctx):
+def render(ctx, embedded=False):
     """Render the Reorder Alerts page."""
     FORECAST_SKUS = ctx['forecast_skus']
     _cached_waterfall = ctx['cached_waterfall']
@@ -23,17 +23,18 @@ def render(ctx):
     _load_seasonal_json = ctx['load_seasonal_json']
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
 
-    _title_col, _badge_col = st.columns([7, 3])
-    with _title_col:
-        st.title("Reorder Alerts")
-    with _badge_col:
-        with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
-            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
-        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-        render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-    st.caption("Forecast-driven reorder timing based on live 3PL + FBA inventory.")
+    if not embedded:
+        _title_col, _badge_col = st.columns([7, 3])
+        with _title_col:
+            st.title("Reorder Alerts")
+        with _badge_col:
+            with get_db() as conn:
+                _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+                _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+                _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+            _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+            render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+        st.caption("Forecast-driven reorder timing based on live 3PL + FBA inventory.")
 
     from analytics.reorder import build_reorder_plan, build_inventory_runway_chart
 

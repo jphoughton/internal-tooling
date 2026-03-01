@@ -10,7 +10,7 @@ from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 import config
 
 
-def render(ctx):
+def render(ctx, embedded=False):
     """Render the Amazon Inventory page."""
     FORECAST_SKUS = ctx['forecast_skus']
     _cached_waterfall = ctx['cached_waterfall']
@@ -19,18 +19,20 @@ def render(ctx):
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     active_sources = ctx['active_sources']
 
-    _title_col, _badge_col = st.columns([7, 3])
-    with _title_col:
-        st.title("Amazon Inventory")
+    if not embedded:
+        _title_col, _badge_col = st.columns([7, 3])
+        with _title_col:
+            st.title("Amazon Inventory")
 
     has_amazon_creds = all(getattr(config, k, "") for k in [
         "AMAZON_REFRESH_TOKEN", "AMAZON_LWA_CLIENT_ID", "AMAZON_LWA_CLIENT_SECRET",
     ])
 
     if not has_amazon_creds:
-        with _badge_col:
-            render_freshness_badge(is_fallback=True, source='Amazon SP-API (no creds)')
-        st.caption("Showing cached sales velocity — Amazon SP-API credentials not configured.")
+        if not embedded:
+            with _badge_col:
+                render_freshness_badge(is_fallback=True, source='Amazon SP-API (no creds)')
+            st.caption("Showing cached sales velocity — Amazon SP-API credentials not configured.")
         st.info("Live Amazon inventory requires SP-API credentials. Add them in **Settings** or set the `AMAZON_REFRESH_TOKEN`, `AMAZON_LWA_CLIENT_ID`, and `AMAZON_LWA_CLIENT_SECRET` environment variables.")
 
         # Fallback: show recent Amazon sales velocity from database
@@ -61,17 +63,18 @@ def render(ctx):
             amz_inv = None
             st.error(f"Failed to fetch Amazon inventory: {e}")
 
-        with _badge_col:
-            if amz_inv:
-                render_freshness_badge(
-                    is_live=True,
-                    source='Amazon SP-API',
-                    last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-                    new_rows=len(amz_inv),
-                )
-            else:
-                render_freshness_badge(is_fallback=True, source='Amazon SP-API (error)')
-        st.caption("Live FBA stock from Seller Central.")
+        if not embedded:
+            with _badge_col:
+                if amz_inv:
+                    render_freshness_badge(
+                        is_live=True,
+                        source='Amazon SP-API',
+                        last_refreshed_str=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+                        new_rows=len(amz_inv),
+                    )
+                else:
+                    render_freshness_badge(is_fallback=True, source='Amazon SP-API (error)')
+            st.caption("Live FBA stock from Seller Central.")
 
         if amz_inv:
             amz_df = pd.DataFrame(amz_inv)

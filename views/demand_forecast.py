@@ -109,7 +109,7 @@ def _style_with_rev_row(styler, has_rev_row):
     return styler.apply(_highlight_rev, axis=1)
 
 
-def render(ctx):
+def render(ctx, embedded=False):
     """Render the Demand Forecast page."""
     FORECAST_SKUS = ctx['forecast_skus']
     _cached_waterfall = ctx['cached_waterfall']
@@ -120,20 +120,21 @@ def render(ctx):
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     active_sources = ctx['active_sources']
 
-    _title_col, _badge_col = st.columns([7, 3])
-    with _title_col:
-        st.title('Demand Forecast')
-    with _badge_col:
-        with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
-            _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-            _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
-        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-        render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-        with get_db() as _mr_conn:
-            _mr = get_model_runs(_mr_conn)
-        render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
-    st.caption('Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.')
+    if not embedded:
+        _title_col, _badge_col = st.columns([7, 3])
+        with _title_col:
+            st.title('Demand Forecast')
+        with _badge_col:
+            with get_db() as conn:
+                _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
+                _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
+                _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
+            _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
+            render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+            with get_db() as _mr_conn:
+                _mr = get_model_runs(_mr_conn)
+            render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
+        st.caption('Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.')
 
     # Seasonality status
     _seas_status_json = _load_seasonal_json()
