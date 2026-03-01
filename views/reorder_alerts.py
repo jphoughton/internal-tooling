@@ -43,7 +43,7 @@ def render(ctx, embedded=False):
     lt_weeks = bv['lead_time_weeks']
     moq = bv['moq_units']
     safety_wk = bv['safety_buffer_weeks']
-    st.caption(f"Lead time: {lt_weeks} wks · MOQ: {moq:,} units · Safety: {safety_wk} wks — change in sidebar **Business Variables**")
+    st.caption(f"Lead time: {lt_weeks} wks · MOQ: {moq:,} units · Safety: {safety_wk} wks — change in **Variables** page")
 
     # --- Get SKU forecast from waterfall ---
     has_forecast = False

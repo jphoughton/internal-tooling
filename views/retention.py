@@ -142,26 +142,24 @@ def _build_cohort_table(matrices, summary, metric, cumulative, start_str, end_st
 
 def render(ctx):
     """Render the Retention page."""
+    channel = ctx.get('channel', 'Rollup')
+    source_filter = ctx.get('source_filter')  # 'shopify', 'amazon', or None (Rollup)
+
     _title_col, _badge_col = st.columns([7, 3])
     with _title_col:
         st.title('Retention')
 
-    # --- DTC / Amazon toggle ---
-    _toggle_col, _sku_col = st.columns([1, 2])
-    with _toggle_col:
-        _channel = st.segmented_control(
-            'Channel',
-            options=['DTC', 'Amazon'],
-            default='DTC',
-            key='retention_channel',
-        )
-    if not _channel:
-        _channel = 'DTC'
-    _is_amazon = _channel == 'Amazon'
-    source_val = 'amazon' if _is_amazon else 'shopify'
+    # Derive source_val for analytics queries
+    if source_filter:
+        source_val = source_filter
+        _is_amazon = source_filter == 'amazon'
+    else:
+        # Rollup: show DTC cohort analysis + Amazon repeat purchase
+        source_val = 'shopify'
+        _is_amazon = False
 
     with _badge_col:
-        _badge_source = ['amazon'] if _is_amazon else ['shopify']
+        _badge_source = ['amazon'] if _is_amazon else ['shopify'] if source_filter == 'shopify' else ['shopify', 'amazon']
         with get_db() as conn:
             _ts = get_last_sync_timestamp(conn, _badge_source)
             _new = get_new_rows_since_yesterday(conn, _badge_source)
@@ -175,8 +173,7 @@ def render(ctx):
     # --- SKU filter ---
     skus = _load_sku_list()
     sku_options = skus['sku'].tolist() if not skus.empty else []
-    with _sku_col:
-        sku_filter = st.selectbox('Filter by SKU', ['All SKUs'] + sku_options)
+    sku_filter = st.selectbox('Filter by SKU', ['All SKUs'] + sku_options, key=f'{channel}_ret_sku')
 
     sku_val = None if sku_filter == 'All SKUs' else sku_filter
 
@@ -309,7 +306,7 @@ def render(ctx):
                                   yaxis=dict(gridcolor='#E8EDF3'))
                 st.plotly_chart(fig, use_container_width=True)
 
-    if _is_amazon:
+    if _is_amazon or channel == 'Rollup':
         # --- Amazon Repeat Purchase Summary ---
         st.divider()
         st.subheader('Repeat Purchase Summary')
@@ -396,7 +393,7 @@ def render(ctx):
         else:
             st.info('No Amazon customer data available. Run a sync to pull fulfillment data.')
 
-    else:
+    if not _is_amazon or channel == 'Rollup':
         # --- DTC: Projected 12-Month Revenue ---
         st.divider()
         st.subheader('Projected Revenue (Next 12 Months)')
