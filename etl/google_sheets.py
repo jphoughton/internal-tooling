@@ -16,8 +16,8 @@ from etl.retry import with_retry
 logger = logging.getLogger(__name__)
 
 # Default: Hydrant Daily Data sheet
-DEFAULT_SHEET_ID = "1GE_upVue9Fh4okDs7s3qE1ae54DStY-H0K7MovgCcxk"
-DEFAULT_GID = "1661449750"  # "Daily Data" tab
+DEFAULT_SHEET_ID = "14ehOxYbykZLBi-rC8g9gijqVcrsT-xRx-j98HJuFJ0s"
+DEFAULT_GID = "786086379"  # "Daily Data" tab
 
 
 def _build_csv_url(sheet_id=None, gid=None):

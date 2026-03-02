@@ -477,8 +477,8 @@ def render(ctx):
     st.caption("Import data from a Google Sheet's 'Daily Data' tab. The sheet must be shared as 'Anyone with the link can view'.")
 
     with get_db() as conn:
-        _gs_sheet_id = get_setting(conn, "google_sheet_id", "1GE_upVue9Fh4okDs7s3qE1ae54DStY-H0K7MovgCcxk")
-        _gs_gid = get_setting(conn, "google_sheet_gid", "1661449750")
+        _gs_sheet_id = get_setting(conn, "google_sheet_id", "14ehOxYbykZLBi-rC8g9gijqVcrsT-xRx-j98HJuFJ0s")
+        _gs_gid = get_setting(conn, "google_sheet_gid", "786086379")
         _gs_last_sync = get_setting(conn, "google_sheet_last_sync", "Never")
 
     gs_sheet_id = st.text_input("Sheet ID", value=_gs_sheet_id, key="gs_sheet_id",
