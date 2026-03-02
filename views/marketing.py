@@ -351,14 +351,8 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            # Channel detection — read URL query params directly
-            _qp_page = st.query_params.get('page', '')
-            if _qp_page.startswith('DTC'):
-                _nav_channel = 'DTC'
-            elif _qp_page.startswith('Amazon'):
-                _nav_channel = 'Amazon'
-            else:
-                _nav_channel = 'Rollup'
+            # Channel from dashboard router context
+            _nav_channel = ctx.get('channel', 'Rollup')
 
             if _has_goals:
                 # Build pacing row helper
