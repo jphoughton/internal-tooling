@@ -360,17 +360,14 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            # Channel detection — use page name as single source of truth
-            _page_name = ctx.get('page', '')
-            if _page_name.startswith('DTC'):
+            # Channel detection — read URL query params directly
+            _qp_page = st.query_params.get('page', '')
+            if _qp_page.startswith('DTC'):
                 _nav_channel = 'DTC'
-            elif _page_name.startswith('Amazon'):
+            elif _qp_page.startswith('Amazon'):
                 _nav_channel = 'Amazon'
             else:
                 _nav_channel = 'Rollup'
-            _show_rollup = _nav_channel == 'Rollup'
-            _show_dtc = _nav_channel in ('Rollup', 'DTC')
-            _show_amz = _nav_channel in ('Rollup', 'Amazon')
 
             if _has_goals:
                 # Build pacing row helper
@@ -575,7 +572,7 @@ def render(ctx):
                 # ============================================================
                 # ROLL UP — DTC + Amazon combined
                 # ============================================================
-                if _show_rollup:
+                if _nav_channel == 'Rollup':
                     st.subheader("Roll Up")
 
                     # Roll Up KPIs (above table)
@@ -608,8 +605,8 @@ def render(ctx):
                 # ============================================================
                 # DTC (Shopify) — Google + Meta spend
                 # ============================================================
-                if _show_dtc:
-                    if _show_rollup:
+                if _nav_channel in ('Rollup', 'DTC'):
+                    if _nav_channel == 'Rollup':
                         st.markdown("---")
                     st.subheader("DTC (Shopify)")
 
@@ -636,8 +633,8 @@ def render(ctx):
                 # ============================================================
                 # AMAZON — from amazon_daily_rollup
                 # ============================================================
-                if _show_amz:
-                    if _show_rollup:
+                if _nav_channel in ('Rollup', 'Amazon'):
+                    if _nav_channel == 'Rollup':
                         st.markdown("---")
                     st.subheader("Amazon")
 
@@ -1069,13 +1066,15 @@ def render(ctx):
 
                 _dtc_dod, _rollup_dod, _amz_tbl_dod = _build_perf_table(_dod_agg, "Day", _amz_dod)
 
-                if _show_rollup:
+                if _nav_channel == 'DTC':
+                    _render_perf_table_colored(_dtc_dod, "Day", max_height=420)
+                elif _nav_channel == 'Amazon':
+                    _render_perf_table_colored(_amz_tbl_dod, "Day", max_height=420)
+                else:
                     st.subheader("Roll Up")
                     _render_perf_table_colored(_rollup_dod, "Day", max_height=420)
-                if _show_dtc:
                     st.subheader("DTC (Shopify)")
                     _render_perf_table_colored(_dtc_dod, "Day", max_height=420)
-                if _show_amz:
                     st.subheader("Amazon")
                     _render_perf_table_colored(_amz_tbl_dod, "Day", max_height=420)
 
@@ -1122,13 +1121,15 @@ def render(ctx):
                     if not _tbl.empty and "Week" in _tbl.columns:
                         _tbl.insert(1, "Wk #", _tbl["Week"].map(_wk_map).fillna(0).astype(int))
 
-                if _show_rollup:
+                if _nav_channel == 'DTC':
+                    _render_perf_table_colored(_dtc_wow, "Week", max_height=420)
+                elif _nav_channel == 'Amazon':
+                    _render_perf_table_colored(_amz_tbl_wow, "Week", max_height=420)
+                else:
                     st.subheader("Roll Up")
                     _render_perf_table_colored(_rollup_wow, "Week", max_height=420)
-                if _show_dtc:
                     st.subheader("DTC (Shopify)")
                     _render_perf_table_colored(_dtc_wow, "Week", max_height=420)
-                if _show_amz:
                     st.subheader("Amazon")
                     _render_perf_table_colored(_amz_tbl_wow, "Week", max_height=420)
 
@@ -1165,13 +1166,15 @@ def render(ctx):
 
                 _dtc_mom, _rollup_mom, _amz_tbl_mom = _build_perf_table(_mom_agg, "Month", _amz_mom)
 
-                if _show_rollup:
+                if _nav_channel == 'DTC':
+                    _render_perf_table_colored(_dtc_mom, "Month")
+                elif _nav_channel == 'Amazon':
+                    _render_perf_table_colored(_amz_tbl_mom, "Month")
+                else:
                     st.subheader("Roll Up")
                     _render_perf_table_colored(_rollup_mom, "Month")
-                if _show_dtc:
                     st.subheader("DTC (Shopify)")
                     _render_perf_table_colored(_dtc_mom, "Month")
-                if _show_amz:
                     st.subheader("Amazon")
                     _render_perf_table_colored(_amz_tbl_mom, "Month")
 
@@ -1213,11 +1216,11 @@ def render(ctx):
                 _mkt_gap_note = f" — *{'; '.join(_mkt_gap_parts)}, DOW-adjusted est. for missing days*" if _mkt_gap_parts else ""
                 st.caption(f"**DB Ground Truth** (from Shopify + Amazon order history){_mkt_gap_note}")
                 _nc_gt_cols = []
-                if _show_rollup:
+                if _nav_channel == 'Rollup':
                     _nc_gt_cols.append("rollup")
-                if _show_dtc:
+                if _nav_channel in ('Rollup', 'DTC'):
                     _nc_gt_cols.append("dtc")
-                if _show_amz:
+                if _nav_channel in ('Rollup', 'Amazon'):
                     _nc_gt_cols.append("amz")
                 _nc_gt_st_cols = st.columns(len(_nc_gt_cols))
                 for _gt_idx, _gt_key in enumerate(_nc_gt_cols):
@@ -1323,11 +1326,11 @@ def render(ctx):
                 _rpt_gap_note = f" — *DOW-adjusted est. for missing days*" if any(d.get('gap_days', 0) > 0 for d in [_db_nr_all, _db_nr_dtc, _db_nr_amz]) else ""
                 st.caption(f"**DB Ground Truth** (from Shopify + Amazon order history){_rpt_gap_note}")
                 _rpt_gt_cols = []
-                if _show_rollup:
+                if _nav_channel == 'Rollup':
                     _rpt_gt_cols.append("rollup")
-                if _show_dtc:
+                if _nav_channel in ('Rollup', 'DTC'):
                     _rpt_gt_cols.append("dtc")
-                if _show_amz:
+                if _nav_channel in ('Rollup', 'Amazon'):
                     _rpt_gt_cols.append("amz")
                 _rpt_gt_st_cols = st.columns(len(_rpt_gt_cols))
                 for _rgt_idx, _rgt_key in enumerate(_rpt_gt_cols):
