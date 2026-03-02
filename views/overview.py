@@ -222,6 +222,7 @@ def render(ctx):
 
     with col_left:
         st.subheader('Revenue Trend')
+        st.caption('7-day moving average of daily revenue from Shopify + Amazon order data.')
         daily = stats['daily_trend']
         if not daily.empty:
             daily['sale_date'] = pd.to_datetime(daily['sale_date'])
@@ -266,6 +267,7 @@ def render(ctx):
 
     with col_right:
         st.subheader('Channel Mix')
+        st.caption('Revenue share by channel from daily_sku_sales.')
         source = stats['source_split']
         if not source.empty:
             fig = px.pie(source, values='revenue', names='source',
@@ -283,6 +285,7 @@ def render(ctx):
 
     with nr_col_left:
         st.subheader('New vs Repeat Revenue')
+        st.caption('New vs returning customer revenue (7-day avg) from Shopify orders.')
         nr_daily = get_new_repeat_daily_revenue(str(ov_start), str(ov_end))
         if not nr_daily.empty:
             nr_daily['order_date'] = pd.to_datetime(nr_daily['order_date'])
@@ -315,6 +318,7 @@ def render(ctx):
 
     with nr_col_right:
         st.subheader('New vs Repeat')
+        st.caption('Revenue share between new and repeat customers.')
         _nr_total = nr_all['new_revenue'] + nr_all['repeat_revenue']
         if _nr_total > 0:
             nr_pie_data = pd.DataFrame({
@@ -336,6 +340,7 @@ def render(ctx):
 
     # -- Top SKUs --
     st.subheader('Top SKUs')
+    st.caption('Best-selling SKUs by units sold from Shopify order items.')
     top = stats['top_skus']
     if not top.empty:
         top = top.copy()

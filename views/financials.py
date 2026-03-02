@@ -81,6 +81,7 @@ def render(ctx):
 
             # === CASH FLOW CHART ===
             st.subheader("Cash Flow")
+            st.caption('Cash inflows vs outflows over time from bank transactions.')
             _cf_group = st.radio("Group by", ["Daily", "Weekly", "Monthly"], horizontal=True, key="cf_group")
             if _cf_group == "Weekly":
                 fin_clean["_period"] = fin_clean["_date"].dt.to_period("W").apply(lambda x: x.start_time)
@@ -146,6 +147,7 @@ def render(ctx):
             # === INFLOWS BREAKDOWN (if Highbeam data) ===
             if not inflows.empty:
                 st.subheader("Cash Inflows")
+                st.caption('Revenue breakdown by source category from Highbeam bank data.')
                 in_cats = inflows.groupby("category")["_amount"].sum().sort_values(ascending=False).reset_index()
                 in_cats.columns = ["Source", "Total"]
 
@@ -167,6 +169,7 @@ def render(ctx):
             # === OUTFLOWS BREAKDOWN ===
             if not outflows.empty:
                 st.subheader("Cash Outflows")
+                st.caption('Spending breakdown by category from bank and card transactions.')
                 out_cats = outflows.groupby("category")["_amount"].sum().sort_values(ascending=False).reset_index()
                 out_cats.columns = ["Category", "Total"]
 
@@ -191,6 +194,7 @@ def render(ctx):
 
                 # --- Top Merchants (outflows only) ---
                 st.subheader("Top Vendors")
+                st.caption('Highest-spend vendors ranked by total payments from bank transactions.')
                 merchant_col = "merchant" if "merchant" in outflows.columns else "description"
                 merch_spend = outflows.groupby(merchant_col).agg(
                     Total=("_amount", "sum"),
@@ -206,6 +210,7 @@ def render(ctx):
 
             # === MONTHLY P&L SUMMARY ===
             st.subheader("Monthly P&L")
+            st.caption('Monthly cash-basis P&L summary from bank transactions.')
             fin_clean["_month"] = fin_clean["_date"].dt.to_period("M").astype(str)
             if has_direction:
                 monthly_in = fin_clean[fin_clean["direction"] == "credit"].groupby("_month")["_amount"].sum()
@@ -234,6 +239,7 @@ def render(ctx):
                 depts = outflows[outflows["department"].notna() & (outflows["department"] != "") & (outflows["department"] != "nan")] if not outflows.empty else pd.DataFrame()
                 if not depts.empty:
                     st.subheader("Spend by Department")
+                    st.caption('Department-level spending breakdown from Ramp card data.')
                     dept_spend = depts.groupby("department")["_amount"].sum().sort_values(ascending=False).reset_index()
                     dept_spend.columns = ["Department", "Total"]
                     fig_dept = go.Figure(data=[go.Pie(
@@ -248,6 +254,7 @@ def render(ctx):
                 users_df = outflows[outflows["user_name"].notna() & (outflows["user_name"] != "") & (outflows["user_name"] != "nan")] if not outflows.empty else pd.DataFrame()
                 if not users_df.empty:
                     st.subheader("Spend by Team Member")
+                    st.caption('Per-person spending from Ramp card transactions.')
                     user_spend = users_df.groupby("user_name")["_amount"].agg(["sum", "count"]).sort_values("sum", ascending=False).reset_index()
                     user_spend.columns = ["Team Member", "Total Spend", "Transactions"]
                     user_spend["Total Spend"] = user_spend["Total Spend"].apply(lambda x: f"${x:,.0f}")
@@ -256,6 +263,7 @@ def render(ctx):
 
             # --- Raw Transaction Table ---
             with st.expander("All Transactions"):
+                st.caption('Raw transaction list from imported bank and card data.')
                 _show_cols = ["_date", "direction", "merchant", "_amount", "category"]
                 if "department" in fin_clean.columns:
                     _show_cols.append("department")

@@ -180,6 +180,7 @@ def render(ctx, embedded=False):
             for _ic in ["On Hand", "Allocated", "Available", "Backordered", "Inbound"]:
                 if _ic in display_df.columns:
                     display_df[_ic] = display_df[_ic].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) and isinstance(x, (int, float)) else x)
+            st.caption('Live Packiyo 3PL stock levels with days-of-supply based on demand forecast.')
             render_html_table(display_df, max_height=min(len(display_df) * 35 + 38, 700),
                               style_fn=_color_dos_3pl, style_cols=["DoS"],
                               column_groups=[

@@ -574,6 +574,7 @@ def render(ctx):
                 # ============================================================
                 if _nav_channel == 'Rollup':
                     st.subheader("Roll Up")
+                    st.caption('Combined Shopify + Amazon pacing from Google Sheets + Shopify/Amazon data.')
 
                     # Roll Up KPIs (above table)
                     eff1, eff2, eff3, eff4 = st.columns(4)
@@ -609,6 +610,7 @@ def render(ctx):
                     if _nav_channel == 'Rollup':
                         st.markdown("---")
                     st.subheader("DTC (Shopify)")
+                    st.caption('Shopify-only pacing vs revenue and spend goals from media plan.')
 
                     # DTC KPIs (above table)
                     dtc_k1, dtc_k2, dtc_k3, dtc_k4 = st.columns(4)
@@ -637,6 +639,7 @@ def render(ctx):
                     if _nav_channel == 'Rollup':
                         st.markdown("---")
                     st.subheader("Amazon")
+                    st.caption('Amazon-only pacing from daily_sku_sales + amazon_daily_rollup.')
 
                     # Amazon KPIs (above table)
                     _amz_cpa = _cm_amz_spend / _cm_amz_nc if _cm_amz_nc > 0 else 0
@@ -1066,6 +1069,7 @@ def render(ctx):
 
                 _dtc_dod, _rollup_dod, _amz_tbl_dod = _build_perf_table(_dod_agg, "Day", _amz_dod)
 
+                st.caption('Day-over-day performance comparison from Shopify orders + Google Sheets daily data.')
                 if _nav_channel == 'DTC':
                     _render_perf_table_colored(_dtc_dod, "Day", max_height=420)
                 elif _nav_channel == 'Amazon':
@@ -1114,6 +1118,7 @@ def render(ctx):
                     _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(**_amz_wow_agg).reset_index()
 
                 _dtc_wow, _rollup_wow, _amz_tbl_wow = _build_perf_table(_wow_agg, "Week", _amz_wow)
+                st.caption('Week-over-week performance comparison from Shopify orders + Google Sheets data.')
 
                 # Insert week number after the Week column
                 _wk_map = _wow_agg.set_index("Week")["Wk #"]
@@ -1165,6 +1170,7 @@ def render(ctx):
                     _amz_mom = _amz_mom_tmp.groupby("Month", sort=True).agg(**_amz_mom_agg).reset_index()
 
                 _dtc_mom, _rollup_mom, _amz_tbl_mom = _build_perf_table(_mom_agg, "Month", _amz_mom)
+                st.caption('Month-over-month performance comparison from Shopify orders + Google Sheets data.')
 
                 if _nav_channel == 'DTC':
                     _render_perf_table_colored(_dtc_mom, "Month")
@@ -1257,6 +1263,7 @@ def render(ctx):
 
             # NC Revenue & Spend over time
             st.subheader("NC Revenue vs Ad Spend")
+            st.caption('New customer revenue vs ad spend from Shopify orders + Google Sheets spend data.')
             fig_nc = go.Figure()
             fig_nc.add_trace(go.Bar(
                 x=mkt_df["_date"], y=mkt_df["_nc_revenue"],
@@ -1290,6 +1297,7 @@ def render(ctx):
                 fig_fb.add_trace(go.Scatter(x=mkt_df["_date"], y=mkt_df["_fb_spend"], fill="tozeroy", line=dict(color="#1877F2")))
                 fig_fb.update_layout(height=160, margin=dict(l=0, r=0, t=10, b=0),
                                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+                st.caption('Daily Meta ad spend from Google Sheets.')
                 st.plotly_chart(fig_fb, use_container_width=True)
             with ch2:
                 st.markdown("**Google Ads**")
@@ -1303,6 +1311,7 @@ def render(ctx):
                 fig_goog.add_trace(go.Scatter(x=mkt_df["_date"], y=mkt_df["_goog_spend"], fill="tozeroy", line=dict(color="#34A853")))
                 fig_goog.update_layout(height=160, margin=dict(l=0, r=0, t=10, b=0),
                                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+                st.caption('Daily Google Ads spend from Google Sheets.')
                 st.plotly_chart(fig_goog, use_container_width=True)
 
             st.divider()
@@ -1366,6 +1375,7 @@ def render(ctx):
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                 yaxis=dict(gridcolor="#E8EDF3"),
             )
+            st.caption('Daily repeat customer revenue from Shopify orders.')
             st.plotly_chart(fig_ret, use_container_width=True)
 
             # Subscription metrics
@@ -1391,6 +1401,7 @@ def render(ctx):
                 fig_subs.update_layout(height=200, margin=dict(l=0, r=0, t=10, b=0),
                                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                                        yaxis=dict(gridcolor="#E8EDF3"))
+                st.caption('Active subscription count over time from Google Sheets.')
                 st.plotly_chart(fig_subs, use_container_width=True)
 
                 fig_net_sub = go.Figure()
@@ -1402,6 +1413,7 @@ def render(ctx):
                     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                     yaxis=dict(gridcolor="#E8EDF3"),
                 )
+                st.caption('New vs cancelled subscriptions from Google Sheets.')
                 st.plotly_chart(fig_net_sub, use_container_width=True)
 
             st.divider()
@@ -1433,6 +1445,7 @@ def render(ctx):
             weekly["New Custs"] = weekly["New Custs"].astype(int)
             weekly["Sessions"] = weekly["Sessions"].astype(int)
             weekly["NC ROAS"] = weekly["NC ROAS"].apply(lambda x: f"{x:.2f}x")
+            st.caption('Weekly rollup of key marketing metrics from Shopify orders + Google Sheets spend data.')
             render_html_table(weekly.sort_values("Week", ascending=False))
 
             # Conversion funnel
@@ -1570,6 +1583,7 @@ def render(ctx):
 
                 from ui.tables import format_number_cols
                 display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
+                st.caption('Email campaign performance metrics from Klaviyo API.')
                 render_html_table(display, max_height=500)
             else:
                 st.info("No campaigns synced yet. Click **Refresh from Klaviyo** above.")
@@ -1597,6 +1611,7 @@ def render(ctx):
 
                 from ui.tables import format_number_cols
                 display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
+                st.caption('Automated email flow performance from Klaviyo API.')
                 render_html_table(display, max_height=500)
             else:
                 st.info("No flows synced yet.")
@@ -1610,6 +1625,7 @@ def render(ctx):
                     lambda x: str(x)[:10] if x else "—")
                 display["Updated"] = list_df["updated"].apply(
                     lambda x: str(x)[:10] if x else "—")
+                st.caption('Email list sizes and dates from Klaviyo API.')
                 render_html_table(display, max_height=400)
             else:
                 st.info("No lists synced yet.")

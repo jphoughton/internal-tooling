@@ -326,6 +326,7 @@ def render(ctx):
                 else:
                     # Preview
                     preview_cols = [c for c in [_date_col, _order_col, _sku_col, _qty_col, _price_col, _title_col] if c]
+                    st.caption('Preview of order-level Amazon data to be imported.')
                     render_html_table(amz_df[preview_cols].head(10))
 
                     _amz_unique_orders = amz_df[_order_col].nunique()
@@ -424,6 +425,7 @@ def render(ctx):
             else:
                 # --- DAILY SUMMARY FORMAT ---
                 st.info(f"Detected **daily summary** format: {len(amz_df):,} rows.")
+                st.caption('Preview of daily summary Amazon data to be imported.')
                 render_html_table(amz_df.head(10))
 
                 _date_cols = [c for c in amz_df.columns if any(k in c.lower() for k in ["date", "day"])]

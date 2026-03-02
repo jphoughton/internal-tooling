@@ -438,6 +438,7 @@ def render_pacing(ctx):
     # ============================================================
     if _chan_sel in ("All", "Roll Up"):
         st.subheader("Roll Up")
+        st.caption('Combined Shopify + Amazon pacing against monthly goals from the demand forecast engine.')
 
         eff1, eff2, eff3, eff4 = st.columns(4)
         eff1.metric("Business MER", f"{_business_mer:.2f}x",
@@ -472,6 +473,7 @@ def render_pacing(ctx):
         if _chan_sel == "All":
             st.markdown("---")
         st.subheader("DTC (Shopify)")
+        st.caption('Shopify-only pacing vs monthly revenue goals from media spend plan.')
 
         dtc_k1, dtc_k2, dtc_k3, dtc_k4 = st.columns(4)
         dtc_k1.metric("NC ROAS", f"{_dtc_nc_roas:.2f}x")
@@ -498,6 +500,7 @@ def render_pacing(ctx):
         if _chan_sel == "All":
             st.markdown("---")
         st.subheader("Amazon")
+        st.caption('Amazon-only pacing vs revenue goals from amazon_revenue_forecast.')
 
         _amz_cpa = _cm_amz_spend / _cm_amz_nc if _cm_amz_nc > 0 else 0
         amz_k1, amz_k2, amz_k3, amz_k4 = st.columns(4)

@@ -480,6 +480,7 @@ def render(ctx, embedded=False):
                     margin=dict(l=0, r=0, t=10, b=0),
                     legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 )
+                st.caption('Individual SKU forecast from Prophet model with 80% confidence interval.')
                 st.plotly_chart(fig, use_container_width=True)
 
                 ri = result['reorder_info']
@@ -490,4 +491,5 @@ def render(ctx, embedded=False):
                 col4.metric('Reorder Point', f"{int(ri['reorder_point'])} units")
 
                 monthly = result['monthly_forecast']
+                st.caption('Per-SKU monthly forecast numbers from Prophet model.')
                 render_html_table(monthly)

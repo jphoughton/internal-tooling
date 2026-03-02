@@ -294,6 +294,7 @@ def render(ctx):
 
             # Cohort sizes
             st.subheader('Cohort Sizes')
+            st.caption('New customer acquisitions per month from Shopify orders.')
             sizes = get_cohort_sizes(source_filter=source_val)
             if not sizes.empty:
                 sizes = sizes[sizes['cohort'].between(start_str, end_str)] if 'start_str' in dir() else sizes
@@ -348,6 +349,7 @@ def render(ctx):
 
                 # Repeat rate trend chart
                 st.subheader('Repeat Rate Trend')
+                st.caption('Repeat purchase rate trend by cohort from Amazon orders.')
                 fig_rr = go.Figure()
                 fig_rr.add_trace(go.Scatter(
                     x=_rr_filtered['cohort'].tolist(),
