@@ -1081,11 +1081,13 @@ def render(ctx):
                 _wow_df = _perf_df.copy()
                 _wow_df["_week_start"] = _wow_df["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
                 _wow_df["Week"] = _wow_df["_week_start"].dt.strftime("%Y-%m-%d")
+                _wow_df["Wk #"] = _wow_df["_date"].dt.isocalendar().week.astype(int)
                 _wow_agg = _wow_df.groupby("Week", sort=True).agg(
                     _ad_spend=("_ad_spend", "sum"), _revenue=("_revenue", "sum"),
                     _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
                     _ret_revenue=("_ret_revenue", "sum"), _sessions=("_sessions", "sum"),
                     _orders=("_orders", "sum"), _units=("_units", "sum"),
+                    **{"Wk #": ("Wk #", "first")},
                 ).reset_index()
 
                 # Amazon weekly
@@ -1110,6 +1112,12 @@ def render(ctx):
                     _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(**_amz_wow_agg).reset_index()
 
                 _dtc_wow, _rollup_wow, _amz_tbl_wow = _build_perf_table(_wow_agg, "Week", _amz_wow)
+
+                # Insert week number after the Week column
+                _wk_map = _wow_agg.set_index("Week")["Wk #"]
+                for _tbl in [_dtc_wow, _rollup_wow, _amz_tbl_wow]:
+                    if not _tbl.empty and "Week" in _tbl.columns:
+                        _tbl.insert(1, "Wk #", _tbl["Week"].map(_wk_map).fillna(0).astype(int))
 
                 if _chan_sel in ("All", "Roll Up"):
                     st.subheader("Roll Up")
@@ -1201,34 +1209,43 @@ def render(ctx):
                     _mkt_gap_parts.append(f"Shopify through {_db_nr_dtc['last_data_date']}")
                 _mkt_gap_note = f" — *{'; '.join(_mkt_gap_parts)}, DOW-adjusted est. for missing days*" if _mkt_gap_parts else ""
                 st.caption(f"**DB Ground Truth** (from Shopify + Amazon order history){_mkt_gap_note}")
-                _db_ch_ru, _db_ch_dtc, _db_ch_amz = st.columns(3)
-                with _db_ch_ru:
-                    st.markdown("**Roll Up**")
-                    _dbru1, _dbru2, _dbru3 = st.columns(3)
-                    _dbru1.metric("New Cust", _mkt_fmt(_db_nr_all['new_customers'], _db_nr_all.get('projected_new_customers', 0)))
-                    _dbru2.metric("NC Rev", _mkt_fmt(_db_nr_all['new_revenue'], _db_nr_all.get('projected_new_revenue', 0), prefix='$'))
-                    _ru_tot_new = _db_nr_all.get('total_new_revenue', _db_nr_all['new_revenue'])
-                    _ru_tot_rep = _db_nr_all.get('total_repeat_revenue', _db_nr_all['repeat_revenue'])
-                    _db_nc_pct_all = _ru_tot_new / (_ru_tot_new + _ru_tot_rep) * 100 if (_ru_tot_new + _ru_tot_rep) > 0 else 0
-                    _dbru3.metric("NC % Rev", f"{_db_nc_pct_all:.0f}%")
-                with _db_ch_dtc:
-                    st.markdown("**DTC (Shopify)**")
-                    _dbdtc1, _dbdtc2, _dbdtc3 = st.columns(3)
-                    _dbdtc1.metric("New Cust", _mkt_fmt(_db_nr_dtc['new_customers'], _db_nr_dtc.get('projected_new_customers', 0)))
-                    _dbdtc2.metric("NC Rev", _mkt_fmt(_db_nr_dtc['new_revenue'], _db_nr_dtc.get('projected_new_revenue', 0), prefix='$'))
-                    _dtc_tot_new = _db_nr_dtc.get('total_new_revenue', _db_nr_dtc['new_revenue'])
-                    _dtc_tot_rep = _db_nr_dtc.get('total_repeat_revenue', _db_nr_dtc['repeat_revenue'])
-                    _db_nc_pct_dtc = _dtc_tot_new / (_dtc_tot_new + _dtc_tot_rep) * 100 if (_dtc_tot_new + _dtc_tot_rep) > 0 else 0
-                    _dbdtc3.metric("NC % Rev", f"{_db_nc_pct_dtc:.0f}%")
-                with _db_ch_amz:
-                    st.markdown("**Amazon**")
-                    _dbamz1, _dbamz2, _dbamz3 = st.columns(3)
-                    _dbamz1.metric("New Cust", _mkt_fmt(_db_nr_amz['new_customers'], _db_nr_amz.get('projected_new_customers', 0)))
-                    _dbamz2.metric("NC Rev", _mkt_fmt(_db_nr_amz['new_revenue'], _db_nr_amz.get('projected_new_revenue', 0), prefix='$'))
-                    _amz_tot_new = _db_nr_amz.get('total_new_revenue', _db_nr_amz['new_revenue'])
-                    _amz_tot_rep = _db_nr_amz.get('total_repeat_revenue', _db_nr_amz['repeat_revenue'])
-                    _db_nc_pct_amz = _amz_tot_new / (_amz_tot_new + _amz_tot_rep) * 100 if (_amz_tot_new + _amz_tot_rep) > 0 else 0
-                    _dbamz3.metric("NC % Rev", f"{_db_nc_pct_amz:.0f}%")
+                _nc_gt_cols = []
+                if _chan_sel in ("All",):
+                    _nc_gt_cols.append("rollup")
+                if _chan_sel in ("All", "DTC"):
+                    _nc_gt_cols.append("dtc")
+                if _chan_sel in ("All", "Amazon"):
+                    _nc_gt_cols.append("amz")
+                _nc_gt_st_cols = st.columns(len(_nc_gt_cols))
+                for _gt_idx, _gt_key in enumerate(_nc_gt_cols):
+                    with _nc_gt_st_cols[_gt_idx]:
+                        if _gt_key == "rollup":
+                            st.markdown("**Roll Up**")
+                            _dbru1, _dbru2, _dbru3 = st.columns(3)
+                            _dbru1.metric("New Cust", _mkt_fmt(_db_nr_all['new_customers'], _db_nr_all.get('projected_new_customers', 0)))
+                            _dbru2.metric("NC Rev", _mkt_fmt(_db_nr_all['new_revenue'], _db_nr_all.get('projected_new_revenue', 0), prefix='$'))
+                            _ru_tot_new = _db_nr_all.get('total_new_revenue', _db_nr_all['new_revenue'])
+                            _ru_tot_rep = _db_nr_all.get('total_repeat_revenue', _db_nr_all['repeat_revenue'])
+                            _db_nc_pct_all = _ru_tot_new / (_ru_tot_new + _ru_tot_rep) * 100 if (_ru_tot_new + _ru_tot_rep) > 0 else 0
+                            _dbru3.metric("NC % Rev", f"{_db_nc_pct_all:.0f}%")
+                        elif _gt_key == "dtc":
+                            st.markdown("**DTC (Shopify)**")
+                            _dbdtc1, _dbdtc2, _dbdtc3 = st.columns(3)
+                            _dbdtc1.metric("New Cust", _mkt_fmt(_db_nr_dtc['new_customers'], _db_nr_dtc.get('projected_new_customers', 0)))
+                            _dbdtc2.metric("NC Rev", _mkt_fmt(_db_nr_dtc['new_revenue'], _db_nr_dtc.get('projected_new_revenue', 0), prefix='$'))
+                            _dtc_tot_new = _db_nr_dtc.get('total_new_revenue', _db_nr_dtc['new_revenue'])
+                            _dtc_tot_rep = _db_nr_dtc.get('total_repeat_revenue', _db_nr_dtc['repeat_revenue'])
+                            _db_nc_pct_dtc = _dtc_tot_new / (_dtc_tot_new + _dtc_tot_rep) * 100 if (_dtc_tot_new + _dtc_tot_rep) > 0 else 0
+                            _dbdtc3.metric("NC % Rev", f"{_db_nc_pct_dtc:.0f}%")
+                        elif _gt_key == "amz":
+                            st.markdown("**Amazon**")
+                            _dbamz1, _dbamz2, _dbamz3 = st.columns(3)
+                            _dbamz1.metric("New Cust", _mkt_fmt(_db_nr_amz['new_customers'], _db_nr_amz.get('projected_new_customers', 0)))
+                            _dbamz2.metric("NC Rev", _mkt_fmt(_db_nr_amz['new_revenue'], _db_nr_amz.get('projected_new_revenue', 0), prefix='$'))
+                            _amz_tot_new = _db_nr_amz.get('total_new_revenue', _db_nr_amz['new_revenue'])
+                            _amz_tot_rep = _db_nr_amz.get('total_repeat_revenue', _db_nr_amz['repeat_revenue'])
+                            _db_nc_pct_amz = _amz_tot_new / (_amz_tot_new + _amz_tot_rep) * 100 if (_amz_tot_new + _amz_tot_rep) > 0 else 0
+                            _dbamz3.metric("NC % Rev", f"{_db_nc_pct_amz:.0f}%")
 
             st.divider()
 
@@ -1302,25 +1319,34 @@ def render(ctx):
             if _db_nr_all['repeat_customers'] > 0:
                 _rpt_gap_note = f" — *DOW-adjusted est. for missing days*" if any(d.get('gap_days', 0) > 0 for d in [_db_nr_all, _db_nr_dtc, _db_nr_amz]) else ""
                 st.caption(f"**DB Ground Truth** (from Shopify + Amazon order history){_rpt_gap_note}")
-                _dbr_ru, _dbr_dtc, _dbr_amz = st.columns(3)
-                with _dbr_ru:
-                    st.markdown("**Roll Up**")
-                    _dr1, _dr2, _dr3 = st.columns(3)
-                    _dr1.metric("Repeat Orders", f"{_db_nr_all['repeat_orders']:,}")
-                    _dr2.metric("Repeat Rev", _mkt_fmt(_db_nr_all['repeat_revenue'], _db_nr_all.get('projected_repeat_revenue', 0), prefix='$'))
-                    _dr3.metric("Repeat AOV", f"${_db_nr_all['repeat_aov']:,.0f}")
-                with _dbr_dtc:
-                    st.markdown("**DTC (Shopify)**")
-                    _drd1, _drd2, _drd3 = st.columns(3)
-                    _drd1.metric("Repeat Orders", f"{_db_nr_dtc['repeat_orders']:,}")
-                    _drd2.metric("Repeat Rev", _mkt_fmt(_db_nr_dtc['repeat_revenue'], _db_nr_dtc.get('projected_repeat_revenue', 0), prefix='$'))
-                    _drd3.metric("Repeat AOV", f"${_db_nr_dtc['repeat_aov']:,.0f}")
-                with _dbr_amz:
-                    st.markdown("**Amazon**")
-                    _dra1, _dra2, _dra3 = st.columns(3)
-                    _dra1.metric("Repeat Orders", f"{_db_nr_amz['repeat_orders']:,}")
-                    _dra2.metric("Repeat Rev", _mkt_fmt(_db_nr_amz['repeat_revenue'], _db_nr_amz.get('projected_repeat_revenue', 0), prefix='$'))
-                    _dra3.metric("Repeat AOV", f"${_db_nr_amz['repeat_aov']:,.0f}")
+                _rpt_gt_cols = []
+                if _chan_sel in ("All",):
+                    _rpt_gt_cols.append("rollup")
+                if _chan_sel in ("All", "DTC"):
+                    _rpt_gt_cols.append("dtc")
+                if _chan_sel in ("All", "Amazon"):
+                    _rpt_gt_cols.append("amz")
+                _rpt_gt_st_cols = st.columns(len(_rpt_gt_cols))
+                for _rgt_idx, _rgt_key in enumerate(_rpt_gt_cols):
+                    with _rpt_gt_st_cols[_rgt_idx]:
+                        if _rgt_key == "rollup":
+                            st.markdown("**Roll Up**")
+                            _dr1, _dr2, _dr3 = st.columns(3)
+                            _dr1.metric("Repeat Orders", f"{_db_nr_all['repeat_orders']:,}")
+                            _dr2.metric("Repeat Rev", _mkt_fmt(_db_nr_all['repeat_revenue'], _db_nr_all.get('projected_repeat_revenue', 0), prefix='$'))
+                            _dr3.metric("Repeat AOV", f"${_db_nr_all['repeat_aov']:,.0f}")
+                        elif _rgt_key == "dtc":
+                            st.markdown("**DTC (Shopify)**")
+                            _drd1, _drd2, _drd3 = st.columns(3)
+                            _drd1.metric("Repeat Orders", f"{_db_nr_dtc['repeat_orders']:,}")
+                            _drd2.metric("Repeat Rev", _mkt_fmt(_db_nr_dtc['repeat_revenue'], _db_nr_dtc.get('projected_repeat_revenue', 0), prefix='$'))
+                            _drd3.metric("Repeat AOV", f"${_db_nr_dtc['repeat_aov']:,.0f}")
+                        elif _rgt_key == "amz":
+                            st.markdown("**Amazon**")
+                            _dra1, _dra2, _dra3 = st.columns(3)
+                            _dra1.metric("Repeat Orders", f"{_db_nr_amz['repeat_orders']:,}")
+                            _dra2.metric("Repeat Rev", _mkt_fmt(_db_nr_amz['repeat_revenue'], _db_nr_amz.get('projected_repeat_revenue', 0), prefix='$'))
+                            _dra3.metric("Repeat AOV", f"${_db_nr_amz['repeat_aov']:,.0f}")
 
             # Repeat revenue over time
             fig_ret = go.Figure()
