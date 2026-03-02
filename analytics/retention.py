@@ -877,13 +877,9 @@ def _get_dow_daily_new_customers(start_date, end_date, source_filter=None):
     """Return a DataFrame with first_order_date and new_customer count per day,
     plus dow (0=Mon … 6=Sun) for building DOW indices."""
     first_source = source_filter or 'shopify'
-    source_clause = ""
     params = [first_source, start_date, end_date]
-    if source_filter:
-        source_clause = " AND source = ?"
-        params.append(source_filter)
     with get_db() as conn:
-        df = read_sql(f"""
+        df = read_sql("""
             WITH cust_first AS (
                 SELECT customer_id, MIN(order_date) AS first_order_date
                 FROM orders WHERE source = ?
@@ -892,7 +888,6 @@ def _get_dow_daily_new_customers(start_date, end_date, source_filter=None):
             SELECT first_order_date, COUNT(*) AS new_customers
             FROM cust_first
             WHERE first_order_date BETWEEN ? AND ?
-            {source_clause}
             GROUP BY first_order_date
             ORDER BY first_order_date
         """, conn, params=params)
