@@ -10,7 +10,7 @@ from db import (
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor
-from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue, get_projected_new_repeat_summary
+from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 from views.pacing import render_pacing
 
@@ -155,65 +155,6 @@ def render(ctx):
     _k4.metric('Amazon', f"${stats['amazon_revenue']:,.0f}")
     _k1.metric('Orders', f"{stats['total_orders']:,}")
     _k2.metric('Customers', f"{stats['total_customers']:,}")
-
-    st.markdown('')  # spacing
-
-    # -- New vs Repeat Customer Breakdown (with projections) --
-    nr_all = get_projected_new_repeat_summary(str(ov_start), str(ov_end))
-    nr_dtc = get_projected_new_repeat_summary(str(ov_start), str(ov_end), 'shopify')
-    nr_amz = get_projected_new_repeat_summary(str(ov_start), str(ov_end), 'amazon')
-
-    # Show data-freshness warning if projecting
-    _any_gap = max(nr_all.get('gap_days', 0), nr_dtc.get('gap_days', 0), nr_amz.get('gap_days', 0))
-    if _any_gap > 0:
-        _gap_parts = []
-        if nr_amz.get('gap_days', 0) > 0:
-            _gap_parts.append(f"Amazon data through {nr_amz['last_data_date']} ({nr_amz['gap_days']}d gap)")
-        if nr_dtc.get('gap_days', 0) > 0:
-            _gap_parts.append(f"Shopify data through {nr_dtc['last_data_date']} ({nr_dtc['gap_days']}d gap)")
-        if _gap_parts:
-            st.caption(f"*Projected values include DOW-adjusted estimates for missing days. {'; '.join(_gap_parts)}.*")
-
-    def _fmt_proj(actual, projected, prefix='', suffix=''):
-        """Format a metric value, appending ' (est)' when projection is included."""
-        total = actual + projected
-        if projected > 0:
-            return f"{prefix}{total:,.0f}{suffix} (est)"
-        return f"{prefix}{total:,.0f}{suffix}"
-
-    # Roll-up KPIs
-    _nr1, _nr2, _nr3, _nr4 = st.columns(4)
-    _nr1.metric('New Customers', _fmt_proj(nr_all['new_customers'], nr_all.get('projected_new_customers', 0)),
-                delta=f"+{nr_all['projected_new_customers']} projected" if nr_all.get('projected_new_customers', 0) > 0 else None)
-    _nr2.metric('Repeat Customers', _fmt_proj(nr_all['repeat_customers'], nr_all.get('projected_repeat_customers', 0)),
-                delta=f"+{nr_all['projected_repeat_customers']} projected" if nr_all.get('projected_repeat_customers', 0) > 0 else None)
-    _nr3.metric('New Customer Revenue', _fmt_proj(nr_all['new_revenue'], nr_all.get('projected_new_revenue', 0), prefix='$'))
-    _nr4.metric('Repeat Customer Revenue', _fmt_proj(nr_all['repeat_revenue'], nr_all.get('projected_repeat_revenue', 0), prefix='$'))
-
-    # Per-channel breakdown
-    _ch_dtc, _ch_amz = st.columns(2)
-    with _ch_dtc:
-        st.caption('**DTC (Shopify)**')
-        _d1, _d2, _d3 = st.columns(3)
-        _d1.metric('New', _fmt_proj(nr_dtc['new_customers'], nr_dtc.get('projected_new_customers', 0)),
-                   f"${nr_dtc['total_new_revenue']:,.0f} rev" if nr_dtc.get('projected_new_revenue', 0) > 0 else f"${nr_dtc['new_revenue']:,.0f} rev")
-        _d2.metric('Repeat', _fmt_proj(nr_dtc['repeat_customers'], nr_dtc.get('projected_repeat_customers', 0)),
-                   f"${nr_dtc['total_repeat_revenue']:,.0f} rev" if nr_dtc.get('projected_repeat_revenue', 0) > 0 else f"${nr_dtc['repeat_revenue']:,.0f} rev")
-        _dtc_total_new_rev = nr_dtc.get('total_new_revenue', nr_dtc['new_revenue'])
-        _dtc_total_rep_rev = nr_dtc.get('total_repeat_revenue', nr_dtc['repeat_revenue'])
-        _dtc_nc_pct = _dtc_total_new_rev / (_dtc_total_new_rev + _dtc_total_rep_rev) * 100 if (_dtc_total_new_rev + _dtc_total_rep_rev) > 0 else 0
-        _d3.metric('NC % of Rev', f"{_dtc_nc_pct:.0f}%", f"AOV ${nr_dtc['new_aov']:,.0f} / ${nr_dtc['repeat_aov']:,.0f}")
-    with _ch_amz:
-        st.caption('**Amazon**')
-        _a1, _a2, _a3 = st.columns(3)
-        _a1.metric('New', _fmt_proj(nr_amz['new_customers'], nr_amz.get('projected_new_customers', 0)),
-                   f"${nr_amz['total_new_revenue']:,.0f} rev" if nr_amz.get('projected_new_revenue', 0) > 0 else f"${nr_amz['new_revenue']:,.0f} rev")
-        _a2.metric('Repeat', _fmt_proj(nr_amz['repeat_customers'], nr_amz.get('projected_repeat_customers', 0)),
-                   f"${nr_amz['total_repeat_revenue']:,.0f} rev" if nr_amz.get('projected_repeat_revenue', 0) > 0 else f"${nr_amz['repeat_revenue']:,.0f} rev")
-        _amz_total_new_rev = nr_amz.get('total_new_revenue', nr_amz['new_revenue'])
-        _amz_total_rep_rev = nr_amz.get('total_repeat_revenue', nr_amz['repeat_revenue'])
-        _amz_nc_pct = _amz_total_new_rev / (_amz_total_new_rev + _amz_total_rep_rev) * 100 if (_amz_total_new_rev + _amz_total_rep_rev) > 0 else 0
-        _a3.metric('NC % of Rev', f"{_amz_nc_pct:.0f}%", f"AOV ${nr_amz['new_aov']:,.0f} / ${nr_amz['repeat_aov']:,.0f}")
 
     st.markdown('')  # spacing
 
