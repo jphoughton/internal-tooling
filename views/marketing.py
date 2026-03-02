@@ -78,7 +78,7 @@ def _load_shopify_daily_metrics():
 
 @st.cache_data(ttl=300)
 def _load_gs_spend():
-    """Load ad spend and sessions from Google Sheet (the only columns we still use from TW)."""
+    """Load ad spend and subscription data from Google Sheet."""
     with get_db() as conn:
         try:
             cols = [d["column_name"] for d in conn.execute(
@@ -104,21 +104,17 @@ def _load_gs_spend():
 
     df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
     df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
-    df['_fb_spend'] = df.get('facebook_ads_spend', pd.Series(0)).apply(_clean_num)
-    df['_goog_spend'] = df.get('google_ads_spend', pd.Series(0)).apply(_clean_num)
-    df['_sessions'] = df.get('sessions', pd.Series(0)).apply(_clean_num)
-    df['_atc'] = df.get('sessions_with_add_to_carts', pd.Series(0)).apply(_clean_num)
-    df['_nc_aov'] = df.get('nc_aov', pd.Series(0)).apply(_clean_num)
-    df['_nc_cpa'] = df.get('new_customers_cpa', pd.Series(0)).apply(_clean_num)
-    df['_nc_roas'] = df.get('new_customer_roas', pd.Series(0)).apply(_clean_num)
 
     # Keep subscription columns if present
-    for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions']:
+    sub_cols = []
+    for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions',
+                     'total_active_subscriptions', 'total_new_subscriptions',
+                     'total_cancelled_subscriptions', 'total_subscription_order_revenue']:
         if sub_col in df.columns:
             df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
+            sub_cols.append(f'_{sub_col}')
 
-    return df[['_date', '_ad_spend', '_fb_spend', '_goog_spend', '_sessions', '_atc',
-               '_nc_aov', '_nc_cpa', '_nc_roas'] + [c for c in df.columns if c.startswith('_subscriptions') or c.startswith('_subscription') or c.startswith('_active_')]].copy()
+    return df[['_date', '_ad_spend'] + sub_cols].copy()
 
 
 def render(ctx):
@@ -128,7 +124,6 @@ def render(ctx):
     _load_seasonal_json = ctx['load_seasonal_json']
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
     _bv = ctx.get('biz_vars', {})
-    _TW_ADJ = _bv.get('tw_adjustment_factor', 1.0)
     _mkt_horizon = _bv.get('forecast_horizon', 12)
     _mkt_amz_growth = _bv.get('amazon_growth_pct', 0.0)
 
@@ -160,10 +155,6 @@ def render(ctx):
             )
         else:
             mkt_df['_ad_spend'] = 0
-            mkt_df['_fb_spend'] = 0
-            mkt_df['_goog_spend'] = 0
-            mkt_df['_sessions'] = 0
-            mkt_df['_atc'] = 0
         mkt_df = mkt_df.sort_values('_date')
 
         if not mkt_df.empty:
@@ -553,10 +544,6 @@ def render(ctx):
                 _dtc_nc_roas = _cm_nc_rev / _cm_dtc_spend if _cm_dtc_spend > 0 else 0
                 _dtc_nc_aov = _cm_nc_rev / _cm_nc if _cm_nc > 0 else 0
                 _dtc_cpa = _cm_dtc_spend / _cm_nc if _cm_nc > 0 else 0
-                _dtc_nc_conv = 0
-                _cm_sessions = mkt_df.loc[_cm_mask, "_sessions"].sum() if _cm_mask.any() else 0
-                if _cm_sessions > 0:
-                    _dtc_nc_conv = _cm_nc / _cm_sessions * 100
 
                 # -- Spend goal from media plan --
                 _goal_spend = 0
@@ -703,12 +690,10 @@ def render(ctx):
                     total_rev = r.get("_revenue", 0)
                     nc_orders = r.get("_nc_orders", 0)
                     nc_rev = r.get("_nc_revenue", 0)
-                    sessions = r.get("_sessions", 0)
                     orders = r.get("_orders", 0)
                     nc_aov = nc_rev / nc_orders if nc_orders > 0 else 0
                     nc_cpa = spend / nc_orders if nc_orders > 0 else 0
                     nc_roas = nc_rev / spend if spend > 0 else 0
-                    nc_conv = nc_orders / sessions * 100 if sessions > 0 else 0
                     cost_per_nc = spend / nc_orders if nc_orders > 0 else 0
 
                     # DTC row
@@ -718,7 +703,6 @@ def render(ctx):
                         "Total Rev": f"${total_rev:,.0f}",
                         "New Users": int(nc_orders),
                         "Cost/New User": f"${cost_per_nc:,.0f}",
-                        "NC Conv %": f"{nc_conv:.2f}%",
                         "NC Rev": f"${nc_rev:,.0f}",
                         "NC Orders": int(nc_orders),
                         "NC AOV": f"${nc_aov:,.0f}",
@@ -803,7 +787,6 @@ def render(ctx):
                 "NC MER": True,         # higher efficiency = good
                 "MER": True,            # higher efficiency = good
                 "NC ROAS": True,        # higher return = good
-                "NC Conv %": True,      # higher conversion = good
                 "NC AOV": True,         # higher AOV = good
                 "NC CPA": False,        # lower CPA = good
                 "Cost/New User": False,  # lower cost = good
@@ -966,10 +949,8 @@ def render(ctx):
                 )
             else:
                 _perf_df['_ad_spend'] = 0
-                _perf_df['_sessions'] = 0
             _perf_df = _perf_df.sort_values('_date')
             _perf_df['_ad_spend'] = _perf_df['_ad_spend'].fillna(0)
-            _perf_df['_sessions'] = _perf_df['_sessions'].fillna(0)
 
             # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup,
             # new/repeat customer counts and revenue from orders/customers/order_items
@@ -1044,7 +1025,7 @@ def render(ctx):
                 _dod_df["Day"] = _dod_df["_date"].dt.strftime("%Y-%m-%d")
                 _dod_agg_cols = {"_ad_spend": "sum", "_revenue": "sum", "_nc_orders": "sum",
                                  "_nc_revenue": "sum", "_ret_revenue": "sum",
-                                 "_sessions": "sum", "_orders": "sum", "_units": "sum"}
+                                 "_orders": "sum", "_units": "sum"}
                 _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
 
                 # Amazon daily
@@ -1091,7 +1072,7 @@ def render(ctx):
                 _wow_agg = _wow_df.groupby("Week", sort=True).agg(
                     _ad_spend=("_ad_spend", "sum"), _revenue=("_revenue", "sum"),
                     _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
-                    _ret_revenue=("_ret_revenue", "sum"), _sessions=("_sessions", "sum"),
+                    _ret_revenue=("_ret_revenue", "sum"),
                     _orders=("_orders", "sum"), _units=("_units", "sum"),
                     **{"Wk #": ("Wk #", "first")},
                 ).reset_index()
@@ -1145,7 +1126,7 @@ def render(ctx):
                 _mom_agg = _mom_df.groupby("Month", sort=True).agg(
                     _ad_spend=("_ad_spend", "sum"), _revenue=("_revenue", "sum"),
                     _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
-                    _ret_revenue=("_ret_revenue", "sum"), _sessions=("_sessions", "sum"),
+                    _ret_revenue=("_ret_revenue", "sum"),
                     _orders=("_orders", "sum"), _units=("_units", "sum"),
                 ).reset_index()
 
@@ -1282,38 +1263,6 @@ def render(ctx):
             )
             st.plotly_chart(fig_nc, use_container_width=True)
 
-            # Channel breakdown for NC
-            st.subheader("Spend by Channel")
-            ch1, ch2 = st.columns(2)
-            with ch1:
-                st.markdown("**Facebook / Meta**")
-                fb_spend = mkt_df["_fb_spend"].sum()
-                fb_cpa_vals = mkt_df.get("facebook_cpa", pd.Series(0)).apply(_clean_num)
-                fb_cpa = fb_cpa_vals[fb_cpa_vals > 0].mean() if (fb_cpa_vals > 0).any() else 0
-                fb1, fb2 = st.columns(2)
-                fb1.metric("Spend", f"${fb_spend:,.0f}")
-                fb2.metric("CPA", f"${fb_cpa:.0f}")
-                fig_fb = go.Figure()
-                fig_fb.add_trace(go.Scatter(x=mkt_df["_date"], y=mkt_df["_fb_spend"], fill="tozeroy", line=dict(color="#1877F2")))
-                fig_fb.update_layout(height=160, margin=dict(l=0, r=0, t=10, b=0),
-                                     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-                st.caption('Daily Meta ad spend from Google Sheets.')
-                st.plotly_chart(fig_fb, use_container_width=True)
-            with ch2:
-                st.markdown("**Google Ads**")
-                goog_spend = mkt_df["_goog_spend"].sum()
-                goog_cpa_vals = mkt_df.get("google_cpa", pd.Series(0)).apply(_clean_num)
-                goog_cpa = goog_cpa_vals[goog_cpa_vals > 0].mean() if (goog_cpa_vals > 0).any() else 0
-                g1, g2 = st.columns(2)
-                g1.metric("Spend", f"${goog_spend:,.0f}")
-                g2.metric("CPA", f"${goog_cpa:.0f}")
-                fig_goog = go.Figure()
-                fig_goog.add_trace(go.Scatter(x=mkt_df["_date"], y=mkt_df["_goog_spend"], fill="tozeroy", line=dict(color="#34A853")))
-                fig_goog.update_layout(height=160, margin=dict(l=0, r=0, t=10, b=0),
-                                       plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
-                st.caption('Daily Google Ads spend from Google Sheets.')
-                st.plotly_chart(fig_goog, use_container_width=True)
-
             st.divider()
 
             # ============================================================
@@ -1378,13 +1327,14 @@ def render(ctx):
             st.caption('Daily repeat customer revenue from Shopify orders.')
             st.plotly_chart(fig_ret, use_container_width=True)
 
-            # Subscription metrics
-            if "total_active_subscriptions" in mkt_df.columns:
+            # Subscription metrics (from Google Sheet via _load_gs_spend)
+            _has_subs = "_total_active_subscriptions" in mkt_df.columns
+            if _has_subs:
                 st.subheader("Subscriptions")
-                mkt_df["_active_subs"] = mkt_df["total_active_subscriptions"].apply(_clean_num)
-                mkt_df["_new_subs"] = mkt_df.get("total_new_subscriptions", pd.Series(0)).apply(_clean_num)
-                mkt_df["_cancelled_subs"] = mkt_df.get("total_cancelled_subscriptions", pd.Series(0)).apply(_clean_num)
-                mkt_df["_sub_rev"] = mkt_df.get("total_subscription_order_revenue", pd.Series(0)).apply(_clean_num)
+                mkt_df["_active_subs"] = mkt_df["_total_active_subscriptions"].fillna(0)
+                mkt_df["_new_subs"] = mkt_df.get("_total_new_subscriptions", pd.Series(0)).fillna(0)
+                mkt_df["_cancelled_subs"] = mkt_df.get("_total_cancelled_subscriptions", pd.Series(0)).fillna(0)
+                mkt_df["_sub_rev"] = mkt_df.get("_total_subscription_order_revenue", pd.Series(0)).fillna(0)
 
                 sub1, sub2, sub3, sub4 = st.columns(4)
                 sub1.metric("Active Subscriptions", f"{mkt_df['_active_subs'].iloc[-1]:,.0f}")
@@ -1430,7 +1380,6 @@ def render(ctx):
                 Ad_Spend=("_ad_spend", "sum"),
                 Orders=("_orders", "sum"),
                 NC_Orders=("_nc_orders", "sum"),
-                Sessions=("_sessions", "sum"),
             ).reset_index()
             weekly["NC ROAS"] = (weekly["NC_Revenue"] / weekly["Ad_Spend"]).round(2).replace([float("inf")], 0)
             weekly["NC CPA"] = (weekly["Ad_Spend"] / weekly["NC_Orders"]).round(0).replace([float("inf")], 0)
@@ -1443,23 +1392,9 @@ def render(ctx):
                 weekly[col] = weekly[col].apply(lambda x: f"${x:,.0f}")
             weekly["Orders"] = weekly["Orders"].astype(int)
             weekly["New Custs"] = weekly["New Custs"].astype(int)
-            weekly["Sessions"] = weekly["Sessions"].astype(int)
             weekly["NC ROAS"] = weekly["NC ROAS"].apply(lambda x: f"{x:.2f}x")
             st.caption('Weekly rollup of key marketing metrics from Shopify orders + Google Sheets spend data.')
             render_html_table(weekly.sort_values("Week", ascending=False))
-
-            # Conversion funnel
-            st.subheader("Conversion Funnel")
-            total_sessions = int(mkt_df["_sessions"].sum())
-            total_atc = int(mkt_df["_atc"].sum())
-            atc_rate = total_atc / total_sessions * 100 if total_sessions > 0 else 0
-            cvr = total_orders / total_sessions * 100 if total_sessions > 0 else 0
-
-            fn1, fn2, fn3, fn4 = st.columns(4)
-            fn1.metric("Sessions", f"{total_sessions:,}")
-            fn2.metric("Add to Cart", f"{total_atc:,}", f"{atc_rate:.1f}%")
-            fn3.metric("Orders", f"{total_orders:,}", f"{cvr:.2f}% CVR")
-            fn4.metric("Units Sold", f"{int(mkt_df['_units'].sum()):,}")
 
         else:
             st.info("No marketing data available. Check that Shopify data has been synced.")

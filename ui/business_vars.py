@@ -80,20 +80,10 @@ BUSINESS_VARS = {
         "unit": "wks",
         "help": "Weeks to ship from 3PL to Amazon FBA.",
     },
-    # --- Marketing ---
-    "bv.tw_adjustment_factor": {
-        "label": "Triple Whale Adj.",
-        "group": "Marketing",
-        "type": "float",
-        "min": 0.1, "max": 1.0, "step": 0.05,
-        "default": 0.5,
-        "unit": "x",
-        "help": "TW over-reports ~2x; 0.5 halves to match actuals.",
-    },
 }
 
 # Ordered groups for display
-_GROUPS = ["Forecasting", "Supply Chain", "Marketing"]
+_GROUPS = ["Forecasting", "Supply Chain"]
 
 _GROUP_HEADER = ('<p style="margin:0 0 4px;font-size:0.7rem;font-weight:700;'
                  'text-transform:uppercase;letter-spacing:0.06em;'

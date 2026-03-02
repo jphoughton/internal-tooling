@@ -2,13 +2,12 @@
 import streamlit as st
 import pandas as pd
 from db import (
-    get_db, read_sql,
+    get_db,
     get_media_spend, get_amazon_revenue_forecast,
-    get_setting,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
-from ui.components import render_html_table
 from utils.constants import FORECAST_SKUS
+from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 
 
 def render_pacing(ctx):
@@ -21,56 +20,22 @@ def render_pacing(ctx):
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
-    _TW_ADJ = ctx.get('biz_vars', {}).get('tw_adjustment_factor', 1.0)
 
-    # Check for Google Sheet data
-    with get_db() as conn:
-        try:
-            _cols = [d["column_name"] for d in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'google_sheet_data'"
-            ).fetchall()]
-            _has_gs_data = "date" in _cols
-        except Exception:
-            _has_gs_data = False
-
-    if not _has_gs_data:
+    # Load Shopify DB metrics (revenue, orders, new/repeat customers)
+    _shopify_daily = _load_shopify_daily_metrics()
+    if _shopify_daily.empty:
         return False
 
-    with get_db() as conn:
-        mkt_df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
-
-    if mkt_df.empty:
-        return False
-
-    mkt_df["_date"] = pd.to_datetime(mkt_df["date"], format="mixed", dayfirst=False)
-    mkt_df = mkt_df.sort_values("_date")
-
-    def _clean_num(val):
-        if pd.isna(val):
-            return 0.0
-        s = str(val).replace("$", "").replace(",", "").replace("%", "").strip()
-        try:
-            return float(s)
-        except (ValueError, TypeError):
-            return 0.0
-
-    # Compute columns
-    mkt_df["_ad_spend"] = mkt_df["blended_ad_spend"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_revenue"] = mkt_df["total_sales"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_orders"] = mkt_df["orders"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_nc_orders"] = mkt_df["new_customer_orders"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_nc_revenue"] = mkt_df["new_customer_revenue"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_ret_revenue"] = mkt_df["returning_customer_revenue"].apply(_clean_num) * _TW_ADJ
-    mkt_df["_ret_orders"] = mkt_df["_orders"] - mkt_df["_nc_orders"]
-    mkt_df["_fb_spend"] = mkt_df.get("facebook_ads_spend", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-    mkt_df["_goog_spend"] = mkt_df.get("google_ads_spend", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-    mkt_df["_sessions"] = mkt_df.get("sessions", pd.Series(0)).apply(_clean_num)
-    mkt_df["_atc"] = mkt_df.get("sessions_with_add_to_carts", pd.Series(0)).apply(_clean_num)
-    mkt_df["_units"] = mkt_df.get("units_sold", pd.Series(0)).apply(_clean_num) * _TW_ADJ
-    mkt_df["_nc_aov"] = mkt_df.get("nc_aov", pd.Series(0)).apply(_clean_num)
-    mkt_df["_nc_cpa"] = mkt_df.get("new_customers_cpa", pd.Series(0)).apply(_clean_num)
-    mkt_df["_nc_roas"] = mkt_df.get("new_customer_roas", pd.Series(0)).apply(_clean_num)
+    # Merge: Shopify DB for revenue/customers, Google Sheet for spend only
+    mkt_df = _shopify_daily.copy()
+    _gs_spend = _load_gs_spend()
+    if not _gs_spend.empty:
+        mkt_df = mkt_df.merge(
+            _gs_spend[['_date', '_ad_spend']], on='_date', how='left', suffixes=('', '_gs')
+        )
+    else:
+        mkt_df['_ad_spend'] = 0
+    mkt_df = mkt_df.sort_values('_date')
 
     # ============================================================
     # LOAD REVENUE GOALS from Demand Forecast engine
@@ -110,7 +75,7 @@ def render_pacing(ctx):
     _day_of_month = _now.day
     _pct_month = _day_of_month / _days_in_month
 
-    # MTD actuals from Google Sheet
+    # MTD actuals from Shopify DB + GS spend
     _cm_mask = mkt_df["_date"].dt.strftime("%Y-%m") == _cur_month
     _cm_nc_rev = mkt_df.loc[_cm_mask, "_nc_revenue"].sum()
     _cm_ret_rev = mkt_df.loc[_cm_mask, "_ret_revenue"].sum()
@@ -179,7 +144,7 @@ def render_pacing(ctx):
         ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
         return True
 
-    # Last 7 days averages from Google Sheet
+    # Last 7 days averages
     _l7d_mask = mkt_df["_date"] >= (_now - pd.Timedelta(days=7))
     _l7d_rev = mkt_df.loc[_l7d_mask, "_revenue"].sum() / 7 if _l7d_mask.any() else 0
     _l7d_nc_rev = mkt_df.loc[_l7d_mask, "_nc_revenue"].sum() / 7 if _l7d_mask.any() else 0
@@ -212,7 +177,7 @@ def render_pacing(ctx):
     except Exception:
         pass
 
-    # Yesterday actuals from Google Sheet
+    # Yesterday actuals
     _yesterday = (_now - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday
     _yd_rev = mkt_df.loc[_yd_mask, "_revenue"].sum()
@@ -411,11 +376,6 @@ def render_pacing(ctx):
     _dtc_nc_roas = _cm_nc_rev / _cm_dtc_spend if _cm_dtc_spend > 0 else 0
     _dtc_nc_aov = _cm_nc_rev / _cm_nc if _cm_nc > 0 else 0
     _dtc_cpa = _cm_dtc_spend / _cm_nc if _cm_nc > 0 else 0
-    _dtc_nc_conv = 0
-    _cm_sessions = mkt_df.loc[_cm_mask, "_sessions"].sum() if _cm_mask.any() else 0
-    if _cm_sessions > 0:
-        _dtc_nc_conv = _cm_nc / _cm_sessions * 100
-
     # -- Spend goals from media plan --
     _goal_spend = 0
     _spend_plan = [m for m in _mkt_media if m.get("month") == _cur_month]
