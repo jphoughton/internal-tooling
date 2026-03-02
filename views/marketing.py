@@ -648,12 +648,23 @@ def render(ctx):
                 # No goals — show MTD summary with last month comparison
                 st.info("Set up a media spend plan and Amazon forecast in the sidebar **Business Variables** panel for pacing.")
                 st.subheader("MTD Summary")
-                ts1, ts2, ts3, ts4 = st.columns(4)
-                ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
-                ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
-                ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
-                _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
-                ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+                if _nav_channel == 'DTC':
+                    ts1, ts2, ts3 = st.columns(3)
+                    ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
+                    ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
+                    _total_mtd = _cm_nc_rev + _cm_ret_rev
+                    ts3.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+                elif _nav_channel == 'Amazon':
+                    ts1, ts2 = st.columns(2)
+                    ts1.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
+                    ts2.metric("Amazon Spend (MTD)", f"${_cm_amz_spend:,.0f}")
+                else:
+                    ts1, ts2, ts3, ts4 = st.columns(4)
+                    ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
+                    ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
+                    ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
+                    _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
+                    ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
 
             st.divider()
 
@@ -1166,16 +1177,17 @@ def render(ctx):
             # ============================================================
             st.header("New Customer Acquisition")
 
-            nc_cpa_avg = total_spend / total_nc if total_nc > 0 else 0
-            nc_roas = nc_rev / total_spend if total_spend > 0 else 0
-            nc_aov_avg = nc_rev / total_nc if total_nc > 0 else 0
+            if _nav_channel in ('DTC', 'Rollup'):
+                nc_cpa_avg = total_spend / total_nc if total_nc > 0 else 0
+                nc_roas = nc_rev / total_spend if total_spend > 0 else 0
+                nc_aov_avg = nc_rev / total_nc if total_nc > 0 else 0
 
-            nc1, nc2, nc3, nc4, nc5 = st.columns(5)
-            nc1.metric("New Customers", f"{total_nc:,}")
-            nc2.metric("NC Revenue", f"${nc_rev:,.0f}")
-            nc3.metric("Ad Spend", f"${total_spend:,.0f}")
-            nc4.metric("NC CPA", f"${nc_cpa_avg:,.0f}", help="Total ad spend / new customer orders")
-            nc5.metric("NC ROAS", f"{nc_roas:.2f}x", help="New customer revenue / ad spend")
+                nc1, nc2, nc3, nc4, nc5 = st.columns(5)
+                nc1.metric("New Customers", f"{total_nc:,}")
+                nc2.metric("NC Revenue", f"${nc_rev:,.0f}")
+                nc3.metric("Ad Spend", f"${total_spend:,.0f}")
+                nc4.metric("NC CPA", f"${nc_cpa_avg:,.0f}", help="Total ad spend / new customer orders")
+                nc5.metric("NC ROAS", f"{nc_roas:.2f}x", help="New customer revenue / ad spend")
 
             # DB Ground Truth — per-channel new/repeat from order history (with projections)
             _db_nr_all = get_projected_new_repeat_summary(str(mkt_start), str(mkt_end))
@@ -1234,28 +1246,29 @@ def render(ctx):
                             _db_nc_pct_amz = _amz_tot_new / (_amz_tot_new + _amz_tot_rep) * 100 if (_amz_tot_new + _amz_tot_rep) > 0 else 0
                             _dbamz3.metric("NC % Rev", f"{_db_nc_pct_amz:.0f}%")
 
-            st.divider()
+            if _nav_channel in ('DTC', 'Rollup'):
+                st.divider()
 
-            # NC Revenue & Spend over time
-            st.subheader("NC Revenue vs Ad Spend")
-            st.caption('New customer revenue vs ad spend from Shopify orders + Google Sheets spend data.')
-            fig_nc = go.Figure()
-            fig_nc.add_trace(go.Bar(
-                x=mkt_df["_date"], y=mkt_df["_nc_revenue"],
-                name="NC Revenue", marker_color="#F58B3D",
-            ))
-            fig_nc.add_trace(go.Bar(
-                x=mkt_df["_date"], y=mkt_df["_ad_spend"],
-                name="Ad Spend", marker_color="#E05252",
-            ))
-            fig_nc.update_layout(
-                barmode="group", height=320,
-                margin=dict(l=0, r=0, t=10, b=0),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                yaxis=dict(gridcolor="#E8EDF3"),
-            )
-            st.plotly_chart(fig_nc, use_container_width=True)
+                # NC Revenue & Spend over time
+                st.subheader("NC Revenue vs Ad Spend")
+                st.caption('New customer revenue vs ad spend from Shopify orders + Google Sheets spend data.')
+                fig_nc = go.Figure()
+                fig_nc.add_trace(go.Bar(
+                    x=mkt_df["_date"], y=mkt_df["_nc_revenue"],
+                    name="NC Revenue", marker_color="#F58B3D",
+                ))
+                fig_nc.add_trace(go.Bar(
+                    x=mkt_df["_date"], y=mkt_df["_ad_spend"],
+                    name="Ad Spend", marker_color="#E05252",
+                ))
+                fig_nc.update_layout(
+                    barmode="group", height=320,
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    yaxis=dict(gridcolor="#E8EDF3"),
+                )
+                st.plotly_chart(fig_nc, use_container_width=True)
 
             st.divider()
 
@@ -1264,14 +1277,15 @@ def render(ctx):
             # ============================================================
             st.header("Repeat Revenue")
 
-            ret_aov = ret_rev / total_ret if total_ret > 0 else 0
-            ret_pct = ret_rev / total_rev * 100 if total_rev > 0 else 0
+            if _nav_channel in ('DTC', 'Rollup'):
+                ret_aov = ret_rev / total_ret if total_ret > 0 else 0
+                ret_pct = ret_rev / total_rev * 100 if total_rev > 0 else 0
 
-            rc1, rc2, rc3, rc4 = st.columns(4)
-            rc1.metric("Returning Orders", f"{total_ret:,}")
-            rc2.metric("Repeat Revenue", f"${ret_rev:,.0f}")
-            rc3.metric("Repeat AOV", f"${ret_aov:,.0f}")
-            rc4.metric("% of Total Revenue", f"{ret_pct:.0f}%")
+                rc1, rc2, rc3, rc4 = st.columns(4)
+                rc1.metric("Returning Orders", f"{total_ret:,}")
+                rc2.metric("Repeat Revenue", f"${ret_rev:,.0f}")
+                rc3.metric("Repeat AOV", f"${ret_aov:,.0f}")
+                rc4.metric("% of Total Revenue", f"{ret_pct:.0f}%")
 
             # DB Ground Truth — Repeat Revenue per channel (with projections)
             if _db_nr_all['repeat_customers'] > 0:
@@ -1306,23 +1320,24 @@ def render(ctx):
                             _dra2.metric("Repeat Rev", _mkt_fmt(_db_nr_amz['repeat_revenue'], _db_nr_amz.get('projected_repeat_revenue', 0), prefix='$'))
                             _dra3.metric("Repeat AOV", f"${_db_nr_amz['repeat_aov']:,.0f}")
 
-            # Repeat revenue over time
-            fig_ret = go.Figure()
-            fig_ret.add_trace(go.Bar(
-                x=mkt_df["_date"], y=mkt_df["_ret_revenue"],
-                name="Repeat Revenue", marker_color="#5BB8D4",
-            ))
-            fig_ret.update_layout(
-                height=280, margin=dict(l=0, r=0, t=10, b=0),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                yaxis=dict(gridcolor="#E8EDF3"),
-            )
-            st.caption('Daily repeat customer revenue from Shopify orders.')
-            st.plotly_chart(fig_ret, use_container_width=True)
+            # Repeat revenue over time (DTC only)
+            if _nav_channel in ('DTC', 'Rollup'):
+                fig_ret = go.Figure()
+                fig_ret.add_trace(go.Bar(
+                    x=mkt_df["_date"], y=mkt_df["_ret_revenue"],
+                    name="Repeat Revenue", marker_color="#5BB8D4",
+                ))
+                fig_ret.update_layout(
+                    height=280, margin=dict(l=0, r=0, t=10, b=0),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                    yaxis=dict(gridcolor="#E8EDF3"),
+                )
+                st.caption('Daily repeat customer revenue from Shopify orders.')
+                st.plotly_chart(fig_ret, use_container_width=True)
 
-            # Subscription metrics (from Google Sheet via _load_gs_spend)
-            _has_subs = "_total_active_subscriptions" in mkt_df.columns
+            # Subscription metrics (from Google Sheet via _load_gs_spend) — DTC only
+            _has_subs = "_total_active_subscriptions" in mkt_df.columns and _nav_channel in ('DTC', 'Rollup')
             if _has_subs:
                 st.subheader("Subscriptions")
                 mkt_df["_active_subs"] = mkt_df["_total_active_subscriptions"].fillna(0)
@@ -1363,32 +1378,33 @@ def render(ctx):
             st.divider()
 
             # ============================================================
-            # SECTION 3: COMBINED SUMMARY
+            # SECTION 3: COMBINED SUMMARY (DTC only)
             # ============================================================
-            st.header("Weekly Summary")
-            mkt_df["_week"] = mkt_df["_date"].dt.to_period("W").apply(lambda x: x.start_time)
-            weekly = mkt_df.groupby("_week").agg(
-                Revenue=("_revenue", "sum"),
-                NC_Revenue=("_nc_revenue", "sum"),
-                Ret_Revenue=("_ret_revenue", "sum"),
-                Ad_Spend=("_ad_spend", "sum"),
-                Orders=("_orders", "sum"),
-                NC_Orders=("_nc_orders", "sum"),
-            ).reset_index()
-            weekly["NC ROAS"] = (weekly["NC_Revenue"] / weekly["Ad_Spend"]).round(2).replace([float("inf")], 0)
-            weekly["NC CPA"] = (weekly["Ad_Spend"] / weekly["NC_Orders"]).round(0).replace([float("inf")], 0)
-            weekly["_week"] = weekly["_week"].dt.strftime("%Y-%m-%d")
-            weekly = weekly.rename(columns={
-                "_week": "Week", "NC_Revenue": "NC Rev", "Ret_Revenue": "Repeat Rev",
-                "Ad_Spend": "Ad Spend", "NC_Orders": "New Custs",
-            })
-            for col in ["Revenue", "NC Rev", "Repeat Rev", "Ad Spend", "NC CPA"]:
-                weekly[col] = weekly[col].apply(lambda x: f"${x:,.0f}")
-            weekly["Orders"] = weekly["Orders"].astype(int)
-            weekly["New Custs"] = weekly["New Custs"].astype(int)
-            weekly["NC ROAS"] = weekly["NC ROAS"].apply(lambda x: f"{x:.2f}x")
-            st.caption('Weekly rollup of key marketing metrics from Shopify orders + Google Sheets spend data.')
-            render_html_table(weekly.sort_values("Week", ascending=False))
+            if _nav_channel in ('DTC', 'Rollup'):
+                st.header("Weekly Summary")
+                mkt_df["_week"] = mkt_df["_date"].dt.to_period("W").apply(lambda x: x.start_time)
+                weekly = mkt_df.groupby("_week").agg(
+                    Revenue=("_revenue", "sum"),
+                    NC_Revenue=("_nc_revenue", "sum"),
+                    Ret_Revenue=("_ret_revenue", "sum"),
+                    Ad_Spend=("_ad_spend", "sum"),
+                    Orders=("_orders", "sum"),
+                    NC_Orders=("_nc_orders", "sum"),
+                ).reset_index()
+                weekly["NC ROAS"] = (weekly["NC_Revenue"] / weekly["Ad_Spend"]).round(2).replace([float("inf")], 0)
+                weekly["NC CPA"] = (weekly["Ad_Spend"] / weekly["NC_Orders"]).round(0).replace([float("inf")], 0)
+                weekly["_week"] = weekly["_week"].dt.strftime("%Y-%m-%d")
+                weekly = weekly.rename(columns={
+                    "_week": "Week", "NC_Revenue": "NC Rev", "Ret_Revenue": "Repeat Rev",
+                    "Ad_Spend": "Ad Spend", "NC_Orders": "New Custs",
+                })
+                for col in ["Revenue", "NC Rev", "Repeat Rev", "Ad Spend", "NC CPA"]:
+                    weekly[col] = weekly[col].apply(lambda x: f"${x:,.0f}")
+                weekly["Orders"] = weekly["Orders"].astype(int)
+                weekly["New Custs"] = weekly["New Custs"].astype(int)
+                weekly["NC ROAS"] = weekly["NC ROAS"].apply(lambda x: f"{x:.2f}x")
+                st.caption('Weekly rollup of key marketing metrics from Shopify orders + Google Sheets spend data.')
+                render_html_table(weekly.sort_values("Week", ascending=False))
 
         else:
             st.info("No marketing data available. Check that Shopify data has been synced.")

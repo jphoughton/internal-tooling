@@ -133,15 +133,28 @@ def render_pacing(ctx):
     st.caption(f"Day {_day_of_month} of {_days_in_month}")
     st.progress(_pct_month, text=f"{_pct_month*100:.0f}%")
 
+    _nav_channel = ctx.get('channel', 'Rollup')
+
     if not _has_goals:
         st.info("Set up a media spend plan and Amazon forecast on the **Demand Forecast** page for pacing.")
         st.subheader("MTD Summary")
-        ts1, ts2, ts3, ts4 = st.columns(4)
-        ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
-        ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
-        ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
-        _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
-        ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+        if _nav_channel == 'DTC':
+            ts1, ts2, ts3 = st.columns(3)
+            ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
+            ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
+            _total_mtd = _cm_nc_rev + _cm_ret_rev
+            ts3.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+        elif _nav_channel == 'Amazon':
+            ts1, ts2 = st.columns(2)
+            ts1.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
+            ts2.metric("Amazon Spend (MTD)", f"${_cm_amz_spend:,.0f}")
+        else:
+            ts1, ts2, ts3, ts4 = st.columns(4)
+            ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
+            ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
+            ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
+            _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
+            ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
         return True
 
     # Last 7 days averages
@@ -390,7 +403,6 @@ def render_pacing(ctx):
     # ============================================================
     # CHANNEL FILTER
     # ============================================================
-    _nav_channel = ctx.get('channel', 'Rollup')
     _chan_sel = {'DTC': 'DTC', 'Amazon': 'Amazon', 'Rollup': 'All'}.get(_nav_channel, 'All')
 
     # ============================================================
