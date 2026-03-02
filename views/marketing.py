@@ -365,6 +365,7 @@ def render(ctx):
             _show_rollup = _nav_channel == 'Rollup'
             _show_dtc = _nav_channel in ('Rollup', 'DTC')
             _show_amz = _nav_channel in ('Rollup', 'Amazon')
+            st.caption(f"_debug: channel={_nav_channel!r} show_dtc={_show_dtc} show_amz={_show_amz}")
 
             if _has_goals:
                 # Build pacing row helper
