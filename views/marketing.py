@@ -360,14 +360,13 @@ def render(ctx):
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
 
-            # Determine channel from session state radio (most reliable)
-            # then fall back to ctx, then query params
-            _nav_page = st.session_state.get('_nav_radio', '') or ''
-            if ' ' in _nav_page:
-                _nav_channel = _nav_page.split(' ', 1)[0]
+            # Channel detection — use page name as single source of truth
+            _page_name = ctx.get('page', '')
+            if _page_name.startswith('DTC'):
+                _nav_channel = 'DTC'
+            elif _page_name.startswith('Amazon'):
+                _nav_channel = 'Amazon'
             else:
-                _nav_channel = ctx.get('channel') or 'Rollup'
-            if _nav_channel not in ('DTC', 'Amazon', 'Rollup'):
                 _nav_channel = 'Rollup'
             _show_rollup = _nav_channel == 'Rollup'
             _show_dtc = _nav_channel in ('Rollup', 'DTC')

@@ -845,6 +845,7 @@ _ctx = {
     'amazon_revenue_forecast': _ctx_amz_rev_forecast,
     'channel': _channel,
     'source_filter': _source_filter,
+    'page': page,
 }
 
 # --- Pre-warm critical caches (first load only) ---
