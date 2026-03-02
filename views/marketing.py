@@ -1375,12 +1375,11 @@ def render(ctx):
                 st.caption('New vs cancelled subscriptions from Google Sheets.')
                 st.plotly_chart(fig_net_sub, use_container_width=True)
 
-            st.divider()
-
             # ============================================================
             # SECTION 3: COMBINED SUMMARY (DTC only)
             # ============================================================
             if _nav_channel in ('DTC', 'Rollup'):
+                st.divider()
                 st.header("Weekly Summary")
                 mkt_df["_week"] = mkt_df["_date"].dt.to_period("W").apply(lambda x: x.start_time)
                 weekly = mkt_df.groupby("_week").agg(
@@ -1411,168 +1410,169 @@ def render(ctx):
     else:
         st.info("No marketing data available. Sync Shopify data from the **Settings** page.")
 
-    # --- Klaviyo Email Dashboard ---
-    st.divider()
-    st.subheader("Email Performance")
-    if _mkt_klaviyo_key:
-        # Refresh button — syncs metadata + metrics from API
-        if st.button("Refresh from Klaviyo", key="kl_refresh"):
-            with st.spinner("Syncing from Klaviyo API..."):
-                try:
-                    from etl.klaviyo_client import (
-                        fetch_campaigns, fetch_flows, fetch_lists,
-                        fetch_placed_order_metric_id, fetch_any_metric_id,
-                        fetch_campaign_metrics, fetch_flow_metrics,
-                    )
-                    campaigns = fetch_campaigns(_mkt_klaviyo_key)
-                    flows = fetch_flows(_mkt_klaviyo_key)
-                    lists = fetch_lists(_mkt_klaviyo_key)
-                    with get_db() as conn:
-                        for c in campaigns:
-                            upsert_klaviyo_campaign(conn, c)
-                        for f in flows:
-                            upsert_klaviyo_flow(conn, f)
-                        for l in lists:
-                            upsert_klaviyo_list(conn, l)
+    # --- Klaviyo Email Dashboard (DTC only) ---
+    if ctx.get('channel', 'Rollup') in ('DTC', 'Rollup'):
+        st.divider()
+        st.subheader("Email Performance")
+        if not _mkt_klaviyo_key:
+            st.info("Add your Klaviyo API key on the **Settings** page to see email analytics.")
+        else:
+            # Refresh button — syncs metadata + metrics from API
+            if st.button("Refresh from Klaviyo", key="kl_refresh"):
+                with st.spinner("Syncing from Klaviyo API..."):
+                    try:
+                        from etl.klaviyo_client import (
+                            fetch_campaigns, fetch_flows, fetch_lists,
+                            fetch_placed_order_metric_id, fetch_any_metric_id,
+                            fetch_campaign_metrics, fetch_flow_metrics,
+                        )
+                        campaigns = fetch_campaigns(_mkt_klaviyo_key)
+                        flows = fetch_flows(_mkt_klaviyo_key)
+                        lists = fetch_lists(_mkt_klaviyo_key)
+                        with get_db() as conn:
+                            for c in campaigns:
+                                upsert_klaviyo_campaign(conn, c)
+                            for f in flows:
+                                upsert_klaviyo_flow(conn, f)
+                            for l in lists:
+                                upsert_klaviyo_list(conn, l)
 
-                    # Metrics — need a conversion_metric_id (API requires it)
-                    with get_db() as conn:
-                        conv_id = get_setting(conn, "klaviyo_conversion_metric_id")
-                    include_revenue = bool(conv_id)
-                    if not conv_id:
-                        conv_id = fetch_placed_order_metric_id(_mkt_klaviyo_key)
-                        if conv_id:
-                            include_revenue = True
-                            with get_db() as conn:
-                                set_setting(conn, "klaviyo_conversion_metric_id", conv_id)
-                        else:
-                            conv_id = fetch_any_metric_id(_mkt_klaviyo_key)
+                        # Metrics — need a conversion_metric_id (API requires it)
+                        with get_db() as conn:
+                            conv_id = get_setting(conn, "klaviyo_conversion_metric_id")
+                        include_revenue = bool(conv_id)
+                        if not conv_id:
+                            conv_id = fetch_placed_order_metric_id(_mkt_klaviyo_key)
+                            if conv_id:
+                                include_revenue = True
+                                with get_db() as conn:
+                                    set_setting(conn, "klaviyo_conversion_metric_id", conv_id)
+                            else:
+                                conv_id = fetch_any_metric_id(_mkt_klaviyo_key)
 
-                    cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
-                    fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
-                    with get_db() as conn:
-                        for cid, m in cm.items():
-                            update_klaviyo_campaign_metrics(conn, cid, m)
-                        for fid, m in fm.items():
-                            update_klaviyo_flow_metrics(conn, fid, m)
+                        cm = fetch_campaign_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
+                        fm = fetch_flow_metrics(_mkt_klaviyo_key, conv_id, include_revenue)
+                        with get_db() as conn:
+                            for cid, m in cm.items():
+                                update_klaviyo_campaign_metrics(conn, cid, m)
+                            for fid, m in fm.items():
+                                update_klaviyo_flow_metrics(conn, fid, m)
 
-                    parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
-                    if cm or fm:
-                        parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
-                    if not include_revenue:
-                        parts.append("revenue skipped (no Placed Order metric — set in Settings)")
-                    st.success(" — ".join(parts))
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
+                        parts = [f"Synced {len(campaigns)} campaigns, {len(flows)} flows"]
+                        if cm or fm:
+                            parts.append(f"metrics updated ({len(cm)} campaigns, {len(fm)} flows)")
+                        if not include_revenue:
+                            parts.append("revenue skipped (no Placed Order metric — set in Settings)")
+                        st.success(" — ".join(parts))
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Sync failed: {e}")
 
-        # Load from DB
-        with get_db() as conn:
-            kl_campaigns = get_klaviyo_campaigns(conn)
-            kl_flows = get_klaviyo_flows(conn)
-            kl_lists = get_klaviyo_lists(conn)
-            has_revenue = bool(get_setting(conn, "klaviyo_conversion_metric_id"))
+            # Load from DB
+            with get_db() as conn:
+                kl_campaigns = get_klaviyo_campaigns(conn)
+                kl_flows = get_klaviyo_flows(conn)
+                kl_lists = get_klaviyo_lists(conn)
+                has_revenue = bool(get_setting(conn, "klaviyo_conversion_metric_id"))
 
-        # --- KPI summary cards ---
-        if kl_campaigns:
-            camp_df = pd.DataFrame(kl_campaigns)
-            total_sends = int(camp_df["recipients"].sum())
-            total_delivered = int(camp_df["delivered"].sum())
-            # Weighted averages (by recipients)
-            w = camp_df["recipients"].fillna(0)
-            w_sum = w.sum()
-            if w_sum > 0:
-                avg_open = (camp_df["open_rate"].fillna(0) * w).sum() / w_sum
-                avg_ctor = (camp_df["click_to_open_rate"].fillna(0) * w).sum() / w_sum
-                avg_click = (camp_df["click_rate"].fillna(0) * w).sum() / w_sum
-            else:
-                avg_open = avg_ctor = avg_click = 0
-            total_revenue = camp_df["revenue"].fillna(0).sum()
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Sends", f"{total_sends:,}")
-            c2.metric("Avg Open Rate", f"{avg_open * 100:.1f}%")
-            c3.metric("Avg CTOR", f"{avg_ctor * 100:.1f}%")
-            if has_revenue:
-                c4.metric("Campaign Revenue", f"${total_revenue:,.0f}")
-            else:
-                c4.metric("Campaign Revenue", "—")
-                st.caption("Set the Placed Order metric ID in **Settings** for revenue data.")
-
-        # --- Tabs ---
-        kl_tab1, kl_tab2, kl_tab3 = st.tabs(["Campaigns", "Flows", "Lists"])
-
-        with kl_tab1:
+            # --- KPI summary cards ---
             if kl_campaigns:
-                df = pd.DataFrame(kl_campaigns)
-                # Build display columns
-                display = pd.DataFrame()
-                display["Campaign"] = df["name"]
-                display["Send Date"] = df["send_time"].apply(
-                    lambda x: str(x)[:10] if x else "—")
-                display["Status"] = df["status"]
-                display["Sends"] = df["recipients"]
-                display["Delivered"] = df["delivered"]
-                display["Open Rate"] = df["open_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["Click Rate"] = df["click_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["CTOR"] = df["click_to_open_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["Unsubs"] = df["unsubscribes"]
+                camp_df = pd.DataFrame(kl_campaigns)
+                total_sends = int(camp_df["recipients"].sum())
+                total_delivered = int(camp_df["delivered"].sum())
+                # Weighted averages (by recipients)
+                w = camp_df["recipients"].fillna(0)
+                w_sum = w.sum()
+                if w_sum > 0:
+                    avg_open = (camp_df["open_rate"].fillna(0) * w).sum() / w_sum
+                    avg_ctor = (camp_df["click_to_open_rate"].fillna(0) * w).sum() / w_sum
+                    avg_click = (camp_df["click_rate"].fillna(0) * w).sum() / w_sum
+                else:
+                    avg_open = avg_ctor = avg_click = 0
+                total_revenue = camp_df["revenue"].fillna(0).sum()
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Total Sends", f"{total_sends:,}")
+                c2.metric("Avg Open Rate", f"{avg_open * 100:.1f}%")
+                c3.metric("Avg CTOR", f"{avg_ctor * 100:.1f}%")
                 if has_revenue:
-                    display["Revenue"] = df["revenue"].apply(
-                        lambda x: f"${(x or 0):,.0f}")
-                    display["Rev/Recip"] = df["revenue_per_recipient"].apply(
-                        lambda x: f"${(x or 0):,.2f}")
+                    c4.metric("Campaign Revenue", f"${total_revenue:,.0f}")
+                else:
+                    c4.metric("Campaign Revenue", "—")
+                    st.caption("Set the Placed Order metric ID in **Settings** for revenue data.")
 
-                from ui.tables import format_number_cols
-                display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
-                st.caption('Email campaign performance metrics from Klaviyo API.')
-                render_html_table(display, max_height=500)
-            else:
-                st.info("No campaigns synced yet. Click **Refresh from Klaviyo** above.")
+            # --- Tabs ---
+            kl_tab1, kl_tab2, kl_tab3 = st.tabs(["Campaigns", "Flows", "Lists"])
 
-        with kl_tab2:
-            if kl_flows:
-                df = pd.DataFrame(kl_flows)
-                display = pd.DataFrame()
-                display["Flow"] = df["name"]
-                display["Status"] = df["status"]
-                display["Sends"] = df["recipients"]
-                display["Delivered"] = df["delivered"]
-                display["Open Rate"] = df["open_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["Click Rate"] = df["click_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["CTOR"] = df["click_to_open_rate"].apply(
-                    lambda x: f"{(x or 0) * 100:.1f}%")
-                display["Unsubs"] = df["unsubscribes"]
-                if has_revenue:
-                    display["Revenue"] = df["revenue"].apply(
-                        lambda x: f"${(x or 0):,.0f}")
-                    display["Rev/Recip"] = df["revenue_per_recipient"].apply(
-                        lambda x: f"${(x or 0):,.2f}")
+            with kl_tab1:
+                if kl_campaigns:
+                    df = pd.DataFrame(kl_campaigns)
+                    # Build display columns
+                    display = pd.DataFrame()
+                    display["Campaign"] = df["name"]
+                    display["Send Date"] = df["send_time"].apply(
+                        lambda x: str(x)[:10] if x else "—")
+                    display["Status"] = df["status"]
+                    display["Sends"] = df["recipients"]
+                    display["Delivered"] = df["delivered"]
+                    display["Open Rate"] = df["open_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["Click Rate"] = df["click_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["CTOR"] = df["click_to_open_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["Unsubs"] = df["unsubscribes"]
+                    if has_revenue:
+                        display["Revenue"] = df["revenue"].apply(
+                            lambda x: f"${(x or 0):,.0f}")
+                        display["Rev/Recip"] = df["revenue_per_recipient"].apply(
+                            lambda x: f"${(x or 0):,.2f}")
 
-                from ui.tables import format_number_cols
-                display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
-                st.caption('Automated email flow performance from Klaviyo API.')
-                render_html_table(display, max_height=500)
-            else:
-                st.info("No flows synced yet.")
+                    from ui.tables import format_number_cols
+                    display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
+                    st.caption('Email campaign performance metrics from Klaviyo API.')
+                    render_html_table(display, max_height=500)
+                else:
+                    st.info("No campaigns synced yet. Click **Refresh from Klaviyo** above.")
 
-        with kl_tab3:
-            if kl_lists:
-                list_df = pd.DataFrame(kl_lists)
-                display = pd.DataFrame()
-                display["List Name"] = list_df["name"]
-                display["Created"] = list_df["created"].apply(
-                    lambda x: str(x)[:10] if x else "—")
-                display["Updated"] = list_df["updated"].apply(
-                    lambda x: str(x)[:10] if x else "—")
-                st.caption('Email list sizes and dates from Klaviyo API.')
-                render_html_table(display, max_height=400)
-            else:
-                st.info("No lists synced yet.")
-    else:
-        st.info("Add your Klaviyo API key on the **Settings** page to see email analytics.")
+            with kl_tab2:
+                if kl_flows:
+                    df = pd.DataFrame(kl_flows)
+                    display = pd.DataFrame()
+                    display["Flow"] = df["name"]
+                    display["Status"] = df["status"]
+                    display["Sends"] = df["recipients"]
+                    display["Delivered"] = df["delivered"]
+                    display["Open Rate"] = df["open_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["Click Rate"] = df["click_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["CTOR"] = df["click_to_open_rate"].apply(
+                        lambda x: f"{(x or 0) * 100:.1f}%")
+                    display["Unsubs"] = df["unsubscribes"]
+                    if has_revenue:
+                        display["Revenue"] = df["revenue"].apply(
+                            lambda x: f"${(x or 0):,.0f}")
+                        display["Rev/Recip"] = df["revenue_per_recipient"].apply(
+                            lambda x: f"${(x or 0):,.2f}")
+
+                    from ui.tables import format_number_cols
+                    display = format_number_cols(display, ["Sends", "Delivered", "Unsubs"])
+                    st.caption('Automated email flow performance from Klaviyo API.')
+                    render_html_table(display, max_height=500)
+                else:
+                    st.info("No flows synced yet.")
+
+            with kl_tab3:
+                if kl_lists:
+                    list_df = pd.DataFrame(kl_lists)
+                    display = pd.DataFrame()
+                    display["List Name"] = list_df["name"]
+                    display["Created"] = list_df["created"].apply(
+                        lambda x: str(x)[:10] if x else "—")
+                    display["Updated"] = list_df["updated"].apply(
+                        lambda x: str(x)[:10] if x else "—")
+                    st.caption('Email list sizes and dates from Klaviyo API.')
+                    render_html_table(display, max_height=400)
+                else:
+                    st.info("No lists synced yet.")
