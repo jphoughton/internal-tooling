@@ -11,6 +11,7 @@ Models:
     seasonality         — seasonal index adjustment
     sku_sales_mix       — SKU-level % of sales from recent orders
     waterfall           — full waterfall build (event-driven on new repeat data)
+    cashflow_forecast   — cash flow projection refresh and KPI health logging
 """
 import logging
 import time
@@ -25,6 +26,7 @@ MODEL_REPEAT_FORECAST = 'repeat_forecast'
 MODEL_SEASONALITY = 'seasonality'
 MODEL_SKU_MIX = 'sku_sales_mix'
 MODEL_WATERFALL = 'waterfall'
+MODEL_CASHFLOW = 'cashflow_forecast'
 
 ALL_DAILY_MODELS = [
     MODEL_RETENTION,
@@ -32,6 +34,7 @@ ALL_DAILY_MODELS = [
     MODEL_SEASONALITY,
     MODEL_SKU_MIX,
     MODEL_WATERFALL,
+    MODEL_CASHFLOW,
 ]
 
 
@@ -148,6 +151,37 @@ def run_waterfall(triggered_by='scheduler'):
     return _run_model(MODEL_WATERFALL, _compute, triggered_by)
 
 
+def run_cashflow_forecast(triggered_by='scheduler'):
+    """Refresh cash flow forecast to warm cache and log key KPIs."""
+    def _compute():
+        from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
+
+        with get_db() as conn:
+            forecast_df = build_cashflow_forecast(conn, weeks=13)
+            if forecast_df is None or forecast_df.empty:
+                logger.warning('[orchestrator] Cash flow forecast returned no data')
+                return
+
+            kpis = get_cashflow_kpis(conn, forecast_df)
+
+        logger.info(
+            '[orchestrator] Cash flow KPIs: cash=$%,.0f, 13w_projected=$%,.0f, '
+            'monthly_burn=$%,.0f, runway=%d weeks',
+            kpis.get('current_cash', 0),
+            kpis.get('projected_13w', 0),
+            kpis.get('monthly_burn', 0),
+            kpis.get('runway_weeks', 0),
+        )
+
+        if kpis.get('alert_week'):
+            logger.warning(
+                '[orchestrator] Cash flow ALERT: balance drops below threshold at week %d',
+                kpis['alert_week'],
+            )
+
+    return _run_model(MODEL_CASHFLOW, _compute, triggered_by)
+
+
 def run_all_daily_models(triggered_by='scheduler'):
     """Run all daily analytics models in dependency order.
 
@@ -164,6 +198,7 @@ def run_all_daily_models(triggered_by='scheduler'):
     results[MODEL_SEASONALITY] = run_seasonality(triggered_by)
     results[MODEL_SKU_MIX] = run_sku_sales_mix(triggered_by)
     results[MODEL_WATERFALL] = run_waterfall(triggered_by)
+    results[MODEL_CASHFLOW] = run_cashflow_forecast(triggered_by)
 
     duration = round(time.time() - t0, 1)
     successes = sum(1 for s in results.values() if s == 'success')
