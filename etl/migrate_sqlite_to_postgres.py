@@ -349,9 +349,8 @@ def migrate_amazon_daily_rollup(
             return 0
 
     rows = [
-        (r['date'], float(r['new_customers'] or 0),
-         float(r['new_customer_rev'] or 0), float(r['spend'] or 0))
-        for r in sq.execute('SELECT date, new_customers, new_customer_rev, spend FROM amazon_daily_rollup')
+        (r['date'], float(r['spend'] or 0))
+        for r in sq.execute('SELECT date, spend FROM amazon_daily_rollup')
     ]
     log.info('amazon_daily_rollup: %d rows to migrate', len(rows))
     if dry_run:
@@ -359,11 +358,9 @@ def migrate_amazon_daily_rollup(
         return len(rows)
 
     sql = """
-        INSERT INTO amazon_daily_rollup (date, new_customers, new_customer_rev, spend)
+        INSERT INTO amazon_daily_rollup (date, spend)
         VALUES %s
         ON CONFLICT (date) DO UPDATE SET
-            new_customers = excluded.new_customers,
-            new_customer_rev = excluded.new_customer_rev,
             spend = excluded.spend
     """
     return _batch_upsert(pg, sql, rows, dry_run, 'amazon_daily_rollup')
