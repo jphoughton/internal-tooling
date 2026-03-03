@@ -2934,3 +2934,166 @@ The manual calculation is unreliable with only 2 months of overlapping data (Ama
 2. **Map 27 Amazon bank transactions** to category='amazon_revenue' to enable auto-calibration. This is the single most impactful data quality fix — it was flagged by Analysts 2, 5, 12, and now 18.
 3. **Keep COGS at 0.25** — it's a business input, not something that should auto-calibrate from incomplete bank data. Production costs are PO-driven and don't all flow through the tracked checking accounts.
 4. **Consider adding a "ratio health" indicator** to the Cash Flow page that shows whether each ratio is auto-calibrated (green) or using seed fallback (yellow/red). This gives the CFO visibility into data quality without requiring code changes.
+
+---
+
+## Analyst 19 — CEO Monday Morning Decision Test
+
+**Date:** 2026-03-03
+
+**Methodology:** Ran `build_cashflow_forecast(start_date=today-4w, weeks=21, scenario='base')` against Railway DB. Also ran Conservative and Aggressive scenarios. Evaluated whether the model provides clear, trustworthy answers to 5 CEO Monday morning questions within 5 seconds of looking. This is a usability and trust test, not a code review.
+
+### Forecast Data Used
+
+| KPI | Value |
+|-----|-------|
+| Current Cash (model) | $227,258 |
+| Actual bank balance | $117,007 |
+| 13-Week Projected | $625,641 |
+| Monthly Burn | -$119,347 (negative = net inflow) |
+| Runway | 52+ weeks |
+| Alert Week | None |
+| Data Freshness | 2026-03-03 (0 days old) |
+
+### Question 1: "Can I approve this $80K production run?"
+
+**What the CEO needs:** Look at closing balance 4 weeks out. Is there enough cash after the PO hits without going below $100K min threshold?
+
+**What the model shows:**
+- Week 4 out (Mar 30 - Apr 5): Opening $275,507, Closing $293,754
+- After $80K PO: $293,754 - $80,000 = $213,754 — well above $100K threshold
+- The table shows individual category values per week, so the CEO can see the opening and closing balances
+
+**But is the answer trustworthy?**
+- NO. The opening balance is inflated by ~$110K due to the known double-counting bug (Analyst 4). The real opening balance for that week would be ~$165K-$183K, making the post-PO balance ~$133K-$183K — still above $100K, but much tighter than the model suggests.
+- The model doesn't have a "What-if" PO entry. The CEO would have to mentally subtract $80K from the closing balance. There's no production PO line item tied to `planned_inbound` (Analyst 12 flagged this gap).
+- The production expense already shows in the model as COGS ($8,971-$27,259/week), so the $80K PO would be ON TOP of the existing production line. The CEO would need to understand that COGS and PO are separate concepts — not obvious.
+
+**Time to answer:** >30 seconds. Requires mental math (subtract $80K from closing balance) and awareness that Current Cash is inflated. Not a 5-second answer.
+
+**Verdict: FAIL**
+
+### Question 2: "Should I increase media spend by $10K/month?"
+
+**What the CEO needs:** Toggle to Aggressive scenario, see if higher spend produces higher revenue in later weeks (via waterfall), or if the model treats media and revenue as disconnected.
+
+**What the model shows:**
+- Scenario comparison (13-week projected):
+  - Base: $625,641
+  - Conservative: $414,314
+  - Aggressive: $756,952
+- Aggressive vs Base at Week 8: DTC revenue rises from $35,261 to $38,787 (+10.0%)
+- Media expense drops from $6,409 to $6,089 (-5.0%)
+
+**But does increasing media show up as higher revenue?**
+- PARTIALLY. The Aggressive scenario applies a flat +10% to all revenue and -5% to all expenses. It does NOT specifically model "if I add $10K/month to Meta, how many new customers does that generate via ROAS, and what does their repeat revenue look like over 13 weeks?" — which is what the waterfall model could theoretically do.
+- The scenario toggle is a blunt instrument: it multiplies ALL revenue by 1.10x and ALL expenses by 0.95x. It doesn't specifically link media spend to revenue via the waterfall.
+- The CEO can't enter "add $10K to media" and see the impact. They'd need to go to the Settings page, update the media_spend table, then come back and see the waterfall output change. That's a multi-step workflow, not a one-click toggle.
+
+**Time to answer:** 10-15 seconds (toggle scenario, look at difference). But the answer isn't specific to the media spend question — it's a generic +10%/-5% adjustment. The CEO might conclude "looks fine" without understanding the waterfall dynamics.
+
+**Verdict: FAIL** — Scenario toggle exists but doesn't answer the specific question. Media → revenue linkage is indirect and requires separate Settings page workflow.
+
+### Question 3: "Are we going to make payroll on the 10th?"
+
+**What the CEO needs:** Look at the week containing the 10th. Is there a payroll line item showing ~$16K? Is opening balance that week clearly above $16K?
+
+**What the model shows (next 17 weeks of payroll):**
+
+| Week | Payroll | Opening Balance |
+|------|---------|----------------|
+| 2026-03-02 | $5,327 | $227,258 |
+| 2026-03-09 | $7,458 | $202,758 |
+| 2026-03-16 | $5,454 | $216,047 |
+| 2026-03-23 | $7,458 | $234,431 |
+| 2026-03-30 | $7,458 | $275,507 |
+| 2026-04-06 | $7,458 | $293,754 |
+| 2026-04-13 | $7,458 | $342,759 |
+| 2026-04-20 | $5,454 | $362,662 |
+| 2026-04-27 | $7,458 | $412,642 |
+| 2026-05-04 | $7,458 | $434,110 |
+
+**Problem:** Payroll shows $5-7K EVERY week, not $16K biweekly. The actual payroll cadence is biweekly ($16K per payment, ~$32K/month). The model is spreading payroll via trailing average ($5-7K/week) because the `_detect_expense_schedule()` overrides the `biweekly_schedule` method when bank data exists (Analyst 3 flagged this as HIGH severity).
+
+**Consequence:** The CEO sees payroll as a smooth $5-7K weekly drain. In reality, there are $16K spikes on the 10th and 25th with $0 payroll the other weeks. The CEO cannot tell if payroll on the 10th is safe because the model doesn't show a $16K spike on that specific week — it shows a smooth $5-7K stream.
+
+**Also:** Opening balance is inflated by ~$110K (double-counting bug), so even the "is there enough cash?" question is being answered with the wrong number.
+
+**Time to answer:** Cannot answer this question at all. The model doesn't show biweekly payroll spikes. The CEO would need to know the true payroll amount ($16K) and mentally check if the balance supports it — but the balance shown is also wrong.
+
+**Verdict: FAIL** — Payroll timing is wrong (weekly spread vs biweekly spikes), amounts are wrong ($5-7K vs $16K), and balance is inflated. All three components of the answer are unreliable.
+
+### Question 4: "How much cash do we actually have right now?"
+
+**What the CEO needs:** A single, current, trustworthy number that matches what they'd see if they logged into Highbeam + BofA right now.
+
+**What the model shows:**
+- "Current Cash" KPI: **$227,258**
+- Actual bank balances (from DB):
+  - Highbeam Checking (200001628851): $38,667 (as of 2026-03-03)
+  - Highbeam Savings (200001628852): $15,473 (as of 2026-03-01)
+  - BofA Checking (5769): $62,867 (as of 2026-02-27)
+  - Amex (credit card): -$30,258 (excluded, negative)
+  - **Actual Total: $117,007**
+
+**Discrepancy: $110,251 (94% overstatement)**
+
+The "Current Cash" KPI shows $227K when the real answer is $117K. This is the opening balance double-counting bug identified by Analyst 4: the model starts with the actual bank balance ($117K) at row 0 (4 weeks ago), then replays 4 weeks of actual transactions that are already baked into the current $117K balance. By the current week, the balance has been double-counted.
+
+**Data freshness:** Latest transaction is from today (2026-03-03), 0 days old. The freshness badge would show green. But the number itself is wrong.
+
+**Time to answer:** <5 seconds to find the KPI. But the answer is wrong by $110K. The CEO would see $227K, log into Highbeam, see $117K, and immediately lose trust in the entire model.
+
+**Verdict: FAIL (CRITICAL)** — This is the most important number on the page and it's nearly 2x the actual value. A CFO cannot use this model for cash decisions if Current Cash is $110K off.
+
+### Question 5: "When is our next tight cash week?"
+
+**What the CEO needs:** Scan the closing balance column for a low point. See an alert banner if something needs attention. See it on the chart.
+
+**What the model shows:**
+- Alert banner: **No alert** (no week dips below $100K threshold)
+- Closing balance trajectory: Monotonically increasing from $138K → $791K over 21 weeks
+- Minimum closing balance: $138,258 (Week 2, Feb 9-15 — an actual week already past)
+- Every projected week shows positive net cash flow ($13K-$70K/week)
+
+**Is this realistic?**
+- The model shows cash growing from $117K to $791K in 17 projected weeks ($674K growth, ~$40K/week net). For a business doing ~$300K/month revenue and ~$200K/month expenses, this implies ~$100K/month net positive, which would be plausible IF the revenue and expense numbers were correct.
+- However, we know from prior analysts that: (a) opening balance is inflated by $110K (Analyst 4), (b) Jameson loan payments (~$55K/month) are counted as revenue instead of expenses (Analyst 3), creating a ~$110K/month net cash flow swing, (c) DTC revenue is 20-100% optimistic (Analyst 1), and (d) Amazon revenue is 12-50% optimistic (Analyst 1).
+- Corrected estimate: cash would likely be roughly flat or modestly growing — there might actually be tight weeks that the model doesn't show.
+
+**UI assessment:** The chart does show a clear "Today" line and a red "$100K minimum" threshold line. If the projected line DID cross the threshold, it would be visually obvious. The alert banner would fire. The infrastructure for answering this question exists — but it's being fed inflated numbers.
+
+**Time to answer:** <5 seconds to visually scan chart. But the answer is misleading. The model says "everything is fine, cash grows steadily" when the reality is much tighter.
+
+**Verdict: FAIL** — The UI infrastructure (chart, threshold line, alert banner) is well-designed for answering this question. But the underlying data is too optimistic to trigger alerts that should fire. The CEO gets false comfort.
+
+### Summary Table
+
+| Question | Answer Time | Answer Quality | Verdict |
+|----------|------------|----------------|---------|
+| 1. Can I approve $80K PO? | >30 seconds | Wrong by ~$110K (double-counting) | FAIL |
+| 2. Should I increase media $10K? | 10-15 seconds | Generic scenario, no media-specific impact | FAIL |
+| 3. Are we making payroll? | Cannot answer | Wrong timing, wrong amount, wrong balance | FAIL |
+| 4. How much cash right now? | <5 seconds | $227K shown vs $117K actual (94% off) | FAIL (CRITICAL) |
+| 5. When is next tight week? | <5 seconds | False comfort, no alerts triggered | FAIL |
+
+**Overall: 0/5 PASS, 5/5 FAIL (1 CRITICAL)**
+
+### Root Cause Traceability
+
+All 5 failures trace back to 3 previously identified root causes:
+
+| Root Cause | First Identified | Questions Affected |
+|-----------|-----------------|-------------------|
+| Opening balance double-counting (+$110K) | Analyst 4 (CRITICAL) | Q1, Q3, Q4, Q5 |
+| Jameson loan misclassification (+$110K/month swing) | Analyst 3 (CRITICAL) | Q1, Q4, Q5 |
+| Schedule detection overriding timing methods (payroll, media) | Analyst 3 (HIGH) | Q2, Q3 |
+
+**Secondary contributors:** Optimistic media spend plan inputs (Analyst 1), optimistic Amazon forecast (Analyst 1), unmapped transactions blocking auto-calibration (Analyst 2/5/12/18).
+
+### Recommendations for Phase 3
+
+1. **CRITICAL — Fix opening balance double-counting.** This is the #1 blocker. When the model starts 4 weeks in the past and uses the current bank balance as the opening, it double-counts 4 weeks of transactions. Fix: use the bank balance from the actual start date (4 weeks ago), OR start from today with the current balance and don't include lookback actuals in the balance chain.
+2. **CRITICAL — Reclassify Jameson loan from interest_income to loan expense.** Map the Jameson bank transactions correctly so $55K/month goes to expenses, not revenue.
+3. **HIGH — Fix schedule detection to not override method-based timing.** Payroll should use biweekly_schedule, media should use media_plan, regardless of what the trailing average shows.
+4. **MEDIUM — Add a what-if PO input.** Allow the CEO to enter "proposed $80K PO in week X" and see the impact on the balance trajectory without permanently changing the forecast.

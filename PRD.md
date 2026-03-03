@@ -390,7 +390,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - **If any ratio has drifted >5%**: recommend updating the seed value in `cashflow_settings` and explain why, so the CFO can investigate the underlying cause.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20j. Analyst 19 — CEO Monday Morning Decision Test**
+- [x] **20j. Analyst 19 — CEO Monday Morning Decision Test**
   - Read ALL prior findings.
   - You are the CEO. It's Monday morning. You open the Cash Flow page to answer these 5 questions. For each one, check if the model gives you a clear, trustworthy answer:
   - **"Can I approve this $80K production run?"** — Look at the closing balance 4 weeks out (when the PO would hit). Is there enough cash to cover it without going below $100K? Does the model make this obvious at a glance, or do you have to do mental math?
