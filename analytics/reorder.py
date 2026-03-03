@@ -440,3 +440,172 @@ def build_inventory_runway_chart(sku, monthly_demand, current_stock, inbound,
     }
 
     return result, reorder_info
+
+
+def build_reorder_recommendations(proj_df, demand_df, month_cols,
+                                   current_month, lead_time_weeks=12,
+                                   moq_units=5000, safety_buffer_weeks=2):
+    """Build a month-by-month reorder calendar from projected inventory.
+
+    Walks each SKU's EOM inventory (from *proj_df*, which already includes
+    planned inbound), detects months where inventory breaches the safety
+    floor, works backwards by lead time to determine the order month, sizes
+    the order to cover through the next reorder cycle, and repeats.
+
+    Args:
+        proj_df: DataFrame with columns SKU, Flavor, Total Stock, and one
+            column per month (month_cols) containing EOM projected inventory.
+        demand_df: Rollup demand DataFrame (from build_master_dtc_forecast)
+            with columns SKU and the same month_cols containing monthly demand.
+        month_cols: List of month strings like '2026-03', '2026-04', …
+        current_month: Current month string ('2026-03').
+        lead_time_weeks: Weeks from placing order to arrival (default 12).
+        moq_units: Minimum order quantity (default 5000).
+        safety_buffer_weeks: Extra buffer above zero (default 2).
+
+    Returns:
+        (rec_df, events_list) where rec_df has columns:
+            SKU, Flavor, Status, *month_cols, Total
+        and events_list is a list of order event dicts.
+    """
+    if proj_df is None or proj_df.empty or not month_cols:
+        return pd.DataFrame(), []
+
+    lead_time_months = math.ceil(lead_time_weeks * 7 / 30.44)
+
+    from analytics.sku_flavors import get_sku_sales_rank
+    _rank = get_sku_sales_rank()
+    _max_rank = len(_rank)
+
+    rows = []
+    events = []
+
+    for _, p_row in proj_df.iterrows():
+        sku = p_row['SKU']
+        flavor = p_row.get('Flavor', '')
+
+        # Get monthly demand for this SKU
+        d_row = demand_df[demand_df['SKU'] == sku]
+        monthly_demand = {}
+        for m in month_cols:
+            if not d_row.empty and m in d_row.columns:
+                monthly_demand[m] = float(d_row.iloc[0][m] or 0)
+            else:
+                monthly_demand[m] = 0
+
+        # Build mutable EOM inventory array (from proj_df, already has planned inbound)
+        eom = {m: float(p_row[m]) for m in month_cols}
+
+        # Track orders placed per month
+        orders = {m: 0 for m in month_cols}
+
+        # Iterative breach detection (max len(month_cols) iterations to avoid infinite loop)
+        for _iteration in range(len(month_cols)):
+            # Find first breach: EOM < safety floor
+            breach_idx = None
+            for i, m in enumerate(month_cols):
+                demand_m = monthly_demand.get(m, 0)
+                safety_floor = demand_m * (safety_buffer_weeks / 4.33)
+                if eom[m] < safety_floor:
+                    breach_idx = i
+                    break
+
+            if breach_idx is None:
+                break  # No more breaches
+
+            breach_month = month_cols[breach_idx]
+
+            # Determine order month (breach - lead_time_months, clamped to index 0)
+            order_idx = max(0, breach_idx - lead_time_months)
+            order_month = month_cols[order_idx]
+
+            # Arrival month = order month + lead_time_months (clamped to last month)
+            arrival_idx = min(order_idx + lead_time_months, len(month_cols) - 1)
+            arrival_month = month_cols[arrival_idx]
+
+            # Size the order: cover demand from arrival through lead_time_months + 1
+            # additional months, minus inventory at arrival, plus safety target.
+            coverage_end_idx = min(arrival_idx + lead_time_months + 1, len(month_cols))
+            coverage_demand = sum(monthly_demand.get(month_cols[j], 0)
+                                  for j in range(arrival_idx, coverage_end_idx))
+
+            # Inventory just before arrival (EOM of month before arrival, or Total Stock if arrival is first month)
+            if arrival_idx > 0:
+                inv_at_arrival = eom[month_cols[arrival_idx - 1]]
+            else:
+                inv_at_arrival = float(p_row.get('Total Stock', 0))
+
+            # Safety target for the coverage period
+            avg_monthly_demand = coverage_demand / max(coverage_end_idx - arrival_idx, 1)
+            safety_target = avg_monthly_demand * (safety_buffer_weeks / 4.33)
+
+            needed = coverage_demand + safety_target - max(inv_at_arrival, 0)
+            needed = max(needed, 0)
+
+            if needed <= 0:
+                # Shouldn't happen since we found a breach, but break to be safe
+                break
+
+            # Round up to MOQ
+            order_qty = math.ceil(needed / moq_units) * moq_units
+
+            # Record order
+            orders[order_month] += order_qty
+
+            # Update virtual EOM from arrival month onward
+            for j in range(arrival_idx, len(month_cols)):
+                eom[month_cols[j]] += order_qty
+
+            events.append({
+                'sku': sku,
+                'flavor': flavor,
+                'order_month': order_month,
+                'arrival_month': arrival_month,
+                'breach_month': breach_month,
+                'order_qty': order_qty,
+            })
+
+        # Determine status based on first order month
+        first_order_months = [m for m in month_cols if orders[m] > 0]
+        total_ordered = sum(orders.values())
+
+        if not first_order_months:
+            status = 'OK'
+        else:
+            # How many months from current_month to first order?
+            try:
+                current_idx = month_cols.index(current_month)
+            except ValueError:
+                current_idx = 0
+            try:
+                first_idx = month_cols.index(first_order_months[0])
+            except ValueError:
+                first_idx = 0
+            months_away = first_idx - current_idx
+
+            if months_away <= 0:
+                status = 'ORDER NOW'
+            elif months_away == 1:
+                status = 'ORDER SOON'
+            elif months_away <= 3:
+                status = 'UPCOMING'
+            else:
+                status = 'PLANNED'
+
+        row = {'SKU': sku, 'Flavor': flavor, 'Status': status}
+        for m in month_cols:
+            row[m] = orders[m]
+        row['Total'] = total_ordered
+        rows.append(row)
+
+    rec_df = pd.DataFrame(rows)
+    if not rec_df.empty:
+        # Sort: most urgent first, then by best-seller rank
+        urgency_order = {'ORDER NOW': 0, 'ORDER SOON': 1, 'UPCOMING': 2, 'PLANNED': 3, 'OK': 4}
+        rec_df['_urgency_sort'] = rec_df['Status'].map(urgency_order).fillna(4)
+        rec_df['_sales_rank'] = rec_df['SKU'].map(lambda s: _rank.get(s, _max_rank))
+        rec_df = rec_df.sort_values(['_urgency_sort', '_sales_rank']).drop(
+            columns=['_urgency_sort', '_sales_rank']
+        ).reset_index(drop=True)
+
+    return rec_df, events

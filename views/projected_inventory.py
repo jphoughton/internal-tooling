@@ -324,6 +324,105 @@ def render(ctx, embedded=False):
                 ],
             )
 
+            # --- Reorder Recommendations ---
+            st.divider()
+            st.subheader('Reorder Recommendations')
+
+            _bv_reorder = ctx.get('biz_vars', {})
+            _lt_weeks = _bv_reorder.get('lead_time_weeks', 12)
+            _moq = _bv_reorder.get('moq_units', 5000)
+            _safety_wk = _bv_reorder.get('safety_buffer_weeks', 2)
+
+            st.caption(
+                f'Recommended purchase orders based on projected stockouts. '
+                f'Lead time: **{_lt_weeks} weeks** · MOQ: **{_moq:,} units** · Safety buffer: **{_safety_wk} weeks**. '
+                f'Orders are shown in the month they should be **placed** (not when they arrive).'
+            )
+
+            from analytics.reorder import build_reorder_recommendations
+            _rec_df, _rec_events = build_reorder_recommendations(
+                proj_df=proj_df,
+                demand_df=pi_rollup,
+                month_cols=month_cols,
+                current_month=current_month,
+                lead_time_weeks=_lt_weeks,
+                moq_units=_moq,
+                safety_buffer_weeks=_safety_wk,
+            )
+
+            if _rec_df.empty:
+                st.info('No reorder recommendations — demand forecast or inventory data unavailable.')
+            else:
+                # KPI metrics
+                _skus_needing = len(_rec_df[_rec_df['Total'] > 0])
+                _total_rec_units = int(_rec_df['Total'].sum())
+                _immediate = len(_rec_df[_rec_df['Status'].isin(['ORDER NOW', 'ORDER SOON'])])
+
+                _rc1, _rc2, _rc3 = st.columns(3)
+                _rc1.metric('SKUs Needing Orders', f'{_skus_needing} / {len(_rec_df)}')
+                _rc2.metric('Total Recommended Units', f'{_total_rec_units:,}')
+                _rc3.metric('Immediate Actions', f'{_immediate} SKUs',
+                            help='SKUs with ORDER NOW or ORDER SOON status')
+
+                # Append TOTAL row
+                _total_row = {'SKU': '', 'Flavor': 'TOTAL', 'Status': ''}
+                for m in month_cols:
+                    _total_row[m] = int(_rec_df[m].sum())
+                _total_row['Total'] = int(_rec_df['Total'].sum())
+                _rec_disp = pd.concat([_rec_df, pd.DataFrame([_total_row])], ignore_index=True)
+
+                # Drop SKU column (flavor is sufficient in context)
+                _rec_disp = _rec_disp.drop(columns=['SKU'])
+
+                # Rename month columns to labels
+                _rec_disp = _rec_disp.rename(columns=month_labels)
+                _rec_month_labels = [month_labels[m] for m in month_cols]
+
+                # Format numbers
+                _rec_num_cols = _rec_month_labels + ['Total']
+                for _nc in _rec_num_cols:
+                    if _nc in _rec_disp.columns:
+                        _rec_disp[_nc] = _rec_disp[_nc].apply(
+                            lambda x: f'{int(x):,}' if isinstance(x, (int, float)) and x > 0 else '\u2014'
+                        )
+
+                # Style function: blue for orders, status colors
+                _STATUS_COLORS = {
+                    'ORDER NOW': 'background-color: #fed7aa; color: #9a3412; font-weight: bold',
+                    'ORDER SOON': 'background-color: #fef3c7; color: #92400e; font-weight: bold',
+                    'UPCOMING': 'background-color: #e0f2fe; color: #075985',
+                    'PLANNED': 'background-color: #dcfce7; color: #166534',
+                    'OK': '',
+                }
+
+                def _style_reorder(val):
+                    if isinstance(val, str):
+                        # Status column
+                        if val in _STATUS_COLORS:
+                            return _STATUS_COLORS[val]
+                        # Number cells with orders
+                        cleaned = val.replace(',', '').strip()
+                        if cleaned != '\u2014' and cleaned != '':
+                            try:
+                                n = int(cleaned)
+                                if n > 0:
+                                    return 'background-color: #dbeafe; color: #1e40af; font-weight: 600'
+                            except ValueError:
+                                pass
+                    return ''
+
+                render_html_table(
+                    _rec_disp,
+                    max_height=min(len(_rec_disp) * 35 + 38, 700),
+                    style_fn=_style_reorder,
+                    style_cols=['Status'] + _rec_month_labels + ['Total'],
+                    column_groups=[
+                        ('', ['Flavor', 'Status']),
+                        ('Place Order In', _rec_month_labels),
+                        ('', ['Total']),
+                    ],
+                )
+
             # --- Stockout Alerts ---
             if stockout_skus:
                 st.divider()
