@@ -338,6 +338,18 @@ def _render_kpi_row(kpis, horizon_weeks=13):
     runway_text = f'{runway}+ wks' if runway >= 52 else f'{runway} wks'
     runway_color = '#16a34a' if runway >= 26 else '#d97706' if runway >= 13 else '#dc2626'
 
+    # Build horizon KPI (only show when horizon differs from 13 weeks)
+    horizon_kpi_html = ''
+    if horizon_weeks > 13:
+        horizon_kpi_html = f'''<div>
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">{horizon_weeks}-Week Projected</div>
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:{'#dc2626' if kpis['projected_52w'] < 0 else '#0F3557'};
+                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
+          ${kpis['projected_52w']:,.0f}
+        </div>
+      </div>'''
+
     st.markdown(f'''
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));
                 gap:16px;margin:8px 0 20px;">
@@ -358,14 +370,7 @@ def _render_kpi_row(kpis, horizon_weeks=13):
           ${kpis['projected_13w']:,.0f}
         </div>
       </div>
-      <div>
-        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
-                    color:#94a3b8;font-weight:600;margin-bottom:2px;">{horizon_weeks}-Week Projected</div>
-        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:{'#dc2626' if kpis['projected_52w'] < 0 else '#0F3557'};
-                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
-          ${kpis['projected_52w']:,.0f}
-        </div>
-      </div>
+      {horizon_kpi_html}
       <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">Monthly Burn</div>
