@@ -85,8 +85,10 @@
 
 - Task 22h: Fixed COGS scenario interaction — expense multiplier no longer double-applied to revenue_pct categories. In build_cashflow_forecast() expense loop, added a check: if the category's method is 'revenue_pct', skip _apply_scenario() for expenses. COGS (production) already inherits the revenue scenario adjustment through its revenue inputs (_project_expense_week computes 25% of gross revenue, which is already scenario-adjusted). Previously, conservative scenario applied -15% to revenue AND +10% expense multiplier to COGS, creating a perverse margin squeeze. Now COGS/revenue ratio stays constant across scenarios. Fixed in both the current-week proration path and the future-week path. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
 
+- Task 22: Verified all Phase 3 fixes (22a-22h) are implemented and committed. 8 commits covering: opening balance double-counting fix, Jameson loan misclassification fix, schedule detection priority fix, Amazon transaction mapping, silent exception handler logging, fulfillment cost scaling, past-week override guard, and COGS scenario interaction fix. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
+
 ## Current
-Next unchecked task: Task 22 (Implement all Phase 3 fixes — all 22a-22h now complete)
+Next unchecked task: Task 23 (Commit and push Phase 3 fixes)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

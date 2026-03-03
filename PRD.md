@@ -572,7 +572,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: In conservative scenario, COGS should be ~15% lower (matching revenue drop), not higher. COGS/revenue ratio should stay constant across scenarios.
   - Flagged by: Analyst 13
 
-- [ ] **22. Implement all Phase 3 fixes**
+- [x] **22. Implement all Phase 3 fixes**
   - Work through each task (22a-22h) one at a time.
   - For each fix: read the file, make the change, run `pytest tests/ -x`, commit separately.
 
