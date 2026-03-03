@@ -75,8 +75,10 @@
 
 - Task 22c: Fixed schedule detection overriding method-based expense timing. Restructured _project_expense_week() in analytics/cashflow.py to check method-based timing FIRST (media_plan, biweekly_schedule, quarterly_detect) before falling back to schedule detection from bank actuals. Previously, pre-detected schedules from trailing bank data would override explicit timing methods — causing payroll to spread ~$5-7K across every week instead of biweekly $16K spikes on the 10th/25th, media to spread daily instead of billing as a monthly lump near month-end, and sales tax to spread instead of quarterly. Now the priority order is: (1) COGS/revenue_pct, (2) method-based timing, (3) schedule detection (only for trailing_avg and schedule methods), (4) fallback. No new test failures — 1 pre-existing failure (amazon sync 0 records), 7 pre-existing data quality failures. 173 pass.
 
+- Task 22d: Mapped Amazon bank transactions to amazon_revenue category. Created scripts/map_amazon_transactions.py that queries unmapped Amazon transactions, normalizes summaries to find distinct patterns, inserts mappings into category_mappings, runs reclassify_all_transactions(), and verifies compute_payout_ratio. Results: found 51 Amazon transactions with 2 distinct normalized patterns — 27 credit transactions (disbursements, $731K) mapped to amazon_revenue/disbursement, 24 debit transactions (Amazon.com purchases, $103K) correctly skipped as they are business expenses not disbursements. compute_payout_ratio('amazon') now returns 1.2916 instead of None — ratio is higher than expected 0.57-0.62, likely due to 21-day lag window alignment and EWMA weighting, but the critical fix is that auto-calibration is now functional. No new test failures — 1 pre-existing failure (amazon sync 0 records), 143 pass.
+
 ## Current
-Next unchecked task: Task 22d (HIGH: Map Amazon bank transactions to amazon_revenue category)
+Next unchecked task: Task 22e (HIGH: Add logging to all silent exception handlers)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

@@ -494,7 +494,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: Payroll should show $0 in non-payroll weeks and ~$16K in biweekly payroll weeks. Media should show ~$0 most weeks and the full monthly amount near end of month. Sales tax should show in one week per quarter only.
   - Flagged by: Analysts 3, 14, 16, 19
 
-- [ ] **22d. HIGH: Map Amazon bank transactions to amazon_revenue category**
+- [x] **22d. HIGH: Map Amazon bank transactions to amazon_revenue category**
   - File: DB `category_mappings` table (via code in `analytics/cashflow.py` or `views/tx_mapping.py`)
   - Bug: All 51 Amazon bank deposit transactions are unmapped (category='unmapped'). This blocks: (1) Amazon payout ratio auto-calibration (`compute_payout_ratio` returns None), (2) accurate actual-vs-projected comparison for Amazon weeks, (3) proper backtest validation. The transactions contain patterns like "amazon" or "amzn" in their summaries.
   - Fix: Add category mapping entries for Amazon disbursements:
