@@ -611,7 +611,7 @@ Acceptance criteria: 5 final analysts pass. Railway page renders correctly with 
 
 Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive features work (edit cells, smart projections, upload, settings), no visual jank.
 
-- [ ] **27. Frontend design cleanup of Cash Flow dashboard**
+- [x] **27. Frontend design cleanup of Cash Flow dashboard**
   - File: `views/cashflow.py`
   - Open the Cash Flow page on Railway (Playwright) and audit the full page top to bottom.
   - Fix any layout issues: KPI cards should be evenly spaced, chart should fill width, table should scroll horizontally without breaking.

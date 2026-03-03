@@ -95,6 +95,8 @@
 
 - Task 26: Wrote final status summary (this section).
 
+- Task 27: Frontend design cleanup of Cash Flow dashboard. Audited the full page in browser (Playwright on localhost:8501) and fixed 8 issues: (1) Chart colors used dark-mode rgba(255,255,255,*) which were invisible on the light theme — replaced with #E8EDF3 grid lines, #2c3e50 text, #6b7c93 annotations matching the Hydrant Plotly template. (2) Section headers "Revenue"/"Expenses" used rgba(255,255,255,0.4) text color, invisible on light #f7f8fc background — changed to #6b7c93 with colored ▲/▼ indicator icons. (3) Total row colors (Total Inflows, Total Outflows, Net Cash Flow, Closing Balance) used dark-mode colors including #ffffff white, invisible on light background — replaced with #16a34a green, #dc2626 red, #d97706 amber, #0F3557 navy. (4) Negative dollar formatting showed $-45,826 — fixed to show -$45,826. (5) Data_editor dollar format used printf '$%d' (no commas) — changed to d3-format '$,.0f' for proper $15,000 display. (6) Added ✓ suffix to actual week column headers to visually distinguish past weeks from future editable weeks. (7) Added balance freshness date ("as of 2026-03-03") under Current Cash KPI from kpis['balance_freshness_date']. (8) Removed dead _format_cash_table() function (53 lines) that was replaced by the st.data_editor approach. Note: data_editors appear blank in Playwright screenshots due to Glide canvas rendering limitation, but pixel sampling confirmed text renders correctly at rgb(15,53,87) — works fine in real browsers. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
+
 ## Final Status
 
 ### Summary
