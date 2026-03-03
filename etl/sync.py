@@ -194,18 +194,52 @@ def _snapshot_inventory():
 
 
 def _sync_amazon(full_refresh):
-    """Pull Amazon order data for demand forecasting via Sales & Traffic report."""
+    """Pull Amazon order data for demand forecasting via Sales & Traffic report.
+
+    Always syncs through business-yesterday (EOD) and overlaps 3 days back
+    to catch Amazon's delayed report finalization (typically 24-48h lag).
+    """
     from etl.amazon import fetch_sales_report
+    from utils.date_helpers import business_yesterday
+
+    yesterday_str = str(business_yesterday())
 
     with get_db() as conn:
-        since = _get_since_date(conn, "amazon", full_refresh, max_days=30)
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        since = _get_since_date(conn, "amazon", full_refresh, max_days=30,
+                                overlap_days=3)
 
-        logger.info("Amazon sales sync: %s to %s", since, today)
-        count = fetch_sales_report(conn, since_date=since, until_date=today)
-        log_sync(conn, "amazon", today, count)
+        logger.info("Amazon sales sync: %s to %s", since, yesterday_str)
+        count = fetch_sales_report(conn, since_date=since, until_date=yesterday_str)
+        log_sync(conn, "amazon", yesterday_str, count)
 
     return count
+
+
+def run_amazon_catchup():
+    """Lightweight Amazon-only sync to catch delayed S&T report data.
+
+    Re-fetches the last 3 days of Amazon sales data. Called multiple times
+    per day by the scheduler to pick up data that wasn't available during
+    the main daily sync (Amazon S&T reports have 24-48h lag).
+    """
+    init_db()
+    from etl.amazon import fetch_sales_report
+    from utils.date_helpers import business_yesterday
+
+    yesterday = business_yesterday()
+    since_str = str(yesterday - timedelta(days=2))  # 3-day window
+    until_str = str(yesterday)
+
+    logger.info("Amazon catchup sync: %s to %s", since_str, until_str)
+    try:
+        with get_db() as conn:
+            count = fetch_sales_report(conn, since_date=since_str, until_date=until_str)
+            log_sync(conn, "amazon", until_str, count)
+        logger.info("Amazon catchup complete: %d records", count)
+        return count
+    except Exception as e:
+        logger.error("Amazon catchup sync failed: %s", e)
+        return 0
 
 
 def _sync_amazon_retention(full_refresh):
@@ -309,20 +343,22 @@ def _sync_klaviyo(api_key):
     return total
 
 
-def _get_since_date(conn, source, full_refresh, max_days=365 * 5):
+def _get_since_date(conn, source, full_refresh, max_days=365 * 5,
+                    overlap_days=1):
     """Determine the start date for a sync.
 
     Args:
         max_days: Maximum number of days to look back (default 5 years).
                   Amazon reports typically limit to ~365 days.
+        overlap_days: Number of days to overlap past last sync (default 1).
+                      Amazon uses 3 to catch delayed report finalization.
     """
     if full_refresh:
         return (datetime.utcnow() - timedelta(days=max_days)).strftime("%Y-%m-%d")
 
     last = get_last_sync_date(conn, source)
     if last:
-        # Overlap by 1 day to catch any late-arriving data
-        return (datetime.strptime(last, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        return (datetime.strptime(last, "%Y-%m-%d") - timedelta(days=overlap_days)).strftime("%Y-%m-%d")
     else:
         # First sync: pull all available history
         return (datetime.utcnow() - timedelta(days=max_days)).strftime("%Y-%m-%d")

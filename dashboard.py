@@ -360,9 +360,9 @@ _NAV_ICONS = {
 }
 
 _NAV_GROUPS = [
+    ('Rollup', ['Rollup Overview', 'Rollup Marketing', 'Rollup Retention', 'Rollup Ops']),
     ('DTC', ['DTC Overview', 'DTC Marketing', 'DTC Retention', 'DTC Ops']),
     ('Amazon', ['Amazon Overview', 'Amazon Marketing', 'Amazon Retention', 'Amazon Ops']),
-    ('Rollup', ['Rollup Overview', 'Rollup Marketing', 'Rollup Retention', 'Rollup Ops']),
     ('Finance & Config', ['Cash Flow', 'Tx Mapping', 'Financials', 'Settings', 'Variables']),
 ]
 
@@ -392,12 +392,12 @@ for _grp_name, _grp_pages in _NAV_GROUPS:
 # st.query_params triggers a rerun that can lose session state,
 # causing the radio to revert to the URL's page.
 if '_nav_radio' not in st.session_state:
-    _default_page = st.query_params.get('page', 'DTC Overview')
+    _default_page = st.query_params.get('page', 'Rollup Overview')
     # Handle legacy bookmarks
     if _default_page in _LEGACY_PAGE_MAP:
         _default_page = _LEGACY_PAGE_MAP[_default_page]
     if _default_page not in _ALL_NAV_PAGES:
-        _default_page = 'DTC Overview'
+        _default_page = 'Rollup Overview'
     st.session_state['_nav_radio'] = _default_page
 
 # Single radio drives actual selection (hidden, styled via CSS)

@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from config import SYNC_HOUR, SYNC_MINUTE, SYNC_TIMEZONE
-from etl.sync import run_daily_sync, run_parallel_backfill
+from etl.sync import run_daily_sync, run_parallel_backfill, run_amazon_catchup
 
 
 def daily_job():
@@ -47,12 +47,31 @@ def daily_job():
         traceback.print_exc()
 
 
+def amazon_catchup_job():
+    """Lightweight Amazon-only re-sync to catch delayed S&T report data."""
+    print(f"\n--- Amazon catchup at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+    try:
+        count = run_amazon_catchup()
+        print(f"Amazon catchup: {count} records synced")
+    except Exception as e:
+        print(f"Amazon catchup failed: {e}")
+
+
 def run_daemon():
-    """Run scheduler in daemon mode — keeps running and triggers daily at 5 AM PST."""
+    """Run scheduler in daemon mode — keeps running and triggers daily at 5 AM PST.
+
+    Also runs Amazon-only catchup syncs at 11 AM and 5 PM PST to pick up
+    delayed S&T report data (Amazon has 24-48h reporting lag).
+    """
     sync_time = f"{SYNC_HOUR:02d}:{SYNC_MINUTE:02d}"
     schedule.every().day.at(sync_time, SYNC_TIMEZONE).do(daily_job)
 
-    print(f"Scheduler started. Daily sync scheduled at {sync_time} {SYNC_TIMEZONE}.")
+    # Amazon catchup syncs — S&T data arrives with a lag, retry twice more daily
+    schedule.every().day.at("11:00", SYNC_TIMEZONE).do(amazon_catchup_job)
+    schedule.every().day.at("17:00", SYNC_TIMEZONE).do(amazon_catchup_job)
+
+    print(f"Scheduler started. Daily sync at {sync_time} {SYNC_TIMEZONE}.")
+    print(f"Amazon catchup syncs at 11:00 and 17:00 {SYNC_TIMEZONE}.")
     print(f"Press Ctrl+C to stop.\n")
 
     while True:
