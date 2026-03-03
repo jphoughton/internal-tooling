@@ -622,7 +622,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Upload section should show clear feedback after import (count of new/skipped/unmapped).
   - Take screenshots after fixes to verify.
 
-- [ ] **28. Verify and fix editable cell overrides**
+- [x] **28. Verify and fix editable cell overrides**
   - File: `views/cashflow.py` (functions `_render_editable_table`, `_render_category_section`, `_save_edits`)
   - File: `analytics/cashflow.py` (override lookup in `build_cashflow_forecast`)
   - Test the full edit flow end-to-end on Railway:

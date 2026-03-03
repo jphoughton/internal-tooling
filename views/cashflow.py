@@ -487,6 +487,7 @@ def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map
                     (cat, ws, amount, amount),
                 )
         st.toast(f'Saved {len(changes)} override(s)')
+        st.rerun()  # rebuild forecast with new overrides so totals update
     except Exception as e:
         st.error(f'Failed to save overrides: {e}')
 
