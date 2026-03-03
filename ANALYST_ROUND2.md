@@ -675,3 +675,162 @@ The runway and alert KPIs are mathematically correct given the inputs, but they'
 3. **CRITICAL: Opening balance double-counting inflates current cash by $110K (94%).** The model uses the latest bank balance ($117K, as of Mar 1-3) as the opening for row 0 (Feb 2), then replays 4 weeks of actual transactions that are already reflected in that balance. The CFO sees "$227K current cash" when the bank shows $117K. **This is the highest-severity bug in the model** — it directly affects every cash management decision.
 
 4. **Monthly burn is misleadingly positive** (-$119K = generating $119K/month) due to the Jameson loan misclassification (Analyst 3) inflating actual inflows by ~$55K/month. After fixing the Jameson mapping, actual burn would likely be ~$65K/month net negative, which is more consistent with a business running $250K+/month in expenses against $300K/month gross revenue.
+
+---
+
+## Analyst 5 — Payout Ratio Calibration
+
+**Date:** 2026-03-02
+
+### 1. DTC Payout Ratio
+
+#### Actual Computation (Bank Deposits / Shopify Gross Revenue)
+
+**Monthly Level (Jul 2025 — Feb 2026):**
+
+| Month | Shopify Gross | Bank Deposits | Ratio |
+|-------|-------------|---------------|-------|
+| Jul 2025 | $164,879 | $155,049 | 0.9404 |
+| Aug 2025 | $148,142 | $142,355 | 0.9609 |
+| Sep 2025 | $127,461 | $140,988 | 1.1061 |
+| Oct 2025 | $121,378 | $129,046 | 1.0632 |
+| Nov 2025 | $125,742 | $114,904 | 0.9138 |
+| Dec 2025 | $121,869 | $136,061 | 1.1165 |
+| Jan 2026 | $128,336 | $123,709 | 0.9639 |
+| Feb 2026 | $111,911 | $109,295 | 0.9766 |
+| **Total** | **$1,049,717** | **$1,051,406** | **0.9965** |
+
+**Key observation:** The 8-month weighted ratio is **0.997** — essentially 1:1. Over time, every dollar of Shopify gross revenue reaches the bank. The monthly variations (0.91 to 1.12) are settlement timing noise: deposits lag revenue by ~3 days, causing some months to "borrow" from adjacent months.
+
+**Weekly Level (12-week lookback, Dec 8 — Mar 2):**
+
+| Week | Shopify Gross | Bank Deposits | Ratio |
+|------|-------------|---------------|-------|
+| 2025-12-08 | $24,233 | $6,622 | 0.2733 |
+| 2025-12-15 | $27,122 | $25,897 | 0.9548 |
+| 2025-12-22 | $25,710 | $23,986 | 0.9329 |
+| 2025-12-29 | $30,412 | $27,413 | 0.9014 |
+| 2026-01-05 | $28,554 | $34,552 | 1.2100 |
+| 2026-01-12 | $30,097 | $28,442 | 0.9450 |
+| 2026-01-19 | $25,193 | $30,369 | 1.2054 |
+| 2026-01-26 | $33,439 | $26,197 | 0.7834 |
+| 2026-02-02 | $25,334 | $31,428 | 1.2406 |
+| 2026-02-09 | $27,699 | $23,137 | 0.8353 |
+| 2026-02-16 | $27,607 | $26,217 | 0.9497 |
+| 2026-02-23 | $31,649 | $28,512 | 0.9009 |
+| 2026-03-02 | $4,353 | $4,699 | 1.0794 |
+
+Weekly ratios are highly volatile (0.27 to 1.24) due to the 3-day settlement lag misaligning deposits with the revenue week that generated them. The first week (Dec 8, ratio 0.27) is likely a holiday week where Shopify held deposits — the missing $17K shows up in subsequent weeks via ratios >1.0.
+
+**Overall weighted (12 weeks):** $317,470 / $341,401 = **0.9299**
+
+#### Model's Auto-Calibrated Value
+
+| Metric | Value |
+|--------|-------|
+| `compute_payout_ratio(conn, 'dtc')` | **0.9840** |
+| Seed value | 0.94 |
+| Diff from seed | +0.044 (4.7%) |
+| Threshold | ±5% |
+
+**How it's computed:** EWMA with span=8 across 13 weekly ratios. The EWMA dampens the Dec 8 outlier (0.27) but is still pulled slightly by other sub-1.0 weeks. The result (0.984) is between the weighted average (0.93) and the monthly truth (0.997).
+
+#### Verdict: CONDITIONAL PASS
+
+- **Diff from seed:** 4.7% — just under the 5% flagging threshold
+- **Direction of drift:** Upward (0.94 → 0.984). This means actual processing fees are lower than the 6% assumed by the seed. The 8-month data shows actual fees are ~0.3% (ratio 0.997), not 6%.
+- **EWMA vs reality gap:** The EWMA output (0.984) is reasonable given the noisy weekly data. It correctly tracks the fact that DTC payouts are close to par.
+- **Risk:** The weekly ratio volatility (0.27-1.24) means the EWMA value could jump significantly week-to-week depending on which outlier enters/exits the 12-week window. Consider increasing `calibration_lookback_weeks` to 16-20 for more stability.
+- **Recommendation:** Consider updating the seed from 0.94 to 0.97 to reflect actual processing costs. The 6% haircut assumed by the seed is not supported by 8 months of data showing <1% effective fees. However, this may indicate that refunds and chargebacks are categorized separately (not netted against DTC deposits) — if so, the "true" payout ratio could still be near 0.94 after netting.
+
+### 2. Amazon Payout Ratio
+
+#### Auto-Calibration Status
+
+| Metric | Value |
+|--------|-------|
+| `compute_payout_ratio(conn, 'amazon')` | **None** |
+| Fallback | Seed value 0.62 |
+| Reason | 0 transactions mapped as `amazon_revenue` in `cashflow_transactions` |
+
+The auto-calibration **cannot run** because all 51 Amazon bank transactions (16 large disbursements + 35 smaller debits) remain unmapped (category='unmapped'). The function requires at least 4 weeks of matched data — with 0 mapped deposits, it returns `None` and falls back to the seed.
+
+#### Manual Ratio Computation (Unmapped Deposits vs daily_sku_sales)
+
+Only one complete month-pair exists (Amazon has limited history in `daily_sku_sales`: Jan-Feb 2026 only):
+
+| Revenue Month | Gross Revenue | Deposit Month | Bank Deposits | Ratio |
+|---------------|-------------|---------------|---------------|-------|
+| Jan 2026 | $144,563 | Feb 2026 | $82,888 | **0.5734** |
+
+**Single-month ratio: 0.573** — this is 7.5% below the seed value of 0.62.
+
+#### Cross-Validation Against VALIDATION_BASELINE
+
+From VALIDATION_BASELINE (Analyst 2's data):
+
+| Method | Period | Result |
+|--------|--------|--------|
+| Feb deposits / Feb gross (Analyst 1) | Feb 2026 | $83K / $134K = 0.620 |
+| Feb deposits / Jan gross (21-day lag) | Jan→Feb | $83K / $145K = 0.573 |
+| 8-month avg per-disbursement | Jul 25-Feb 26 | $45.6K avg vs varying gross | ~0.55-0.65 |
+
+The difference between 0.573 and 0.620 depends entirely on which month's gross revenue is paired with February's deposits. Amazon's 14-day settlement cycle means January's revenue partially lands in February. The "correct" lag alignment is uncertain — reality falls somewhere between 0.57 and 0.62.
+
+#### Verdict: CONDITIONAL PASS (with FLAG)
+
+- **Seed accuracy:** The seed value of 0.62 is within the reasonable range (0.57-0.62 depending on lag alignment). It matches the PRD reference data exactly.
+- **Auto-calibration broken:** **FAIL** — `compute_payout_ratio(conn, 'amazon')` returns `None` because no Amazon transactions are mapped. The auto-calibration feature is dead code for Amazon. This was flagged by Analysts 1 and 2 as well.
+- **Risk of drift:** Without auto-calibration, the model cannot detect changes in Amazon's fee structure. If Amazon raises FBA fees or changes settlement terms, the model will continue using 0.62 until someone manually updates the seed.
+- **Recommendation:** Map the 16 Amazon disbursement transactions to category `amazon_revenue` (they all match pattern `AMAZON.C* DES:PAYMENTS`). This would enable auto-calibration and provide ongoing ratio monitoring.
+
+### 3. COGS Ratio Check
+
+| Metric | Value |
+|--------|-------|
+| Seed `cogs_pct` | 0.25 (25%) |
+| Actual mapped production expense (Jul 2025+) | $134,360 |
+| Total gross revenue (Jul 2025+) | $1,344,963 |
+| **Actual COGS ratio** | **0.100 (10.0%)** |
+| **Diff from seed** | **-0.15 (60% below)** |
+
+**Verdict: FAIL (HIGH severity)**
+
+The mapped production expenses represent only 10% of gross revenue — 60% below the 25% seed value. This means the model projects 2.5x more COGS than actual mapped production costs.
+
+**However, this is almost certainly a data completeness issue:**
+- Production costs are PO-driven and spiky (the PRD notes $0-108K/month range)
+- The 8-month period includes several months with $0 production (no POs)
+- AMEX payments (~$30K/month) likely include production-related expenses that are unmapped
+- The 25% seed may be correct for COGS as a % of revenue (industry standard for CPG), but the mapped bank data only captures direct manufacturer POs, not packaging, raw materials, freight-to-warehouse, etc.
+
+**Recommendation:** Do NOT change the COGS seed based on this data alone. The 25% rate is a business-level input from the CFO that accounts for all production costs, not just mapped bank transactions. However, flag this discrepancy so the CFO can confirm whether 25% or a lower rate is appropriate given current product mix and supplier terms.
+
+### 4. Ratio Drift Summary
+
+| Ratio | Seed | Auto-Calibrated | Actual (Manual) | Drift from Seed | Status |
+|-------|------|----------------|----------------|----------------|--------|
+| DTC payout | 0.94 | 0.984 | 0.997 (8-mo) | +4.7% (auto) / +6.1% (manual) | **CONDITIONAL PASS** |
+| Amazon payout | 0.62 | None (broken) | 0.573 (1-mo) | -7.5% (manual) | **CONDITIONAL PASS** |
+| COGS % | 0.25 | N/A (not auto-cal'd) | 0.100 (mapped only) | -60% (mapped only) | **FAIL** (data gap) |
+
+---
+
+### Summary
+
+| Check | Verdict | Severity |
+|-------|---------|----------|
+| DTC payout ratio accuracy | **CONDITIONAL PASS** | LOW |
+| DTC auto-calibration working | **PASS** | — |
+| Amazon payout ratio accuracy | **CONDITIONAL PASS** | LOW |
+| Amazon auto-calibration working | **FAIL** | MEDIUM |
+| COGS ratio vs mapped actuals | **FAIL** | HIGH (data gap) |
+| Ratio stability (EWMA volatility) | **FLAG** | LOW |
+
+**Key takeaways:**
+
+1. **DTC auto-calibration works well.** The EWMA tracks actual payout ratios within 5% of the seed. The slight upward drift (0.94 → 0.984) suggests actual Shopify processing fees are lower than the 6% assumed. The seed could be updated to 0.97 for accuracy, but the current value is acceptable. Weekly ratio volatility (0.27-1.24) is a concern — consider widening the lookback window for EWMA stability.
+
+2. **Amazon auto-calibration is non-functional** because all Amazon bank transactions are unmapped. The seed value of 0.62 is well-calibrated (Feb manual computation gives 0.57-0.62 depending on lag alignment), but the model cannot detect drift. Mapping the 16 Amazon disbursement transactions would fix this.
+
+3. **COGS ratio is the largest discrepancy** (mapped 10% vs seed 25%), but this is a data completeness issue — mapped production expenses capture only direct manufacturer POs, not the full COGS stack. The 25% seed should be treated as a business input, not something to auto-calibrate from incomplete bank data.

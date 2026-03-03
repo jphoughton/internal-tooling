@@ -255,7 +255,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Verify "Monthly Burn" only uses actual (is_actual=True) rows.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **15. Analyst 5 — Payout Ratio Calibration**
+- [x] **15. Analyst 5 — Payout Ratio Calibration**
   - Read prior analyst findings.
   - Compute actual DTC payout ratio: sum of `cashflow_transactions` (category='dtc_revenue', direction='credit') / sum of `daily_sku_sales` (source='shopify') for the same period (with 3-day lag offset).
   - Compute actual Amazon payout ratio: same approach with 21-day lag.
