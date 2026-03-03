@@ -10,7 +10,6 @@ CFO perspective: This module powers the 52-week cash flow forecast by:
 import logging
 import re
 from datetime import date, timedelta
-from typing import Optional
 
 import pandas as pd
 import numpy as np
@@ -151,30 +150,6 @@ def classify_transaction(
     return (cat, sub, is_transfer, is_dup)
 
 
-def get_unmapped_patterns(conn: ConnectionWrapper) -> pd.DataFrame:
-    """Get all unique normalized patterns that haven't been mapped yet."""
-    return read_sql("""
-        SELECT
-            ct.normalized_pattern,
-            MIN(ct.summary) as example,
-            COUNT(*) as tx_count,
-            ct.direction,
-            SUM(ct.amount) as total_amount
-        FROM (
-            SELECT
-                summary,
-                direction,
-                amount,
-                category,
-                LOWER(COALESCE(summary, '')) as normalized_pattern
-            FROM cashflow_transactions
-            WHERE category = 'unmapped' OR category IS NULL
-        ) ct
-        GROUP BY ct.normalized_pattern, ct.direction
-        ORDER BY tx_count DESC
-    """, conn)
-
-
 def get_mapping_stats(conn: ConnectionWrapper) -> dict:
     """Get mapping coverage stats."""
     total = conn.execute(
@@ -235,81 +210,6 @@ def reclassify_all_transactions(conn: ConnectionWrapper) -> int:
             updated += len(tx_ids)
 
     return updated
-
-
-# ---------------------------------------------------------------------------
-# Auto-calibrated payout ratios
-# ---------------------------------------------------------------------------
-def compute_payout_ratio(
-    conn: ConnectionWrapper,
-    channel: str,
-    lookback_weeks: int = 12,
-) -> Optional[float]:
-    """Compute payout ratio from DB revenue vs actual bank deposits.
-
-    DTC: daily_sku_sales(source='shopify') revenue vs cashflow_transactions(category='dtc_revenue')
-    Amazon: daily_sku_sales(source='amazon') vs cashflow_transactions(category='amazon_revenue')
-
-    Uses EWMA to favor recent weeks. Returns None if insufficient data.
-    """
-    if channel == 'dtc':
-        source = 'shopify'
-        category = 'dtc_revenue'
-        lag_days = 3  # DTC settles in ~3 days
-    elif channel == 'amazon':
-        source = 'amazon'
-        category = 'amazon_revenue'
-        lag_days = 21  # Amazon 21-day settlement lag
-    else:
-        return None
-
-    end_date = date.today()
-    start_date = end_date - timedelta(weeks=lookback_weeks)
-
-    # Get weekly DB revenue
-    revenue_df = read_sql("""
-        SELECT
-            DATE_TRUNC('week', sale_date::date)::text as week_start,
-            SUM(revenue) as revenue
-        FROM daily_sku_sales
-        WHERE source = %s AND sale_date >= %s AND sale_date <= %s
-        GROUP BY DATE_TRUNC('week', sale_date::date)
-        ORDER BY week_start
-    """, conn, params=(source, str(start_date), str(end_date)))
-
-    # Get weekly bank deposits (shifted by lag)
-    deposit_start = start_date + timedelta(days=lag_days)
-    deposit_end = end_date + timedelta(days=lag_days)
-    deposit_df = read_sql("""
-        SELECT
-            DATE_TRUNC('week', tx_date::date)::text as week_start,
-            SUM(amount) as deposits
-        FROM cashflow_transactions
-        WHERE category = %s AND direction = 'credit'
-            AND tx_date >= %s AND tx_date <= %s
-            AND is_transfer = 0 AND is_duplicate = 0
-        GROUP BY DATE_TRUNC('week', tx_date::date)
-        ORDER BY week_start
-    """, conn, params=(category, str(deposit_start), str(deposit_end)))
-
-    if revenue_df.empty or deposit_df.empty:
-        return None
-
-    # Merge on week and compute ratio
-    merged = revenue_df.merge(deposit_df, on='week_start', how='inner')
-    if len(merged) < 4:
-        return None
-
-    merged['ratio'] = merged['deposits'] / merged['revenue'].replace(0, np.nan)
-    merged = merged.dropna(subset=['ratio'])
-    if merged.empty:
-        return None
-
-    # EWMA with span proportional to lookback
-    ratios = merged['ratio'].values
-    span = min(len(ratios), 8)
-    weights = pd.Series(ratios).ewm(span=span).mean()
-    return float(weights.iloc[-1])
 
 
 # ---------------------------------------------------------------------------

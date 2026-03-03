@@ -78,9 +78,6 @@ CREDENTIAL_KEYS = {
     "PACKIYO_CUSTOMER_ID": "Packiyo Customer ID",
 }
 
-# Backward compat alias
-ENV_KEYS = CREDENTIAL_KEYS
-
 ENV_FILE = BASE_DIR / ".env"
 
 
