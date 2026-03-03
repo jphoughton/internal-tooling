@@ -389,20 +389,17 @@ _ALL_NAV_PAGES = []
 for _grp_name, _grp_pages in _NAV_GROUPS:
     _ALL_NAV_PAGES.extend(_grp_pages)
 
-# Restore page from URL query params (survives browser refresh)
-_qp = st.query_params
-_default_page = _qp.get('page', 'DTC Overview')
-# Handle legacy bookmarks
-if _default_page in _LEGACY_PAGE_MAP:
-    _default_page = _LEGACY_PAGE_MAP[_default_page]
-    st.query_params['page'] = _default_page
-if _default_page not in _ALL_NAV_PAGES:
-    _default_page = 'DTC Overview'
-
-# Initialize session state from URL on first load only — avoid passing
-# index= to the radio, which can conflict with session_state and reset
-# the user's selection on reruns triggered by query_params changes.
+# Restore page from URL query params on first load only.
+# We do NOT sync back to query_params on navigation because setting
+# st.query_params triggers a rerun that can lose session state,
+# causing the radio to revert to the URL's page.
 if '_nav_radio' not in st.session_state:
+    _default_page = st.query_params.get('page', 'DTC Overview')
+    # Handle legacy bookmarks
+    if _default_page in _LEGACY_PAGE_MAP:
+        _default_page = _LEGACY_PAGE_MAP[_default_page]
+    if _default_page not in _ALL_NAV_PAGES:
+        _default_page = 'DTC Overview'
     st.session_state['_nav_radio'] = _default_page
 
 # Single radio drives actual selection (hidden, styled via CSS)
@@ -413,10 +410,6 @@ page = st.sidebar.radio(
     label_visibility='collapsed',
     key='_nav_radio',
 )
-
-# Persist selected page to URL query params
-if page != _qp.get('page', ''):
-    st.query_params['page'] = page
 
 # Extract channel and page type from the selected page
 if page in _STANDALONE_PAGES:
