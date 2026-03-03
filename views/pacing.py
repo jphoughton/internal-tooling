@@ -89,11 +89,9 @@ def render_pacing(ctx):
     _cm_orders = int(mkt_df.loc[_cm_mask, "_orders"].sum())
     _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
 
-    # Amazon MTD from DB
+    # Amazon MTD from DB (spend from google sheets rollup, revenue from daily_sku_sales)
     _cm_amz_rev = 0
     _cm_amz_spend = 0
-    _cm_amz_nc = 0
-    _cm_amz_nc_rev = 0
     try:
         with get_db() as _amz_conn:
             _amz_mtd = _amz_conn.execute(
@@ -102,14 +100,12 @@ def render_pacing(ctx):
             ).fetchone()
             _cm_amz_rev = float(_amz_mtd[0] or 0)
             _amz_rollup = _amz_conn.execute(
-                "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
+                "SELECT SUM(spend) AS total_spend "
                 "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
                 (f"{_cur_month}-01", _yesterday_str),
             ).fetchone()
             if _amz_rollup and _amz_rollup["total_spend"] is not None:
                 _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
-                _cm_amz_nc = int(float(_amz_rollup["total_nc"] or 0))
-                _cm_amz_nc_rev = float(_amz_rollup["total_nc_rev"] or 0)
     except Exception:
         pass
 
@@ -171,11 +167,9 @@ def render_pacing(ctx):
     _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
     _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-    # Amazon L7D
+    # Amazon L7D (spend from google sheets rollup, revenue from daily_sku_sales)
     _l7d_amz_rev = 0
     _l7d_amz_spend = 0
-    _l7d_amz_nc = 0
-    _l7d_amz_nc_rev = 0
     try:
         _l7d_start_str = str(_l7d_start)
         with get_db() as _l7_conn:
@@ -185,14 +179,12 @@ def render_pacing(ctx):
             ).fetchone()
             _l7d_amz_rev = float(_l7_amz[0] or 0) / 7
             _l7_rollup = _l7_conn.execute(
-                "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
+                "SELECT SUM(spend) AS total_spend "
                 "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
                 (_l7d_start_str, _yesterday_str),
             ).fetchone()
             if _l7_rollup and _l7_rollup["total_spend"] is not None:
                 _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
-                _l7d_amz_nc = float(_l7_rollup["total_nc"] or 0) / 7
-                _l7d_amz_nc_rev = float(_l7_rollup["total_nc_rev"] or 0) / 7
     except Exception:
         pass
 
@@ -204,11 +196,9 @@ def render_pacing(ctx):
     _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
     _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-    # Amazon yesterday
+    # Amazon yesterday (spend from google sheets rollup, revenue from daily_sku_sales)
     _yd_amz_rev = 0
     _yd_amz_spend = 0
-    _yd_amz_nc = 0
-    _yd_amz_nc_rev = 0
     try:
         with get_db() as _yd_conn:
             _yd_amz = _yd_conn.execute(
@@ -217,14 +207,11 @@ def render_pacing(ctx):
             ).fetchone()
             _yd_amz_rev = float(_yd_amz[0] or 0)
             _yd_rollup = _yd_conn.execute(
-                "SELECT spend, new_customers, new_customer_rev "
-                "FROM amazon_daily_rollup WHERE date = ?",
+                "SELECT spend FROM amazon_daily_rollup WHERE date = ?",
                 (_yesterday_str,),
             ).fetchone()
             if _yd_rollup:
                 _yd_amz_spend = float(_yd_rollup[0] or 0)
-                _yd_amz_nc = int(float(_yd_rollup[1] or 0))
-                _yd_amz_nc_rev = float(_yd_rollup[2] or 0)
     except Exception:
         pass
 
@@ -381,16 +368,10 @@ def render_pacing(ctx):
     _cm_total_spend = _cm_dtc_spend + _cm_amz_spend
     _l7d_total_spend = _l7d_dtc_spend + _l7d_amz_spend
     _yd_total_spend = _yd_dtc_spend + _yd_amz_spend
-    _cm_total_nc_rev = _cm_nc_rev + _cm_amz_nc_rev
-    _cm_total_nc = _cm_nc + _cm_amz_nc
     _cm_total_repeat_rev = _cm_ret_rev
 
-    # Efficiency metrics
+    # Efficiency metrics (NC data is DTC-only — Amazon has no customer-level data)
     _business_mer = _total_actual_rev / _cm_total_spend if _cm_total_spend > 0 else 0
-    _total_nc_roas = _cm_total_nc_rev / _cm_total_spend if _cm_total_spend > 0 else 0
-    _blended_cpa = _cm_total_spend / _cm_total_nc if _cm_total_nc > 0 else 0
-
-    # DTC efficiency
     _dtc_nc_roas = _cm_nc_rev / _cm_dtc_spend if _cm_dtc_spend > 0 else 0
     _dtc_nc_aov = _cm_nc_rev / _cm_nc if _cm_nc > 0 else 0
     _dtc_cpa = _cm_dtc_spend / _cm_nc if _cm_nc > 0 else 0
@@ -420,12 +401,12 @@ def render_pacing(ctx):
         eff1, eff2, eff3, eff4 = st.columns(4)
         eff1.metric("Business MER", f"{_business_mer:.2f}x",
                     help="Total Revenue / Total Spend")
-        eff2.metric("Total NC ROAS", f"{_total_nc_roas:.2f}x",
-                    help="Total NC Revenue / Total Spend")
-        eff3.metric("New Customers", f"{_cm_total_nc:,}",
+        eff2.metric("DTC NC ROAS", f"{_dtc_nc_roas:.2f}x",
+                    help="DTC NC Revenue / DTC Spend")
+        eff3.metric("DTC New Customers", f"{_cm_nc:,}",
                     help="DTC new customer orders")
-        eff4.metric("Blended CPA", f"${_blended_cpa:,.0f}",
-                    help="Total Spend / Total New Customers")
+        eff4.metric("DTC CPA", f"${_dtc_cpa:,.0f}",
+                    help="DTC Spend / DTC New Customers")
 
         _rollup_rows = []
         _goal_total_spend = _goal_spend + _goal_amz_spend
@@ -435,8 +416,8 @@ def render_pacing(ctx):
         _rollup_rows.extend([
             _build_pace_row("Total Revenue", _total_actual_rev, _goal_total_rev,
                             _l7d_rev + _l7d_amz_rev, _yd_rev + _yd_amz_rev),
-            _build_pace_row("Total NC Rev", _cm_total_nc_rev, _goal_nc_rev,
-                            _l7d_nc_rev + _l7d_amz_nc_rev, _yd_nc_rev + _yd_amz_nc_rev),
+            _build_pace_row("DTC NC Rev", _cm_nc_rev, _goal_nc_rev,
+                            _l7d_nc_rev, _yd_nc_rev),
             _build_pace_row("Repeat Revenue", _cm_total_repeat_rev, _goal_repeat_rev,
                             _l7d_ret_rev, _yd_ret_rev),
         ])
@@ -479,12 +460,12 @@ def render_pacing(ctx):
         st.subheader("Amazon")
         st.caption('Amazon-only pacing vs revenue goals from amazon_revenue_forecast.')
 
-        _amz_cpa = _cm_amz_spend / _cm_amz_nc if _cm_amz_nc > 0 else 0
-        amz_k1, amz_k2, amz_k3, amz_k4 = st.columns(4)
+        _amz_roas = _cm_amz_rev / _cm_amz_spend if _cm_amz_spend > 0 else 0
+        amz_k1, amz_k2, amz_k3 = st.columns(3)
         amz_k1.metric("Revenue MTD", f"${_cm_amz_rev:,.0f}")
         amz_k2.metric("Spend MTD", f"${_cm_amz_spend:,.0f}")
-        amz_k3.metric("New Customers", f"{_cm_amz_nc:,}")
-        amz_k4.metric("CPA", f"${_amz_cpa:,.0f}")
+        amz_k3.metric("ROAS", f"{_amz_roas:.2f}x",
+                       help="Amazon Revenue / Amazon Spend")
 
         _amz_rows = []
         if _goal_amz_spend > 0:
@@ -493,9 +474,6 @@ def render_pacing(ctx):
             )
         _amz_rows.append(
             _build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev),
-        )
-        _amz_rows.append(
-            _build_pace_row("NC Revenue", _cm_amz_nc_rev, 0, _l7d_amz_nc_rev, _yd_amz_nc_rev),
         )
         _amz_df = pd.DataFrame(_amz_rows)
         _render_white_table(_style_pace_df(_amz_df))
