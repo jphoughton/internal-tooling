@@ -768,7 +768,9 @@ def build_cashflow_forecast(
 
         # Build waterfall for DTC monthly revenue
         from analytics.waterfall import build_waterfall
-        wf = build_waterfall(media_plan, source_filter='shopify', horizon_months=12)
+        seasonal_df = read_sql('SELECT month_num, index_value FROM seasonal_indices', conn)
+        seasonal_dict = dict(zip(seasonal_df['month_num'], seasonal_df['index_value'])) if not seasonal_df.empty else None
+        wf = build_waterfall(media_plan, source_filter='shopify', horizon_months=12, seasonal_indices=seasonal_dict)
         if wf is not None and not wf.empty and 'month' in wf.columns:
             rev_col = None
             for col in ['total_revenue', 'revenue', 'total_units_revenue']:
