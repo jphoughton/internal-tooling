@@ -609,6 +609,12 @@ def render(ctx):
                 _dtc_nc_aov = _cm_nc_rev / _cm_nc if _cm_nc > 0 else 0
                 _dtc_cpa = _cm_dtc_spend / _cm_nc if _cm_nc > 0 else 0
 
+                # Combined NC metrics (DTC + Amazon)
+                _cm_total_nc = _cm_nc + _cm_amz_nc
+                _cm_total_nc_rev = _cm_nc_rev + _cm_amz_nc_rev
+                _total_nc_roas = _cm_total_nc_rev / _cm_total_spend if _cm_total_spend > 0 else 0
+                _blended_cpa = _cm_total_spend / _cm_total_nc if _cm_total_nc > 0 else 0
+
                 # -- Spend goal from media plan --
                 _goal_spend = 0
                 _spend_plan = [m for m in _mkt_media if m.get("month") == _cur_month]
