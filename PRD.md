@@ -246,7 +246,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Verify expense timing: payroll should show in 2 weeks per month (not all 4), media in ~1 week per month, taxes in 1 week per quarter. Check that gap weeks show $0 for scheduled expenses.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **14. Analyst 4 — Balance Arithmetic & KPI Accuracy**
+- [x] **14. Analyst 4 — Balance Arithmetic & KPI Accuracy**
   - Read prior analyst findings.
   - Verify for every row: `closing_balance == opening_balance + net_cashflow` (within $1 tolerance).
   - Verify: `opening_balance[row N+1] == closing_balance[row N]`.

@@ -495,3 +495,183 @@ This is a data/mapping issue, not a code bug — but it means the expense projec
 2. **Jameson misclassification is the #1 data bug.** $271K in loan payments categorized as revenue (interest_income) causes ~$110K/month swing in net cash flow. **Fix:** Reclassify Jameson transactions from interest_income to loan in category_mappings. Also add a direction filter to `_get_actual_weekly_totals()` to prevent debit transactions from inflating revenue categories.
 
 3. **Unmapped transactions represent ~$103K/month in invisible expenses.** Until mapping coverage improves from 65% to >90%, expense projections will structurally understate reality. This is a data completeness issue, not a code bug.
+
+---
+
+## Analyst 4 — Balance Arithmetic & KPI Accuracy
+
+**Date:** 2026-03-02
+
+### 1. Row-Level Balance Arithmetic
+
+**Test:** For every row, verify `closing_balance == opening_balance + net_cashflow` (within $1 tolerance).
+
+| Check | Result |
+|-------|--------|
+| Rows tested | 20 |
+| Rows passing | 20 |
+| Max deviation | $0.00 |
+
+**Verdict: PASS** — All 20 rows satisfy the closing = opening + net identity exactly.
+
+### 2. Row-to-Row Balance Chain
+
+**Test:** For every consecutive pair, verify `opening_balance[N+1] == closing_balance[N]` (within $1 tolerance).
+
+| Check | Result |
+|-------|--------|
+| Pairs tested | 19 |
+| Pairs passing | 19 |
+| Max deviation | $0.00 |
+
+**Verdict: PASS** — The balance chain is unbroken. Each row's opening balance equals the previous row's closing balance exactly.
+
+### 3. "Current Cash" KPI Accuracy
+
+**Test:** Verify the KPI reads from the current week's row, not row 0.
+
+| Metric | Value |
+|--------|-------|
+| Today | 2026-03-02 |
+| Current week row index | 4 (2026-03-02 to 2026-03-08) |
+| Row 0 | 2026-02-02 to 2026-02-08 |
+| Row 0 opening_balance | $117,007 |
+| Current week opening_balance | $227,258 |
+| KPI current_cash | $227,258 |
+| KPI == current week opening? | Yes ✓ |
+| KPI == row 0 opening? | No ✓ (Task 2 fix working) |
+
+**Verdict: PASS (code fix)** — The Task 2 fix correctly identifies the current week (row 4, Mar 2-8) and reads its opening_balance ($227,258), not row 0's ($117,007). The `get_cashflow_kpis()` loop at lines 999-1003 correctly finds the row where `week_start <= today <= week_end`.
+
+**However: FAIL (CRITICAL — opening balance double-counting)**
+
+The KPI correctly reads the current week's opening balance — but that balance is **wrong**. The model inflates current cash by **$110,251** (94%) due to double-counting:
+
+| Step | Value |
+|------|-------|
+| Actual bank balance (sum of latest account balances) | $117,007 |
+| Model assigns this as opening_balance for row 0 (Feb 2) | $117,007 |
+| Row 0 actual net cashflow added | +$21,251 |
+| Row 1 actual net cashflow added | +$4,292 |
+| Row 2 actual net cashflow added | +$20,640 |
+| Row 3 actual net cashflow added | +$64,068 |
+| **Cumulative (current week opening)** | **$227,258** |
+| **Actual bank balance** | **$117,007** |
+| **Overstatement** | **$110,251 (94%)** |
+
+**Root cause:** `build_cashflow_forecast()` (lines 833-852) computes the opening balance by summing the LATEST `balance_after` for each bank account. These balances are as of the most recent transaction dates (Mar 1-3, 2026). But this balance is assigned as the opening for row 0 (Feb 2, 2026 — 4 weeks earlier). The model then adds 4 weeks of actual bank transactions (Feb 2 through Mar 1) on top of a balance that ALREADY includes those transactions. The transactions are counted twice.
+
+**Bank account balance dates:**
+
+| Account | Balance | As Of |
+|---------|---------|-------|
+| Highbeam Savings (200001628852) | $15,473 | 2026-03-01 |
+| Highbeam Checking (200001628851) | $38,667 | 2026-03-03 |
+| BofA Checking (5769) | $62,867 | 2026-02-27 |
+| Amex Credit Card | -$30,258 | 2026-02-23 (excluded, negative) |
+| **Total (positive)** | **$117,007** | |
+
+These balances reflect the state AFTER all February transactions. Using them as the starting point for Feb 2 and then replaying February's transactions inflates the running balance by exactly the sum of those transactions' net cash flow ($110,251).
+
+**Fix options:**
+1. **Reconstruct historical balance:** Subtract actual transactions between row 0 start date and the balance date to back-compute what the balance was at the start of row 0. `historical_opening = current_balance - sum(net_tx from row0_start to balance_date)`.
+2. **Use latest balance as current-week opening:** Instead of assigning the bank balance to row 0, assign it to the current week directly. Reconstruct past weeks backward from there. This eliminates the double-counting entirely.
+3. **Skip actuals before balance date:** Only mark weeks as `is_actual` if they are BEFORE the earliest balance date. This prevents replaying transactions that are already baked into the balance.
+
+**Severity: CRITICAL** — The CFO sees "$227K current cash" when the bank actually shows $117K. This is a $110K overstatement that would lead to incorrect decisions about production runs, payroll coverage, and LOC draws.
+
+### 4. "13-Week Projected" KPI Accuracy
+
+**Test:** Verify the KPI is indexed from the current week, not from row 0.
+
+| Metric | Value |
+|--------|-------|
+| Current week row index | 4 |
+| 13w target row index | 4 + 13 = 17 |
+| Row 17 closing_balance | $260,652 |
+| KPI projected_13w | $260,652 |
+| Match? | Yes ✓ |
+
+**Verdict: PASS (code logic)** — The 13-week projected KPI correctly looks 13 rows ahead of the current week (row 4 → row 17), not from row 0 (which would be row 13). The Task 2 fix at lines 1013-1017 works correctly.
+
+**Note:** The absolute value ($260,652) is inflated by the opening balance double-counting bug. The projected DELTA from current cash is meaningful, but the absolute level is ~$110K too high. Once the double-counting is fixed, the 13w projected would be ~$150K, which is a more realistic number.
+
+### 5. "Monthly Burn" KPI Accuracy
+
+**Test:** Verify the KPI only uses actual (is_actual=True) rows.
+
+| Metric | Value |
+|--------|-------|
+| Actual rows in forecast | 4 (Feb 2, Feb 9, Feb 16, Feb 23) |
+| Rows used for burn calculation | 4 (tail of actuals, min 2) |
+| Net cashflow of actual weeks | $21,251, $4,292, $20,640, $64,068 |
+| Mean net cashflow (weekly) | $27,563 |
+| Monthly burn (mean * 4.33) | -$119,347 |
+| KPI monthly_burn | -$119,347 |
+| Match? | Yes ✓ |
+
+**Verdict: PASS (code logic) / FAIL (data accuracy)**
+
+The code correctly filters to only `is_actual=True` rows (Task 7 fix at lines 1023-1028). It uses all 4 available actual weeks and multiplies by 4.33 to annualize to monthly.
+
+However, the monthly burn value of **-$119,347** (negative = net positive cash flow) is misleading because:
+1. The actual net cashflows include the Jameson loan misclassification (Analyst 3 finding) — $55K/month in loan debits counted as revenue, inflating actual inflows
+2. The week of Feb 23-Mar 1 shows $83K inflows (abnormally high due to Amazon disbursement + Shopify payout week)
+3. A negative "monthly burn" means the model thinks the business GENERATES $119K/month in free cash flow, leading to a 52-week runway — which is suspiciously optimistic
+
+If the Jameson misclassification were fixed (~$55K/month of phantom revenue removed), the monthly burn would flip to approximately +$-64K/month (net negative cash flow), which is more realistic for a $300K/month gross revenue business with $250K+ in expenses.
+
+### 6. Runway & Alert KPI Checks
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| runway_weeks | 52 | Capped at 52 because burn is negative (positive cash flow) |
+| alert_week | None | No week drops below $100K threshold |
+| min_cash_threshold | $100,000 | From cashflow_settings |
+| balance_freshness_date | 2026-03-03 | Yesterday — data is fresh |
+
+The runway and alert KPIs are mathematically correct given the inputs, but they're unreliable because the opening balance is inflated by $110K and the net cashflow is inflated by the Jameson misclassification.
+
+### 7. First 8 Weeks Detail
+
+| Week | Actual? | Opening | Inflows | Outflows | Net | Closing |
+|------|---------|---------|---------|----------|-----|---------|
+| Feb 2-8 | YES | $117,007 | $31,463 | $10,212 | $21,251 | $138,258 |
+| Feb 9-15 | YES | $138,258 | $23,137 | $18,845 | $4,292 | $142,551 |
+| Feb 16-22 | YES | $142,551 | $26,217 | $5,577 | $20,640 | $163,191 |
+| Feb 23-Mar 1 | YES | $163,191 | $83,490 | $19,422 | $64,068 | $227,258 |
+| **Mar 2-8** | **No** | **$227,258** | **$56,854** | **$91,632** | **-$34,778** | **$192,480** |
+| Mar 9-15 | No | $192,480 | $13,891 | $21,555 | -$7,664 | $184,816 |
+| Mar 16-22 | No | $184,816 | $13,891 | $20,297 | -$6,406 | $178,410 |
+| Mar 23-29 | No | $178,410 | $60,847 | $40,723 | $20,124 | $198,534 |
+
+**Observations:**
+- The current week (Mar 2-8, bold) is NOT marked as actual despite today being Mar 2 — this is correct behavior (`is_actual = is_past`, and the current week hasn't ended yet)
+- The current week is correctly blended (actual-to-date + projected remainder)
+- Row 3 (Feb 23-Mar 1) shows $83K inflows — this includes Amazon disbursement (~$43K) + Shopify payouts + Jameson phantom revenue
+- Projected weeks show the expected Amazon biweekly pattern: Mar 2-8 ($57K inflows, includes Amazon), Mar 9-22 ($14K/week, no Amazon), Mar 23-29 ($61K, Amazon disbursement)
+
+---
+
+### Summary
+
+| Check | Verdict | Severity |
+|-------|---------|----------|
+| closing = opening + net (every row) | **PASS** | — |
+| opening[N+1] = closing[N] (chain) | **PASS** | — |
+| Current Cash reads current week | **PASS** (code) | — |
+| Opening balance double-counting | **FAIL** | CRITICAL |
+| 13-Week Projected indexed from current week | **PASS** | — |
+| Monthly Burn uses only actuals | **PASS** (code) | — |
+| Monthly Burn value accuracy | **FAIL** | HIGH |
+| Runway & alert KPIs | **PASS** (code) | — |
+
+**Key takeaways:**
+
+1. **Balance arithmetic is perfect.** Every row satisfies `closing = opening + net` and the chain is unbroken. The math engine is sound.
+
+2. **Task 2 KPI fix is working.** Current Cash correctly reads from the current week's row (row 4, Mar 2-8), not row 0 (Feb 2-8). The 13-week projection is correctly indexed 13 weeks ahead of the current week.
+
+3. **CRITICAL: Opening balance double-counting inflates current cash by $110K (94%).** The model uses the latest bank balance ($117K, as of Mar 1-3) as the opening for row 0 (Feb 2), then replays 4 weeks of actual transactions that are already reflected in that balance. The CFO sees "$227K current cash" when the bank shows $117K. **This is the highest-severity bug in the model** — it directly affects every cash management decision.
+
+4. **Monthly burn is misleadingly positive** (-$119K = generating $119K/month) due to the Jameson loan misclassification (Analyst 3) inflating actual inflows by ~$55K/month. After fixing the Jameson mapping, actual burn would likely be ~$65K/month net negative, which is more consistent with a business running $250K+/month in expenses against $300K/month gross revenue.
