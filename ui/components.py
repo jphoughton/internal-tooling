@@ -318,15 +318,16 @@ def smart_date_filter(data_min, data_max, key_prefix, show_presets=True, default
         (start_date, end_date) as datetime.date objects
     """
     from datetime import date as _d, timedelta as _td
-    today = datetime.utcnow().date()
+    from utils.date_helpers import business_yesterday
+    yesterday = business_yesterday()
 
-    # Build preset options
+    # Build preset options (all end at yesterday — never include today's partial data)
     presets = {
-        'MTD': (_d(today.year, today.month, 1), today),
-        'Last 7 Days': (today - _td(days=6), today),
-        'Last 30 Days': (today - _td(days=29), today),
-        'Last 90 Days': (today - _td(days=89), today),
-        'YTD': (_d(today.year, 1, 1), today),
+        'MTD': (_d(yesterday.year, yesterday.month, 1), yesterday),
+        'Last 7 Days': (yesterday - _td(days=6), yesterday),
+        'Last 30 Days': (yesterday - _td(days=29), yesterday),
+        'Last 90 Days': (yesterday - _td(days=89), yesterday),
+        'YTD': (_d(yesterday.year, 1, 1), yesterday),
         'All Time': (data_min, data_max),
     }
 

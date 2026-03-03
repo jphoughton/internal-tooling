@@ -7,6 +7,7 @@ from dateutil.relativedelta import relativedelta
 from db import get_db, read_sql, get_media_spend
 from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
+from utils.date_helpers import business_yesterday
 import config
 
 
@@ -41,9 +42,9 @@ def render(ctx, embedded=False):
                 SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
                        ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
                 FROM daily_sku_sales
-                WHERE sale_date >= date('now', '-30 days') AND source = 'amazon'
+                WHERE sale_date >= date('now', '-30 days') AND sale_date <= %s AND source = 'amazon'
                 GROUP BY sku ORDER BY units_30d DESC
-            """, conn)
+            """, conn, params=(str(business_yesterday()),))
         if not _amz_fb.empty:
             _amz_fb = sort_df_by_best_seller(_amz_fb, sku_col="sku")
             _amz_fb.insert(1, "Flavor", _amz_fb["sku"].apply(lambda s: get_flavor(s, "")))

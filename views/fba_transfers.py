@@ -11,6 +11,7 @@ from db import (
 from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 from analytics.dtc_demand import get_amazon_sku_velocity
+from utils.date_helpers import business_yesterday
 
 
 def render(ctx, embedded=False):
@@ -64,9 +65,9 @@ def render(ctx, embedded=False):
                 SELECT sku, SUM(units_sold) as units_30d, SUM(revenue) as revenue_30d,
                        ROUND(SUM(units_sold) / 30.0, 1) as daily_velocity
                 FROM daily_sku_sales
-                WHERE sale_date >= date('now', '-30 days') AND source = 'amazon'
+                WHERE sale_date >= date('now', '-30 days') AND sale_date <= %s AND source = 'amazon'
                 GROUP BY sku ORDER BY units_30d DESC
-            """, conn)
+            """, conn, params=(str(business_yesterday()),))
         if not _fb_amz.empty:
             _fb_amz = sort_df_by_best_seller(_fb_amz, sku_col="sku")
             _fb_amz.insert(1, "Flavor", _fb_amz["sku"].apply(lambda s: get_flavor(s, "")))

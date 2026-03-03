@@ -719,15 +719,17 @@ def _compute_global_alerts():
 
         # FBA transfer alerts
         if _amz_inv_items:
+            from utils.date_helpers import business_today as _biz_today, business_yesterday as _biz_yesterday
             with get_db() as conn:
                 _amz_dem = read_sql("""
                     SELECT sku, SUM(units_sold) / 3.0 as monthly_demand
                     FROM daily_sku_sales
                     WHERE source = 'amazon' AND sale_date >= date('now', '-90 days')
+                      AND sale_date <= %s
                     GROUP BY sku
-                """, conn)
+                """, conn, params=(str(_biz_yesterday()),))
             _amz_dem_map = dict(zip(_amz_dem["sku"], _amz_dem["monthly_demand"])) if not _amz_dem.empty else {}
-            _today = datetime.utcnow().date()
+            _today = _biz_today()
             _xfer_lt = _bv_alert['fba_transfer_lt_weeks'] * 7
 
             for item in _amz_inv_items:

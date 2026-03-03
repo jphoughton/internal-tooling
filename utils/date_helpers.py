@@ -1,6 +1,23 @@
 """Shared date math utilities for month-string operations."""
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
+
+
+def _biz_tz():
+    """Return the business timezone (lazy-import to avoid circular imports)."""
+    from config import SYNC_TIMEZONE
+    return ZoneInfo(SYNC_TIMEZONE)
+
+
+def business_today():
+    """Today's date in business timezone (America/Los_Angeles)."""
+    return datetime.now(_biz_tz()).date()
+
+
+def business_yesterday():
+    """Yesterday's date in business timezone (America/Los_Angeles)."""
+    return business_today() - timedelta(days=1)
 
 
 def month_str(dt):

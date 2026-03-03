@@ -16,6 +16,7 @@ from analytics.retention import get_new_repeat_summary, get_projected_new_repeat
 from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 from utils.constants import FORECAST_SKUS
+from utils.date_helpers import business_today, business_yesterday
 
 
 @st.cache_data(ttl=300)
@@ -206,16 +207,19 @@ def render(ctx):
             except Exception as _mkt_err:
                 st.caption(f"Could not load revenue goals: {_mkt_err}")
 
-            # Pre-compute current-month pacing vars
-            _now = pd.Timestamp.now()  # tz-naive to match mkt_df["_date"]
-            _cur_month = _now.strftime("%Y-%m")
-            _cur_month_name = _now.strftime("%B %Y")
-            _days_in_month = _now.days_in_month
-            _day_of_month = _now.day
-            _pct_month = _day_of_month / _days_in_month
+            # Pre-compute current-month pacing vars (data through yesterday only)
+            _today = business_today()
+            _yesterday = business_yesterday()
+            _yesterday_str = str(_yesterday)
+            _cur_month = _today.strftime("%Y-%m")
+            _cur_month_name = _today.strftime("%B %Y")
+            import calendar as _cal
+            _days_in_month = _cal.monthrange(_today.year, _today.month)[1]
+            _day_of_month = _yesterday.day if _yesterday.month == _today.month else 0
+            _pct_month = _day_of_month / _days_in_month if _days_in_month > 0 else 0
 
-            # MTD actuals from Google Sheet
-            _cm_mask = mkt_df["_date"].dt.strftime("%Y-%m") == _cur_month
+            # MTD actuals from Google Sheet (through yesterday)
+            _cm_mask = (mkt_df["_date"].dt.strftime("%Y-%m") == _cur_month) & (mkt_df["_date"].dt.date <= _yesterday)
             _cm_nc_rev = mkt_df.loc[_cm_mask, "_nc_revenue"].sum()
             _cm_ret_rev = mkt_df.loc[_cm_mask, "_ret_revenue"].sum()
             _cm_spend = mkt_df.loc[_cm_mask, "_ad_spend"].sum()
@@ -235,7 +239,7 @@ def render(ctx):
                     # Revenue from daily_sku_sales
                     _amz_mtd = _amz_conn.execute(
                         "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
-                        (f"{_cur_month}-01", _now.strftime("%Y-%m-%d")),
+                        (f"{_cur_month}-01", _yesterday_str),
                     ).fetchone()
                     _cm_amz_rev = float(_amz_mtd[0] or 0)
 
@@ -243,7 +247,7 @@ def render(ctx):
                     _amz_rollup = _amz_conn.execute(
                         "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
                         "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
-                        (f"{_cur_month}-01", _now.strftime("%Y-%m-%d")),
+                        (f"{_cur_month}-01", _yesterday_str),
                     ).fetchone()
                     if _amz_rollup and _amz_rollup["total_spend"] is not None:
                         _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
@@ -268,7 +272,7 @@ def render(ctx):
             _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
 
             # Last month actuals (for fallback comparison)
-            _last_month = (_now - pd.DateOffset(months=1)).strftime("%Y-%m")
+            _last_month = (pd.Timestamp(_today) - pd.DateOffset(months=1)).strftime("%Y-%m")
             _lm_mask = mkt_df["_date"].dt.strftime("%Y-%m") == _last_month
             _lm_nc_rev = mkt_df.loc[_lm_mask, "_nc_revenue"].sum()
             _lm_ret_rev = mkt_df.loc[_lm_mask, "_ret_revenue"].sum()
@@ -281,8 +285,9 @@ def render(ctx):
             st.caption(f"Day {_day_of_month} of {_days_in_month}")
             st.progress(_pct_month, text=f"{_pct_month*100:.0f}%")
 
-            # Last 7 days averages from Google Sheet
-            _l7d_mask = mkt_df["_date"] >= (_now - pd.Timedelta(days=7))
+            # Last 7 days averages from Google Sheet (7 complete days ending at yesterday)
+            _l7d_start = _yesterday - pd.Timedelta(days=6)
+            _l7d_mask = (mkt_df["_date"].dt.date >= _l7d_start) & (mkt_df["_date"].dt.date <= _yesterday)
             _l7d_rev = mkt_df.loc[_l7d_mask, "_revenue"].sum() / 7 if _l7d_mask.any() else 0
             _l7d_nc_rev = mkt_df.loc[_l7d_mask, "_nc_revenue"].sum() / 7 if _l7d_mask.any() else 0
             _l7d_ret_rev = mkt_df.loc[_l7d_mask, "_ret_revenue"].sum() / 7 if _l7d_mask.any() else 0
@@ -295,18 +300,18 @@ def render(ctx):
             _l7d_amz_nc = 0
             _l7d_amz_nc_rev = 0
             try:
-                _l7d_start = (_now - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+                _l7d_start_str = str(_l7d_start)
                 with get_db() as _l7_conn:
                     _l7_amz = _l7_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ?",
-                        (_l7d_start,),
+                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
+                        (_l7d_start_str, _yesterday_str),
                     ).fetchone()
                     _l7d_amz_rev = float(_l7_amz[0] or 0) / 7
                     # Rollup L7D
                     _l7_rollup = _l7_conn.execute(
                         "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
-                        "FROM amazon_daily_rollup WHERE date >= ?",
-                        (_l7d_start,),
+                        "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
+                        (_l7d_start_str, _yesterday_str),
                     ).fetchone()
                     if _l7_rollup and _l7_rollup["total_spend"] is not None:
                         _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
@@ -316,8 +321,7 @@ def render(ctx):
                 pass
 
             # Yesterday actuals from Google Sheet
-            _yesterday = (_now - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday
+            _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday_str
             _yd_rev = mkt_df.loc[_yd_mask, "_revenue"].sum()
             _yd_nc_rev = mkt_df.loc[_yd_mask, "_nc_revenue"].sum()
             _yd_ret_rev = mkt_df.loc[_yd_mask, "_ret_revenue"].sum()
@@ -333,13 +337,13 @@ def render(ctx):
                 with get_db() as _yd_conn:
                     _yd_amz = _yd_conn.execute(
                         "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date = ?",
-                        (_yesterday,),
+                        (_yesterday_str,),
                     ).fetchone()
                     _yd_amz_rev = float(_yd_amz[0] or 0)
                     _yd_rollup = _yd_conn.execute(
                         "SELECT spend, new_customers, new_customer_rev "
                         "FROM amazon_daily_rollup WHERE date = ?",
-                        (_yesterday,),
+                        (_yesterday_str,),
                     ).fetchone()
                     if _yd_rollup:
                         _yd_amz_spend = float(_yd_rollup[0] or 0)

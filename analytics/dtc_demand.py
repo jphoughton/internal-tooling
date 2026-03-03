@@ -18,7 +18,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import get_db, get_sku_seasonal_indices, get_seasonal_indices, get_setting
 from analytics.sku_flavors import get_flavor
-from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff
+from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff, business_today, business_yesterday
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +102,19 @@ def get_current_month_progress():
             "pct_remaining": 0.286,
         }
     """
-    now = datetime.utcnow()
-    dim = calendar.monthrange(now.year, now.month)[1]
-    elapsed = now.day
+    today = business_today()
+    yesterday = business_yesterday()
+    dim = calendar.monthrange(today.year, today.month)[1]
+    # elapsed = yesterday's day-of-month if yesterday is in the same month,
+    # else 0 (first day of a new month — no complete day yet)
+    if yesterday.month == today.month and yesterday.year == today.year:
+        elapsed = yesterday.day
+    else:
+        elapsed = 0
     remaining = dim - elapsed
     return {
-        "current_month": now.strftime("%Y-%m"),
-        "day_of_month": now.day,
+        "current_month": today.strftime("%Y-%m"),
+        "day_of_month": elapsed,
         "days_in_month": dim,
         "days_elapsed": elapsed,
         "days_remaining": remaining,
