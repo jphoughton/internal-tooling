@@ -1115,24 +1115,30 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
     else:
         projected_13w = forecast_df.iloc[-1]['closing_balance'] if not forecast_df.empty else 0
 
-    # 52-week projected
-    projected_52w = forecast_df.iloc[-1]['closing_balance'] if not forecast_df.empty else 0
+    # 52-week projected — use endpoint of forecast horizon (not always 52 weeks)
+    horizon_end = forecast_df.iloc[-1]['closing_balance'] if not forecast_df.empty else 0
+    projected_52w = horizon_end
 
-    # Monthly burn (trailing actuals only — minimum 2 weeks)
-    recent = forecast_df[forecast_df['is_actual'] == True]  # noqa: E712
-    if len(recent) >= 2:
-        monthly_burn = -recent.tail(min(4, len(recent)))['net_cashflow'].mean() * 4.33
+    # Monthly burn — use projected average net cash flow (not just trailing actuals)
+    # This reflects upcoming expenses the model factors in, giving a more honest picture.
+    projected = forecast_df[forecast_df['is_actual'] != True]  # noqa: E712
+    if len(projected) >= 2:
+        monthly_burn = -projected['net_cashflow'].mean() * 4.33
     else:
-        # Not enough actuals — use projected as fallback
-        monthly_burn = -forecast_df.head(4)['net_cashflow'].mean() * 4.33
+        monthly_burn = -forecast_df['net_cashflow'].mean() * 4.33
 
-    # Runway
-    weekly_burn = monthly_burn / 4.33 if monthly_burn > 0 else 0
-    if weekly_burn > 0:
-        runway_weeks = int(current_cash / weekly_burn)
-        runway_weeks = min(runway_weeks, 52)
+    # Runway — walk the forecast to find the first week balance hits zero.
+    # This is more accurate than dividing current_cash by burn rate, since the
+    # forecast already models variable inflows, outflows, and seasonal timing.
+    runway_weeks = 52
+    for i in range(current_idx, len(forecast_df)):
+        if forecast_df.iloc[i]['closing_balance'] <= 0:
+            runway_weeks = i - current_idx
+            break
     else:
-        runway_weeks = 52
+        # Never goes to zero within forecast horizon — cap at horizon length
+        remaining = len(forecast_df) - current_idx
+        runway_weeks = min(remaining, 52)
 
     # Alert: first week below threshold
     alert_week = None

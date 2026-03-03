@@ -290,7 +290,7 @@ def _build_inflow_outflow_chart(df: pd.DataFrame, horizon_weeks: int) -> go.Figu
 
 
 
-def _render_kpi_row(kpis):
+def _render_kpi_row(kpis, horizon_weeks=13):
     """Render the KPI row as the most prominent visual element.
 
     Current Cash is largest. Color indicator: green above threshold,
@@ -353,15 +353,15 @@ def _render_kpi_row(kpis):
       <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">13-Week Projected</div>
-        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:#0F3557;
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:{'#dc2626' if kpis['projected_13w'] < 0 else '#0F3557'};
                     letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           ${kpis['projected_13w']:,.0f}
         </div>
       </div>
       <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
-                    color:#94a3b8;font-weight:600;margin-bottom:2px;">52-Week Projected</div>
-        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:#0F3557;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">{horizon_weeks}-Week Projected</div>
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:{'#dc2626' if kpis['projected_52w'] < 0 else '#0F3557'};
                     letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           ${kpis['projected_52w']:,.0f}
         </div>
@@ -445,7 +445,7 @@ def render(ctx):
         return
 
     # 1. KPI row — most prominent, CFO looks here first
-    _render_kpi_row(kpis)
+    _render_kpi_row(kpis, horizon_weeks=horizon_weeks)
 
     # 2. Alert banner — only when something needs attention
     if kpis.get('alert_week'):
