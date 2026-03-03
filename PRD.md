@@ -121,7 +121,7 @@ Acceptance criteria to exit Phase 1: All 9 tasks checked, code committed and pus
   - Fix: Find the row where `week_start <= str(today) <= week_end` and use its `opening_balance`. Fallback: last actual week's `closing_balance`. Also fix `projected_13w` to use `current_week_index + 13` and `projected_52w` to use the last row — both relative to current week, not row 0.
   - Verify: "Current Cash" should show ~$117K (or whatever the current-week opening balance is after actuals flow through), not ~$38K.
 
-- [ ] **3. Fix missing DTC seasonality in waterfall call**
+- [x] **3. Fix missing DTC seasonality in waterfall call**
   - File: `analytics/cashflow.py`, function `build_cashflow_forecast()` (line 747)
   - Bug: `build_waterfall(media_plan, source_filter='shopify', horizon_months=12)` is called without `seasonal_indices`. The function accepts it (confirmed: `def build_waterfall(media_plan, source_filter=None, horizon_months=12, seasonal_indices=None)`), but we're not passing it.
   - Fix: Load seasonal indices from DB and pass them:
@@ -132,13 +132,13 @@ Acceptance criteria to exit Phase 1: All 9 tasks checked, code committed and pus
     ```
   - Verify: March revenue (seasonal index 0.98) should be ~12% lower than June revenue (index 1.10). If seasonal_indices table is empty, the model should still work (graceful None handling).
 
-- [ ] **4. Fix normalize_summary dead regex pattern**
+- [x] **4. Fix normalize_summary dead regex pattern**
   - File: `analytics/cashflow.py`, line 34
   - Bug: Pattern `r'\b[A-Z0-9]{8,}\b'` uses uppercase character class but input is lowercased on line 60 before patterns run. Dead code — never matches.
   - Fix: Change line 34 to `r'\b[a-z0-9]{8,}\b'`.
   - Verify: `normalize_summary("SHOPIFY DES:FUNDING ID:ABC12345678 INDN:Josh")` should strip `abc12345678` after lowercasing. Before this fix it wouldn't.
 
-- [ ] **5. Fix reclassify_all_transactions O(M*N) performance**
+- [x] **5. Fix reclassify_all_transactions O(M*N) performance**
   - File: `analytics/cashflow.py`, function `reclassify_all_transactions()` (lines 200-232)
   - Bug: For each of M mappings (~300), loads ALL N transactions (~2000) and iterates them. That's 600K normalize calls.
   - Fix: Load all transactions once, build `{normalized_pattern: [tx_ids]}` lookup, then for each mapping do one batch UPDATE:
@@ -162,7 +162,7 @@ Acceptance criteria to exit Phase 1: All 9 tasks checked, code committed and pus
     ```
   - Verify: Function should complete in <2 seconds. Updated count should match the old implementation.
 
-- [ ] **6. Fix current-week DTC proration to use DOW weights**
+- [x] **6. Fix current-week DTC proration to use DOW weights**
   - File: `analytics/cashflow.py`, build_cashflow_forecast() revenue blending (lines 868-879)
   - Bug: Proration uses `(days_total - days_elapsed) / days_total` — linear. But DTC is Tuesday-heavy. On Wednesday (3 days elapsed), remaining = 4/7 = 57%, but actual remaining DOW weight = Thu 14.4% + Fri 13.7% + Sat 0% + Sun 0% = 28.1%.
   - Fix: For `dtc_revenue` only, replace linear fraction with DOW-weighted:
@@ -198,7 +198,7 @@ Acceptance criteria to exit Phase 1: All 9 tasks checked, code committed and pus
   - Fix: After computing opening balance, check if the latest `tx_date` in the DB is >14 days old. If so, log a warning. Add `'balance_freshness_date'` to the KPIs dict. In `views/cashflow.py`, show a stale-data warning badge next to "Current Cash" if freshness > 14 days.
   - Verify: KPIs dict should contain `balance_freshness_date` key. View should render badge when data is stale.
 
-- [ ] **9. Commit and push all Phase 1 fixes**
+- [x] **9. Commit and push all Phase 1 fixes**
   - Run `pytest tests/ -x` to verify no regressions.
   - Commit: `fix(cashflow): phase 1 — Amazon overcounting, KPI accuracy, seasonality, perf`
   - Push to main.
@@ -213,7 +213,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
 
 ### Tasks
 
-- [ ] **10. Research — build VALIDATION_BASELINE.md**
+- [x] **10. Research — build VALIDATION_BASELINE.md**
   - Query the Railway database (use `from db import get_db, read_sql`) to extract:
     - Revenue by channel by month (last 6 months) from `daily_sku_sales`
     - Expense totals by category by month from `cashflow_transactions`
@@ -350,4 +350,55 @@ Acceptance criteria: 5 final analysts pass. Railway page renders correctly with 
 
 - [ ] **26. Write final status to progress.txt**
   - Summary: total tasks completed, analyst rounds run, final KPI values, known limitations.
-  - This is the last task.
+
+---
+
+## Phase 5: Frontend Design & UX Polish
+
+Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive features work (edit cells, smart projections, upload, settings), no visual jank.
+
+- [ ] **27. Frontend design cleanup of Cash Flow dashboard**
+  - File: `views/cashflow.py`
+  - Open the Cash Flow page on Railway (Playwright) and audit the full page top to bottom.
+  - Fix any layout issues: KPI cards should be evenly spaced, chart should fill width, table should scroll horizontally without breaking.
+  - Ensure the editable table (`st.data_editor`) renders cleanly: columns should be appropriately sized, dollar formatting consistent (`$X,XXX`), past weeks visually distinct from future weeks (e.g., slightly dimmed or different background).
+  - The balance chart should have clear visual distinction between actuals (solid green line) and projections (dashed blue line). Confidence band should be subtle, not overwhelming.
+  - Alert banner (if triggered) should be prominent but not obnoxious — red background, white text, clear message with escaped dollar signs (no LaTeX rendering).
+  - Model Settings expander should have clean form layout — inputs aligned, labels clear.
+  - Upload section should show clear feedback after import (count of new/skipped/unmapped).
+  - Take screenshots after fixes to verify.
+
+- [ ] **28. Verify and fix editable cell overrides**
+  - File: `views/cashflow.py` (functions `_render_editable_table`, `_render_category_section`, `_save_edits`)
+  - File: `analytics/cashflow.py` (override lookup in `build_cashflow_forecast`)
+  - Test the full edit flow end-to-end on Railway:
+    1. Find a future week cell in the Revenue or Expense section
+    2. Change the value (e.g., set Media for next week to $15,000)
+    3. Verify `st.toast` confirms the save
+    4. Refresh the page — the edited value must persist (read back from `cashflow_overrides` table)
+    5. Verify the edited value flows through to Net Cash Flow and Closing Balance for that week and all subsequent weeks
+  - Fix any issues with: st.data_editor change detection, override key format (line_item must match category key, week_start must match format in DB), upsert SQL.
+  - Past week cells MUST be read-only (disabled=True in column_config). Verify you cannot edit an actual week.
+  - Test with multiple edits in the same session — all should persist independently.
+
+- [ ] **29. Verify and fix Smart Projection reset buttons**
+  - File: `views/cashflow.py` (functions `_render_smart_buttons`)
+  - For every category row that has a manual override, a "Reset [Category Name]" button should appear.
+  - Test the flow:
+    1. First, ensure at least one category has overrides (from Task 28 or insert directly into `cashflow_overrides`)
+    2. The "Manual overrides active:" caption should appear with reset buttons
+    3. Click a reset button — it should DELETE all overrides for that category from `cashflow_overrides`
+    4. Page should rerun and the projected (auto-calculated) values should reappear
+    5. The reset button for that category should disappear (no more overrides)
+  - Make sure buttons render in a clean grid (up to 4 per row), not stacked vertically.
+  - If NO categories have overrides, the entire "Manual overrides active" section should be hidden.
+
+- [ ] **30. Final visual verification on Railway**
+  - Push all Phase 5 changes to main.
+  - Open Railway deployment in Playwright.
+  - Navigate to Cash Flow page.
+  - Screenshot the full page in sections: KPI row, chart, revenue table section, expense table section, totals row, settings expander, upload expander.
+  - Verify everything renders correctly with real data — no empty tables, no NaN values, no broken formatting.
+  - Test: change scenario from Base to Conservative — numbers should update, chart should shift down.
+  - Test: change horizon from 13 weeks to 52 weeks — table should expand, chart should extend.
+  - This is the final task. Mark complete only when the page looks production-ready.

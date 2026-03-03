@@ -6,8 +6,20 @@
 - Task 7: Monthly burn now uses min 2 actual weeks (not projected fallback).
 - Task 8: Added balance_freshness_date to KPIs dict from MAX(tx_date).
 
+- Task 3: Fixed missing DTC seasonality — now loads seasonal_indices from DB and passes seasonal_dict to build_waterfall(). Handles empty table gracefully (passes None). No new test failures introduced; 6 pre-existing data quality test failures remain (unrelated to cashflow code).
+
+- Task 4: Fixed dead regex pattern in normalize_summary(). Changed `r'\b[A-Z0-9]{8,}\b'` to `r'\b[a-z0-9]{8,}\b'` on line 34 of analytics/cashflow.py. The uppercase pattern never matched because input is lowercased on line 60 before patterns run. Verified: `normalize_summary("SHOPIFY DES:FUNDING ID:ABC12345678 INDN:Josh")` now correctly strips `abc12345678`. No new test failures — all 8 failures are pre-existing data quality tests.
+
+- Task 5: Fixed reclassify_all_transactions O(M*N) performance. Loads all transactions once, builds {normalized_pattern: [tx_ids]} lookup dict, then does one batch UPDATE per mapping. Reduces ~600K normalize_summary calls to ~2K. No new test failures — 1 pre-existing data quality failure (amazon sync fetched 0 records).
+
+- Task 6: Fixed current-week DTC proration to use DOW weights instead of linear fraction. For `dtc_revenue` only, remaining-week fraction now sums DTC_DOW_WEIGHTS for days after today (e.g. on Wednesday: Thu 14.4% + Fri 13.7% + Sat 0% + Sun 0% = 28.1%, vs old linear 57%). Other revenue categories still use linear proration. No new test failures — 8 pre-existing data quality failures remain.
+
+- Task 9: All Phase 1 fixes committed and pushed to main. 5 commits (a1d3164 through d343012) covering tasks 1-8. pytest shows 1 pre-existing failure (amazon sync fetched 0 records) — not a regression from cashflow changes. All 24 other tests pass.
+
+- Task 10: Built VALIDATION_BASELINE.md by querying Railway PostgreSQL production database. Extracted: revenue by channel by month (6 months Shopify, 2 months Amazon), expense totals by category by month from cashflow_transactions, Amazon revenue forecast table (13 months), media spend table (26 entries), seasonal indices (all 12 populated), current bank balances ($117K total matching PRD), and mapping stats (65% mapped, 35% unmapped). Cross-referenced all data against PRD Google Sheet reference. Key findings: (1) Shopify gross revenue ~$121K/month is 2.5x PRD's $42-52K figure — PRD may reference net/cash revenue; (2) Amazon forecast table may be 12% optimistic vs actuals; (3) 35% of transactions unmapped including Amazon disbursements and software expenses; (4) Interest/loan expense spiked to $55K/month in Jan-Feb; (5) DTC payout ratio validates at ~97% (vs 94% seed); (6) Amazon payout ratio validates at exactly 62%. No code changes — research/documentation task only. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass.
+
 ## Current
-Next unchecked task: Task 3 (Fix missing DTC seasonality in waterfall call)
+Next unchecked task: Task 11 (Analyst 1 — Revenue Projection Accuracy)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified
