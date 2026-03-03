@@ -287,7 +287,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Test the "Reset to Smart Projection" flow: deleting from `cashflow_overrides` should restore the projected value.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **19. Analyst 9 — Edge Cases & Robustness**
+- [x] **19. Analyst 9 — Edge Cases & Robustness**
   - Read prior findings.
   - Test: week spanning two months (does revenue get attributed to the right month for each day?).
   - Test: what happens if `amazon_revenue_forecast` table is empty? Should fall back to trailing average, not crash.

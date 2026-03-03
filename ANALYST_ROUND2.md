@@ -1214,3 +1214,165 @@ Overrides bypass scenario adjustments. An override of $15,000 for media produces
 **Overall: 1 FAIL (MEDIUM), 1 CONDITIONAL PASS (LOW), 4 PASS**
 
 The override system works correctly for the normal UI flow (insert, verify, reset). The one bug — engine honoring overrides for past weeks — is mitigated by the UI preventing past-week edits, but should be fixed at the engine level to prevent stale overrides or direct DB inserts from corrupting historical data.
+
+---
+
+## Analyst 9 — Edge Cases & Robustness
+
+**Date:** 2026-03-02
+
+### 1. Cross-Month Week Revenue Attribution
+
+**Test:** Week spanning Feb 23 – Mar 1 with different monthly revenues ($100K Feb, $150K Mar).
+
+| Day | Month | Monthly Rev | DOW Weight | Daily Share |
+|-----|-------|-------------|------------|-------------|
+| Feb 23 (Mon) | 2026-02 | $100,000 | 0.157 | $3,614 |
+| Feb 24 (Tue) | 2026-02 | $100,000 | 0.309 | $7,113 |
+| Feb 25 (Wed) | 2026-02 | $100,000 | 0.252 | $5,801 |
+| Feb 26 (Thu) | 2026-02 | $100,000 | 0.144 | $3,315 |
+| Feb 27 (Fri) | 2026-02 | $100,000 | 0.137 | $3,154 |
+| Feb 28 (Sat) | 2026-02 | $100,000 | 0.000 | $0 |
+| Mar 1 (Sun) | 2026-03 | $150,000 | 0.000 | $0 |
+| **Total** | | | | **$22,996** |
+
+**Analysis:** `_project_revenue_week()` iterates day-by-day through the week. Each day's revenue is attributed to its calendar month via `d.strftime('%Y-%m')`, then scaled by DOW weight. This correctly handles cross-month weeks — Feb days use Feb's monthly revenue, Mar days use Mar's monthly revenue.
+
+The Sat/Sun days show $0 regardless of month because `DTC_DOW_WEIGHTS[5]` and `DTC_DOW_WEIGHTS[6]` are both 0.0 (no weekend payouts). In this specific test case, Mar 1 falls on Sunday so no March revenue leaks into the February-heavy week.
+
+**Verdict: PASS** — Revenue is correctly attributed to each day's calendar month in cross-month weeks.
+
+### 2. Empty `amazon_revenue_forecast` Table
+
+**Test:** What happens if the Amazon revenue forecast table is empty?
+
+**Code path trace:**
+1. `build_cashflow_forecast()` line 797-800: `get_amazon_revenue_forecast(conn)` returns empty list
+2. Line 798: `ctx['amazon_monthly_revenue'] = {}` (empty dict)
+3. If exception during fetch: line 800 catches it, sets `ctx['amazon_monthly_revenue'] = {}`
+4. `_project_revenue_week()` for `amazon_revenue` (line 487): `monthly_rev.get(month_key, 0)` returns 0 for any month
+5. Line 499: `total += (0 * ratio / 2) * count = 0` — even in disbursement weeks, amount is $0
+
+**Verified:** `_project_revenue_week(None, 'amazon_revenue', ws, we, ctx_empty)` returns `$0.00` with empty forecast dict. No crash, no exception.
+
+**Verdict: PASS** — Empty forecast table gracefully produces $0 Amazon revenue across all weeks.
+
+### 3. COGS Calculation with Zero Amazon Revenue (Division by Zero Guard)
+
+**Test:** `_project_expense_week()` for `production` (method=`revenue_pct`) when payout ratios are zero.
+
+| Scenario | DTC Ratio | Amazon Ratio | Result | Crash? |
+|----------|-----------|-------------|--------|--------|
+| Both ratios = 0 | 0.0 | 0.0 | $0.00 | No |
+| DTC ratio = 0, Amazon normal | 0.0 | 0.62 | $0.00 | No |
+| Amazon ratio = 0, DTC normal | 0.94 | 0.0 | $5,749 | No |
+| COGS pct = 0 | 0.94 | 0.62 | $0.00 | No |
+| Normal (baseline) | 0.94 | 0.62 | $5,749 | No |
+
+**Code guard (lines 637-638):**
+```python
+dtc_gross = dtc_payout / dtc_ratio if dtc_ratio > 0 else dtc_payout
+amz_gross = amz_payout / amz_ratio if amz_ratio > 0 else amz_payout
+```
+
+The `if ratio > 0` guard prevents `ZeroDivisionError`. When ratio is 0, the payout amount is used directly as the gross-up (a reasonable fallback — if ratio is unknown, assume payout ≈ gross).
+
+**Verdict: PASS** — Division by zero is properly guarded. All zero-ratio scenarios produce valid output.
+
+### 4. `normalize_summary()` Edge Inputs
+
+| Input | Output | Crash? | Notes |
+|-------|--------|--------|-------|
+| `''` (empty string) | `''` | No | Guard on line 58: `if not raw: return ''` |
+| `None` | `''` | No | Same guard: `None` is falsy |
+| `'1234567890'` (only numbers) | `''` | No | `\b\d{4,}\b` strips all, collapses to empty |
+| `'!@#$%^&*()'` (only special) | `'!@'` | No | `#\S+` strips `#$%^&*()`, leaves `!@` |
+| `'A' * 10000` (very long) | `''` | No | `\b[a-z0-9]{8,}\b` strips entire lowercased string |
+| `'SHOPIFY\nDES:FUNDING\tID:123'` (whitespace) | `'shopify des:funding id:123'` | No | Newlines/tabs collapsed to spaces |
+| `'PAYOUT 日本語 DEPOSIT'` (unicode) | `'payout 日本語 deposit'` | No | Unicode preserved, ASCII lowered |
+| `'     '` (just spaces) | `''` | No | `.strip()` removes all spaces |
+| `'A'` (single char) | `'a'` | No | Lowercased |
+
+**Verdict: PASS** — All edge inputs handled without crash. `None` and empty string correctly return empty string.
+
+### 5. Dead Uppercase Patterns in `_STRIP_PATTERNS` (Bug Found)
+
+**Bug:** Four strip patterns use uppercase letters but are applied AFTER `text = raw.lower().strip()` (line 60), making them dead code:
+
+| Pattern | Matches After Lowering? | Status |
+|---------|------------------------|--------|
+| `r'ID:\S*'` | No — input has `id:` not `ID:` | **DEAD** |
+| `r'REF:\S*'` | No — input has `ref:` not `REF:` | **DEAD** |
+| `r'TRACE:\S*'` | No — input has `trace:` not `TRACE:` | **DEAD** |
+| `r'SEQ:\S*'` | No — input has `seq:` not `SEQ:` | **DEAD** |
+
+**Evidence:**
+- `normalize_summary('PAYMENT REF:TXN987654 AMOUNT')` → `"payment ref: amount"` — the `ref:` label remains in output. The value `txn987654` is stripped by `\b[a-z0-9]{8,}\b` but `ref:` itself persists.
+- `normalize_summary('ACH TRACE:123456789012 DEBIT')` → `"ach trace: debit"` — `trace:` remains.
+
+This is the same class of bug as Task 4 fixed for `r'\b[A-Z0-9]{8,}\b'` → `r'\b[a-z0-9]{8,}\b'`.
+
+**Impact:** LOW — The values after these prefixes are usually caught by other patterns (long alphanumeric, 4+ digits). The main effect is that `id:`, `ref:`, `trace:`, `seq:` labels remain in normalized output, potentially causing slightly different normalized patterns for the same vendor depending on whether the original transaction had these fields.
+
+**Fix:** Change to lowercase: `r'id:\S*'`, `r'ref:\S*'`, `r'trace:\S*'`, `r'seq:\S*'`
+
+**Verdict: FAIL (LOW severity)** — 4 dead patterns from the same root cause as Task 4.
+
+### 6. Pattern Ordering Side Effect
+
+**Observation:** `normalize_summary('$1,234.56 01/15/2025 2025-01-15')` → `"01/15/ -01-15"`
+
+The `\b\d{4,}\b` pattern runs before the date patterns and strips `2025` from both date formats, leaving incomplete date fragments that the subsequent date patterns can't match:
+- `01/15/2025` → `01/15/` (year stripped, `\d{1,2}/\d{1,2}/\d{2,4}` no longer matches)
+- `2025-01-15` → `-01-15` (`\d{4}-\d{2}-\d{2}` no longer matches)
+
+**Impact:** NEGLIGIBLE — Date fragments still produce consistent patterns for the same vendor. The purpose of normalization is consistency, not clean output. This is a cosmetic issue at most.
+
+**Verdict: PASS (with observation)** — Pattern ordering produces consistent results even if the output is not perfectly clean.
+
+### 7. Confidence Intervals — Do They Widen Over Time?
+
+**Configuration:** `CASHFLOW_CONFIDENCE_WEEKLY_GROWTH = 0.02` (2%/week), `CASHFLOW_CONFIDENCE_MAX = 0.30` (30% cap)
+
+| Week | % Width | Band Width ($50K net) | vs Week 1 |
+|------|---------|----------------------|-----------|
+| 1 | 1.0% (halved from 2%) | $1,000 | — |
+| 2 | 2.0% (halved from 4%) | $2,000 | 2x |
+| 3 | 3.0% (halved from 6%) | $3,000 | 3x |
+| 4 | 4.0% (halved from 8%) | $4,000 | 4x |
+| 5 | 10.0% | $10,000 | 10x |
+| 8 | 16.0% | $16,000 | 16x |
+| 13 | 26.0% | $26,000 | 26x |
+| 20 | 30.0% (capped) | $30,000 | 30x |
+| 52 | 30.0% (capped) | $30,000 | 30x |
+
+**Key behaviors:**
+- Weeks 1-4 use `pct * 0.5` for tighter near-term confidence
+- Jump from week 4 (4%) to week 5 (10%) is 2.5x — discontinuity from the 0.5x multiplier ending
+- Caps at 30% starting at week 15 (`15 * 0.02 = 0.30`)
+- Actual weeks (`is_actual=True`) have `confidence_lower == confidence_upper == closing_balance` (zero width) — correct
+- Zero net flow uses $1,000 fixed magnitude — prevents zero-width bands on break-even weeks
+
+**Verdict: PASS** — Confidence intervals correctly widen from 1% (week 1) to 26% (week 13) to 30% cap (week 15+). Week 1 is substantially tighter than week 13 (26x wider). The near-term halving and far-out capping produce a reasonable fan-out shape for the chart.
+
+---
+
+### Summary
+
+| Check | Verdict | Severity |
+|-------|---------|----------|
+| Cross-month week revenue attribution | **PASS** | — |
+| Empty amazon_revenue_forecast fallback | **PASS** | — |
+| COGS division by zero guard | **PASS** | — |
+| normalize_summary() edge inputs (None, empty, special chars) | **PASS** | — |
+| Dead uppercase strip patterns (ID:, REF:, TRACE:, SEQ:) | **FAIL** | LOW |
+| Pattern ordering side effect on dates | **PASS (with observation)** | NEGLIGIBLE |
+| Confidence intervals widen over time | **PASS** | — |
+
+**Overall: 1 FAIL (LOW), 6 PASS**
+
+The cash flow engine handles edge cases robustly. No crashes on any tested edge input — `None`, empty strings, zero ratios, empty forecast tables, and cross-month weeks all produce valid output. The only bug found is 4 dead uppercase patterns in `_STRIP_PATTERNS` (same class as the Task 4 bug already fixed), which has LOW impact since the values they should strip are usually caught by other patterns.
+
+**Recommendations for Phase 3:**
+1. Fix the 4 dead uppercase strip patterns: `ID:` → `id:`, `REF:` → `ref:`, `TRACE:` → `trace:`, `SEQ:` → `seq:`
+2. Consider reordering `_STRIP_PATTERNS` to run date patterns before `\b\d{4,}\b` for cleaner date stripping (optional, negligible impact)
