@@ -892,23 +892,33 @@ def build_cashflow_forecast(
 
     # --- Reconstruct historical opening balance ---
     # The bank balance above is as-of today, but row 0 starts at week_list[0]
-    # (typically 4 weeks ago).  Subtract the net of actual transactions from
-    # start_date to today so the opening balance represents what it was at
-    # start_date — not today.  Without this, the 4 weeks of actuals that have
-    # already been reflected in the current bank balance get replayed, causing
-    # double-counting (~$110K overstatement).
+    # (typically 4 weeks ago).  Subtract the net of transactions that the model
+    # will replay so the balance chain stays consistent.  Only subtract
+    # transactions matching the direction filter used by
+    # _get_actual_weekly_totals (credits in revenue categories, debits in
+    # expense categories).  Unmapped and cross-direction transactions are
+    # excluded because the model never replays them.
     try:
         model_start = str(week_list[0][0])
+        rev_cats = tuple(k for k, v in CASHFLOW_CATEGORIES.items()
+                         if v['group'] == 'revenue')
+        exp_cats = tuple(k for k, v in CASHFLOW_CATEGORIES.items()
+                         if v['group'] == 'expense')
         net_since_start = read_sql("""
             SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount
                                      ELSE -amount END), 0) as net
             FROM cashflow_transactions
             WHERE tx_date >= %s AND is_transfer = 0 AND is_duplicate = 0
-        """, conn, params=(model_start,))
+              AND (
+                (direction = 'credit' AND category IN %s)
+                OR
+                (direction = 'debit' AND category IN %s)
+              )
+        """, conn, params=(model_start, rev_cats, exp_cats))
         if not net_since_start.empty:
             opening_balance -= float(net_since_start.iloc[0]['net'])
-    except Exception:
-        log.warning('Could not reconstruct historical opening balance')
+    except Exception as e:
+        log.warning('Could not reconstruct historical opening balance: %s', e)
 
     # --- Revenue and expense categories ---
     revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
@@ -1077,7 +1087,30 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
         if not actuals.empty:
             current_idx = actuals.index[-1]
 
-    current_cash = forecast_df.loc[current_idx, 'opening_balance'] if not forecast_df.empty else 0
+    # Current Cash = actual sum of latest bank balances (excludes credit
+    # cards with negative balances).  This matches the real bank balance,
+    # independent of the model's internal balance chain which can diverge
+    # when transactions are unmapped or the current week is partially elapsed.
+    current_cash = 0
+    try:
+        accounts = conn.execute(
+            "SELECT DISTINCT account FROM cashflow_transactions"
+            " WHERE balance_after IS NOT NULL"
+        ).fetchall()
+        for acct_row in (accounts or []):
+            acct = acct_row['account']
+            latest = conn.execute(
+                "SELECT balance_after FROM cashflow_transactions"
+                " WHERE account = %s AND balance_after IS NOT NULL"
+                " ORDER BY tx_date DESC, created_at DESC LIMIT 1",
+                (acct,),
+            ).fetchone()
+            if latest and float(latest['balance_after']) > 0:
+                current_cash += float(latest['balance_after'])
+    except Exception as e:
+        log.warning('Could not read bank balances for Current Cash KPI: %s', e)
+        current_cash = forecast_df.loc[current_idx, 'opening_balance'] \
+            if not forecast_df.empty else 0
 
     # 13-week projected (relative to current week)
     target_13w = current_idx + 13
