@@ -34,18 +34,18 @@ def render(ctx):
             render_fba(ctx, embedded=True)
 
     else:  # Rollup
-        tabs = st.tabs(['Inventory', 'Demand Forecast', 'Reorder'])
+        tabs = st.tabs(['Inventory', 'Demand Forecast', 'Projected Inventory', 'Reorder'])
         with tabs[0]:
             _render_combined_inventory(ctx)
         with tabs[1]:
             from views.demand_forecast import render as render_forecast
             render_forecast(ctx, embedded=True)
         with tabs[2]:
-            from views.reorder_alerts import render as render_reorder
-            render_reorder(ctx, embedded=True)
-            st.divider()
             from views.projected_inventory import render as render_proj
             render_proj(ctx, embedded=True)
+        with tabs[3]:
+            from views.reorder_alerts import render as render_reorder
+            render_reorder(ctx, embedded=True)
 
 
 def _render_combined_inventory(ctx):
