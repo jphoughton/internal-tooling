@@ -586,7 +586,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
 
 Acceptance criteria: 5 final analysts pass. Railway page renders correctly with screenshots.
 
-- [ ] **24. Run 5 final validation analysts (sequential)**
+- [x] **24. Run 5 final validation analysts (sequential)**
   - **Final 1 — Revenue Accuracy**: Re-run Analyst 1's checks. Must PASS.
   - **Final 2 — Amazon Timing**: Re-run Analyst 2's checks. Must show exactly 2 disbursements/month.
   - **Final 3 — Balance Arithmetic**: Re-run Analyst 4's checks. All rows must balance.

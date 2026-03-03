@@ -1002,20 +1002,23 @@ def build_cashflow_forecast(
                 days_total = 7
                 if days_elapsed < days_total:
                     projected_full = _project_expense_week(conn, cat, ws, we, ctx)
-                    # Skip expense scenario multiplier for revenue_pct categories
-                    # (e.g. production/COGS) — they already inherit the revenue
-                    # scenario adjustment through their revenue inputs.
+                    # COGS (revenue_pct) tracks revenue, not expenses — apply
+                    # revenue scenario so COGS scales with revenue changes.
                     cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                    if cat_method != 'revenue_pct':
+                    if cat_method == 'revenue_pct':
+                        projected_full = _apply_scenario(projected_full, 'revenue', scenario)
+                    else:
                         projected_full = _apply_scenario(projected_full, 'expense', scenario)
                     val = actual + projected_full * (days_total - days_elapsed) / days_total
                 else:
                     val = actual
             else:
                 val = _project_expense_week(conn, cat, ws, we, ctx)
-                # Skip expense scenario multiplier for revenue_pct categories
+                # COGS (revenue_pct) tracks revenue, not expenses
                 cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                if cat_method != 'revenue_pct':
+                if cat_method == 'revenue_pct':
+                    val = _apply_scenario(val, 'revenue', scenario)
+                else:
                     val = _apply_scenario(val, 'expense', scenario)
 
             row[cat] = round(val, 2)
