@@ -499,11 +499,14 @@ def build_reorder_recommendations(proj_df, demand_df, month_cols,
         # Track orders placed per month
         orders = {m: 0 for m in month_cols}
 
-        # Iterative breach detection (max len(month_cols) iterations to avoid infinite loop)
+        # Iterative breach detection
+        # scan_from advances past unfixable breaches to prevent infinite loops
+        scan_from = 0
         for _iteration in range(len(month_cols)):
-            # Find first breach: EOM < safety floor
+            # Find first breach at or after scan_from: EOM < safety floor
             breach_idx = None
-            for i, m in enumerate(month_cols):
+            for i in range(scan_from, len(month_cols)):
+                m = month_cols[i]
                 demand_m = monthly_demand.get(m, 0)
                 safety_floor = demand_m * (safety_buffer_weeks / 4.33)
                 if eom[m] < safety_floor:
@@ -522,6 +525,12 @@ def build_reorder_recommendations(proj_df, demand_df, month_cols,
             # Arrival month = order month + lead_time_months (clamped to last month)
             arrival_idx = min(order_idx + lead_time_months, len(month_cols) - 1)
             arrival_month = month_cols[arrival_idx]
+
+            # If arrival is after breach, this breach is unfixable (lead time too
+            # long).  Still place one order for post-arrival coverage, but advance
+            # scan_from past the breach so we don't loop on it forever.
+            if arrival_idx > breach_idx:
+                scan_from = arrival_idx  # skip to when the order actually lands
 
             # Size the order: cover demand from arrival through lead_time_months + 1
             # additional months, minus inventory at arrival, plus safety target.
@@ -543,8 +552,10 @@ def build_reorder_recommendations(proj_df, demand_df, month_cols,
             needed = max(needed, 0)
 
             if needed <= 0:
-                # Shouldn't happen since we found a breach, but break to be safe
-                break
+                # Breach exists but no additional stock needed (e.g. inv_at_arrival
+                # is enough to cover) — advance past it and keep scanning.
+                scan_from = max(scan_from, breach_idx + 1)
+                continue
 
             # Round up to MOQ
             order_qty = math.ceil(needed / moq_units) * moq_units
