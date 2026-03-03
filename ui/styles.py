@@ -322,6 +322,14 @@ hr {
     background: transparent !important;
     background-color: transparent !important;
 }
+/* Internal overlay divs in dvn-underlay (interaction/selection layers created
+   by glide-data-grid) must also be transparent so they don't mask the canvas
+   when columns are scrolled into view.  Specificity (0-2-2) beats
+   [data-testid="stDataFrame"] div[style] (0-2-1). */
+[data-testid="stDataFrame"] div.dvn-underlay > div {
+    background: transparent !important;
+    background-color: transparent !important;
+}
 
 /* ── File uploader ── */
 [data-testid="stFileUploader"] > div {
