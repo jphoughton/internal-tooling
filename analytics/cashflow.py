@@ -779,13 +779,15 @@ def build_cashflow_forecast(
             except Exception:
                 ctx[sched_key] = {'has_data': False}
 
-    # --- Get opening balance (sum latest balance across ALL accounts) ---
+    # --- Get opening balance (sum latest balance across bank accounts) ---
     try:
-        # Get the most recent balance_after for each distinct account
+        # Get the most recent balance_after for each distinct account,
+        # excluding credit card accounts (negative balances are liabilities)
         latest_balances = read_sql("""
             SELECT account, balance_after
             FROM cashflow_transactions t1
             WHERE balance_after IS NOT NULL
+              AND balance_after > 0
               AND tx_date = (
                   SELECT MAX(tx_date) FROM cashflow_transactions t2
                   WHERE t2.account = t1.account AND t2.balance_after IS NOT NULL
