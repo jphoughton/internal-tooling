@@ -83,8 +83,10 @@
 
 - Task 22g: Fixed past-week overrides being honored over actuals. Added `not is_past` guard to both override checks in build_cashflow_forecast() — revenue loop (line 957) and expense loop (line 995). Previously, the engine checked for overrides BEFORE checking if a week was in the past, so a DB-inserted override for a past week would override actual bank data. Now past weeks always use actual bank data from actuals_cache regardless of overrides. The UI already prevented editing past weeks (disabled columns), but the engine lacked the guard. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
 
+- Task 22h: Fixed COGS scenario interaction — expense multiplier no longer double-applied to revenue_pct categories. In build_cashflow_forecast() expense loop, added a check: if the category's method is 'revenue_pct', skip _apply_scenario() for expenses. COGS (production) already inherits the revenue scenario adjustment through its revenue inputs (_project_expense_week computes 25% of gross revenue, which is already scenario-adjusted). Previously, conservative scenario applied -15% to revenue AND +10% expense multiplier to COGS, creating a perverse margin squeeze. Now COGS/revenue ratio stays constant across scenarios. Fixed in both the current-week proration path and the future-week path. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
+
 ## Current
-Next unchecked task: Task 22h (HIGH: Fix COGS scenario interaction — expense multiplier on revenue_pct)
+Next unchecked task: Task 22 (Implement all Phase 3 fixes — all 22a-22h now complete)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

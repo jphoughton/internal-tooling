@@ -560,7 +560,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: Insert a test override for a past week. Re-run forecast. The past week should show actual bank data, not the override value.
   - Flagged by: Analyst 8
 
-- [ ] **22h. HIGH: Fix COGS scenario interaction (expense multiplier on revenue_pct)**
+- [x] **22h. HIGH: Fix COGS scenario interaction (expense multiplier on revenue_pct)**
   - File: `analytics/cashflow.py`, `_apply_scenario()` (line 702) and COGS calculation in `_project_expense_week()` (lines 630-639)
   - Bug: COGS uses `revenue_pct` method (25% of gross revenue), but the main loop also applies the expense scenario multiplier (conservative: +10%) on top. In conservative scenario, revenue drops 15% but COGS gets the expense +10% multiplier applied to already-reduced revenue, creating a perverse margin squeeze. In aggressive, COGS gets -5% on already-increased revenue, creating unrealistic margin expansion.
   - Fix: Skip the scenario expense multiplier for COGS since it already inherits the revenue scenario adjustment through its revenue inputs:
