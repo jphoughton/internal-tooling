@@ -2111,3 +2111,307 @@ The alert system is architecturally correct (it checks every future week's closi
 2. **(MEDIUM)** After fixing the data issues identified by Analysts 3-7 (Jameson reclassification, opening balance, unmapped transactions), re-run the conservative scenario stress test to verify the alert system correctly detects cash stress. The current test cannot validate alerts because the model is too optimistic.
 
 3. **(LOW)** Consider adding a "worst case" scenario beyond conservative (e.g., revenue -30%, expenses +20%) for genuine stress testing. The current -15%/+10% conservative scenario is too mild to surface cash risks for a CPG brand with thin margins.
+
+---
+
+## Analyst 14 — Week-by-Week Narrative Walkthrough
+
+**Date:** 2026-03-03
+
+### Method
+
+Ran `build_cashflow_forecast(conn, scenario='base', weeks=20, start_date=date.today()-timedelta(weeks=4))` against Railway PostgreSQL production database. This produces 4 actual weeks (Feb 2 – Mar 1) followed by projected weeks (Mar 2+). Walked through the first 8 weeks as if presenting to a board of directors, narrating each line item and checking whether the numbers tell a coherent, believable story.
+
+**Reference benchmarks (from PRD and VALIDATION_BASELINE.md):**
+- DTC cash inflows: ~$7K/day gross × 7 × 0.94 payout ≈ $46K/week gross → ~$27-30K/week in bank deposits
+- Amazon disbursements: 2 per month, ~$45K each
+- Payroll: $16K biweekly (~$8K per payment, hitting ~10th and ~25th)
+- Media: $40-55K/month, bills near end of month
+- Fulfillment: ~$5K/week
+- Actual bank balance: ~$117K
+
+### Raw Data — Weeks 1-8
+
+#### Week 1: Feb 2-8 (ACTUAL)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $117,007 |
+| DTC Revenue | $31,428 |
+| Amazon Revenue | $0 |
+| Interest Income | $35 |
+| **Total Inflows** | **$31,463** |
+| Payroll | -$4,670 |
+| Fulfillment | -$5,542 |
+| **Total Outflows** | **-$10,212** |
+| **Net Cash Flow** | **+$21,251** |
+| **Closing Balance** | **$138,258** |
+
+#### Week 2: Feb 9-15 (ACTUAL)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $138,258 |
+| DTC Revenue | $23,137 |
+| Amazon Revenue | $0 |
+| **Total Inflows** | **$23,137** |
+| Payroll | -$9,650 |
+| Fulfillment | -$5,946 |
+| Production | -$2,614 |
+| Sales Tax | -$635 |
+| **Total Outflows** | **-$18,845** |
+| **Net Cash Flow** | **+$4,292** |
+| **Closing Balance** | **$142,551** |
+
+#### Week 3: Feb 16-22 (ACTUAL)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $142,551 |
+| DTC Revenue | $26,217 |
+| Amazon Revenue | $0 |
+| **Total Inflows** | **$26,217** |
+| Payroll | $0 |
+| Fulfillment | -$4,671 |
+| Sales Tax | -$794 |
+| Software | -$80 |
+| Shipping | -$33 |
+| **Total Outflows** | **-$5,577** |
+| **Net Cash Flow** | **+$20,640** |
+| **Closing Balance** | **$163,191** |
+
+#### Week 4: Feb 23 – Mar 1 (ACTUAL)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $163,191 |
+| DTC Revenue | $28,512 |
+| Amazon Revenue | $0 |
+| Interest Income | $54,978 |
+| **Total Inflows** | **$83,490** |
+| Payroll | -$9,657 |
+| Loan | -$1 |
+| Sales Tax | -$416 |
+| Agency | -$1,600 |
+| Accounting | -$7,749 |
+| **Total Outflows** | **-$19,422** |
+| **Net Cash Flow** | **+$64,068** |
+| **Closing Balance** | **$227,258** |
+
+#### Week 5: Mar 2-8 (PROJECTED — current week)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $227,258 |
+| DTC Revenue | $22,157 |
+| Amazon Revenue | $33,540 |
+| Interest Income | $9,923 |
+| **Total Inflows** | **$65,619** |
+| Media | -$55,287 |
+| Payroll | -$5,327 |
+| Fulfillment | -$7,577 |
+| Production | -$19,471 |
+| Sales Tax | -$334 |
+| Shipping | -$169 |
+| Accounting | -$882 |
+| Insurance | -$714 |
+| Other Expense | -$357 |
+| **Total Outflows** | **-$90,119** |
+| **Net Cash Flow** | **-$24,500** |
+| **Closing Balance** | **$202,758** |
+
+#### Week 6: Mar 9-15 (PROJECTED)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $202,758 |
+| DTC Revenue | $32,721 |
+| Interest Income | $13,891 |
+| **Total Inflows** | **$46,612** |
+| Media | -$8,546 |
+| Payroll | -$7,458 |
+| Fulfillment | -$5,070 |
+| Production | -$8,325 |
+| Sales Tax | -$234 |
+| Software | -$26 |
+| Shipping | -$237 |
+| Agency | -$1,928 |
+| Insurance | -$1,000 |
+| Other Expense | -$500 |
+| **Total Outflows** | **-$33,324** |
+| **Net Cash Flow** | **+$13,288** |
+| **Closing Balance** | **$216,046** |
+
+#### Week 7: Mar 16-22 (PROJECTED)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $216,046 |
+| DTC Revenue | $32,721 |
+| Interest Income | $13,891 |
+| **Total Inflows** | **$46,612** |
+| Media | -$6,409 |
+| Payroll | -$5,454 |
+| Fulfillment | -$5,070 |
+| Production | -$8,325 |
+| Sales Tax | -$234 |
+| Accounting | -$1,235 |
+| Insurance | -$1,000 |
+| Other Expense | -$500 |
+| **Total Outflows** | **-$28,228** |
+| **Net Cash Flow** | **+$18,384** |
+| **Closing Balance** | **$234,431** |
+
+#### Week 8: Mar 23-29 (PROJECTED)
+
+| Line Item | Amount |
+|-----------|--------|
+| Opening Balance | $234,431 |
+| DTC Revenue | $32,721 |
+| Amazon Revenue | $46,956 |
+| Interest Income | $13,891 |
+| **Total Inflows** | **$93,568** |
+| Media | -$8,546 |
+| Payroll | -$7,458 |
+| Fulfillment | -$5,070 |
+| Production | -$27,259 |
+| Sales Tax | -$467 |
+| Software | -$26 |
+| Shipping | -$237 |
+| Agency | -$1,928 |
+| Insurance | -$1,000 |
+| Other Expense | -$500 |
+| **Total Outflows** | **-$52,492** |
+| **Net Cash Flow** | **+$41,076** |
+| **Closing Balance** | **$275,507** |
+
+---
+
+### CFO Narrative Walkthrough
+
+#### Week 1 (Feb 2-8, ACTUAL) — PASS
+
+*"We start the month at $117K across our bank accounts. DTC deposits of $31K come in — that's about $4.5K/day, reasonable for a slower January-February period (PRD says $5-10K/day gross, minus processing fees). No Amazon disbursement this week (they pay biweekly, so this is expected). Payroll is $4.7K — seems low for a biweekly $16K cadence, but this could be a partial or mid-period hit. Fulfillment at $5.5K tracks the expected $5K/week. No media billing yet. Net +$21K, closing at $138K."*
+
+**Verdict: PASS.** Numbers are plausible. DTC deposits are in the right range. Expense timing makes sense. The story holds.
+
+#### Week 2 (Feb 9-15, ACTUAL) — PASS
+
+*"Opening at $138K. DTC deposits $23K — slightly lower week, but within normal range. Still no Amazon disbursement. Payroll hits harder this week at $9.7K — this is a biweekly payroll week (Feb 10th is around the right time). Fulfillment $5.9K stays consistent. Small production charge of $2.6K. Net +$4K, closing at $143K."*
+
+**Verdict: PASS.** The payroll cadence makes sense (heavier this week than last week, consistent with biweekly pattern — $4.7K + $9.7K = $14.4K over 2 weeks ≈ $16K biweekly). Revenue is reasonable.
+
+#### Week 3 (Feb 16-22, ACTUAL) — PASS
+
+*"Opening at $143K. DTC deposits $26K — mid-week bump, normal. No payroll this week — correct, we just paid last week. Fulfillment $4.7K. Almost nothing else. Net +$21K, closing at $163K. Light expense week, cash accumulating."*
+
+**Verdict: PASS.** Clean, quiet week. No red flags. The payroll gap (zero this week after $9.7K last week) is correct biweekly behavior.
+
+#### Week 4 (Feb 23 – Mar 1, ACTUAL) — FAIL (CRITICAL)
+
+*"Opening at $163K. DTC deposits $28K. And then... $54,978 of 'interest income'? That's not interest income — Hydrant doesn't earn $55K/week in interest on a $163K balance. Let me look at this more carefully..."*
+
+**This is the Jameson Companies loan transaction.** As identified by Analyst 3 (Task 13), a $54,947 debit (money leaving the bank for Jameson loan payment) is classified under `interest_income` (a revenue category). The `_get_actual_weekly_totals()` function doesn't filter by transaction direction, so this debit is summed as positive revenue.
+
+**Impact on narrative:** The model shows $83K inflows and +$64K net. In reality, this week had ~$28.5K inflows (just DTC) and ~$74K outflows ($19K operating + $55K loan), for a net of approximately -$45K. The model shows +$64K instead — a **$109K swing** from a single misclassified transaction.
+
+**Verdict: FAIL (CRITICAL).** The opening balance double-counting bug also becomes visible here: the model uses the $117K bank balance as the opening for row 0 (Feb 2), but that $117K already reflects all transactions through early March. Replaying Feb 2-Mar 1 actuals on top inflates the balance by ~$110K. This is why the closing balance shows $227K when the actual bank balance is ~$117K.
+
+#### Week 5 (Mar 2-8, PROJECTED — current week) — FAIL (HIGH)
+
+*"Opening at $227K. But wait — the actual bank balance is $117K. We're starting from a phantom $110K surplus that doesn't exist."*
+
+*"DTC projects $22K for a partial week (today is Tuesday, so most of the high-revenue days remain). Amazon has a $33.5K disbursement — this is a disbursement week (day 8 falls in this window). That amount seems a bit low (expected ~$45K per event), but it's based on March forecast. Interest income shows $9.9K — this is the Jameson trailing average bleeding into projections at ~$13.9K/week (= $55K / 4-week trailing)."*
+
+*"Expenses: Media at $55K is a massive spike. The model projects ~$55K of media in the first week of March. Actual media spend from bank data was $0 in most weeks, with occasional monthly lumps. This spike comes from the trailing average including end-of-month billings. Production at $19.5K — reasonable if a PO landed. Payroll $5.3K — payroll seems to be spreading instead of concentrating in biweekly bursts."*
+
+**Verdict: FAIL (HIGH).** Three issues compound:
+1. Opening balance inflated by $110K (double-counting bug from Analyst 4)
+2. Interest income contains $9.9K phantom Jameson revenue (Analyst 3)
+3. Media expense is $55K in week 1 alone (lumpy trailing avg problem — schedule detection not working correctly)
+4. Payroll spreading every week ($5-7K) instead of biweekly ($0 or $16K) — Analyst 3 flagged this
+
+#### Week 6 (Mar 9-15, PROJECTED) — FAIL (MEDIUM)
+
+*"DTC $33K — reasonable for a full week. No Amazon disbursement — correct, the next one is late-month. But $13.9K 'interest income' is pure Jameson phantom revenue. Payroll at $7.5K — again, spreading instead of concentrating biweekly. If this is supposed to be a payroll week (around the 10th), it should be ~$16K, not $7.5K."*
+
+**Verdict: FAIL (MEDIUM).** Jameson contamination (+$14K/week) and payroll spreading are both carried forward.
+
+#### Week 7 (Mar 16-22, PROJECTED) — FAIL (MEDIUM)
+
+*"Same pattern as week 6. DTC $33K (fine). Interest income $13.9K (phantom). Payroll $5.5K (should be $0 this week — it's not a biweekly payroll week). The narrative repeats robotically because the trailing average produces identical numbers each week."*
+
+**Verdict: FAIL (MEDIUM).** Projected weeks lack the natural lumpiness of real cash flow. Real weeks alternate between heavy ($40-80K outflows) and light ($5-10K outflows) weeks. The model smooths everything to ~$28-33K/week, which is directionally right on average but narratively wrong week-by-week.
+
+#### Week 8 (Mar 23-29, PROJECTED) — CONDITIONAL PASS
+
+*"DTC $33K. Amazon disbursement $47K — correct, this is the late-month disbursement (day 24). Amount seems reasonable (~$94K March forecast × 0.62 payout / 2 events = $29K... wait, it shows $47K. Let me check: Amazon forecast for March is probably ~$150K × 0.62 / 2 = $46.5K. OK, that matches if the forecast table has $150K for March). Interest income still $13.9K phantom. Production spikes to $27K — this is the 'revenue_pct' method kicking in (25% COGS on a higher-revenue Amazon week). Total outflows $52K — the heaviest expense week, driven by production + media + payroll."*
+
+*"Closing at $275K. Starting from actual $117K, after 8 weeks the model claims we've gained $158K. At ~$28K/week DTC deposits and expenses averaging ~$40K/week, the real trajectory is probably flat to slightly up. The $158K gain is almost entirely explained by: $110K opening balance inflation + $56K Jameson phantom revenue (4 weeks × $14K)."*
+
+**Verdict: CONDITIONAL PASS.** The Amazon disbursement timing and amount are correct. DTC levels are reasonable. But the absolute balance is inflated by ~$160K due to the two known bugs.
+
+---
+
+### Cross-Week Pattern Analysis
+
+#### 1. Payroll Cadence — FAIL
+Expected: $0 in 2 weeks, ~$16K in 2 weeks (biweekly). Actual: $4.7K, $9.7K, $0, $9.7K (actual weeks show some biweekly pattern). Projected: $5.3K, $7.5K, $5.5K, $7.5K (spreading every week). The schedule detection (`_detect_expense_schedule`) is not producing a clean biweekly output for projections.
+
+#### 2. Media Cadence — FAIL
+Expected: $0 most weeks, ~$40-55K in one month-end week. Actual: $0 across all 4 actual weeks (Feb). Projected: $55K, $9K, $6K, $9K — the first projected week absorbs a huge lump, then it spreads. This suggests the trailing average is being influenced by one large actual payment.
+
+#### 3. Amazon Disbursements — PASS
+Expected: 2 per month, ~$45K each. Week 1 (early Mar): $33.5K. Week 4 (late Mar): $47K. Exactly 2 events in March. Amounts scale with forecast. The Task 1 fix is working.
+
+#### 4. Jameson Loan Contamination — FAIL (CRITICAL)
+$54,978 actual debit appears as revenue in week 4. $13,891/week phantom revenue propagates through all projected weeks. Over 8 weeks, this contributes ~$110K of phantom cash (4 actual weeks blended + 4 projected). This is the single largest source of model inaccuracy.
+
+#### 5. Opening Balance Double-Counting — FAIL (CRITICAL)
+The model uses latest bank balance ($117K) as opening for Feb 2, then replays Feb 2–Mar 1 transactions. The actual balance already includes those transactions. By week 5, the balance is inflated by $110K ($227K shown vs $117K real).
+
+#### 6. Expense Smoothing vs Reality — FAIL (MEDIUM)
+Real cash outflows are lumpy: Week 1 $10K, Week 2 $19K, Week 3 $6K, Week 4 $19K. Projected outflows are smooth: $90K, $33K, $28K, $52K. The model smooths payroll, insurance, accounting, and other periodic expenses into every week instead of concentrating them in the correct weeks.
+
+---
+
+### The "Board Presentation Test"
+
+If the CFO presented this 8-week forecast to the board:
+
+**Weeks 1-3 (actuals):** "We started February at $117K and had three solid weeks of DTC deposits ($31K, $23K, $26K) against moderate expenses ($10K, $19K, $6K). Cash grew to $163K." **This is presentable and accurate.**
+
+**Week 4 (actual with Jameson bug):** "In the last week of February, we received $83K in inflows including $55K of interest income." The board would immediately ask: "What $55K interest income? On what principal?" The CFO would have no answer — it's a misclassified loan payment. **The presentation breaks here.**
+
+**Weeks 5-8 (projected):** "We project closing March at $275K." The board looks at the bank balance ($117K) and asks: "You're saying we'll gain $158K in a month? That's double our typical monthly net. What's driving it?" The CFO cannot explain the gap. **The presentation fails.**
+
+**Board Presentation Verdict: FAIL.** The model cannot survive basic board-level scrutiny due to the Jameson misclassification and opening balance double-counting. A CFO would lose credibility presenting these numbers.
+
+---
+
+### Summary Scorecard
+
+| Week | Period | Type | Verdict | Key Issue |
+|------|--------|------|---------|-----------|
+| 1 | Feb 2-8 | Actual | PASS | Clean, plausible |
+| 2 | Feb 9-15 | Actual | PASS | Payroll cadence correct |
+| 3 | Feb 16-22 | Actual | PASS | Light week, coherent |
+| 4 | Feb 23-Mar 1 | Actual | FAIL (CRITICAL) | $55K Jameson debit shown as revenue |
+| 5 | Mar 2-8 | Projected | FAIL (HIGH) | $110K balance inflation + $10K phantom revenue + $55K media spike |
+| 6 | Mar 9-15 | Projected | FAIL (MEDIUM) | $14K phantom interest + payroll spreading |
+| 7 | Mar 16-22 | Projected | FAIL (MEDIUM) | Same as week 6, robotic repetition |
+| 8 | Mar 23-29 | Projected | CONDITIONAL PASS | Amazon timing correct, but absolute levels inflated |
+
+**Overall: FAIL (3 PASS, 1 CONDITIONAL PASS, 4 FAIL)**
+
+### Issues for Phase 3 (prioritized)
+
+1. **(CRITICAL)** Reclassify Jameson Companies transactions from `interest_income` to `loan` in `category_mappings` table. File: DB data fix via `views/tx_mapping.py` or direct SQL. This is a data fix, not a code fix — but `_get_actual_weekly_totals()` should also filter by direction (`WHERE direction = 'credit'` for revenue categories) as a defensive guard.
+
+2. **(CRITICAL)** Fix opening balance double-counting. File: `analytics/cashflow.py`, lines 832-852. The model uses the latest bank balance as opening for `start_date` (4 weeks ago), then replays transactions that are already baked into that balance. Fix: either (a) reconstruct the historical balance by subtracting intervening transactions, or (b) use the latest bank balance as the opening for the *current* week, not the start_date week.
+
+3. **(HIGH)** Fix payroll spreading in projections. File: `analytics/cashflow.py`, `_project_expense_week()`. Payroll should project as $0 in non-payroll weeks and ~$16K in payroll weeks (biweekly on ~10th and ~25th), not $5-7K every week. The schedule detection should produce a clean biweekly output.
+
+4. **(HIGH)** Fix media expense lumpiness. File: `analytics/cashflow.py`, `_project_expense_week()`. Media should project as ~$0 most weeks and ~$40-55K in the billing week (typically end of month), not spread across all weeks. The `monthly_media_spend` plan exists in ctx but may not be consumed correctly by the expense projector.
+
+5. **(MEDIUM)** Map Amazon bank transactions to enable auto-calibration and actuals validation. File: `category_mappings` table via `views/tx_mapping.py`.

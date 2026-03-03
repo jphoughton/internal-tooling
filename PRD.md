@@ -344,7 +344,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Test what happens if ALL expense categories have zero trailing average and zero seed defaults. The model should show only revenue building cash.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20e. Analyst 14 — Week-by-Week Narrative Walkthrough**
+- [x] **20e. Analyst 14 — Week-by-Week Narrative Walkthrough**
   - Read ALL prior findings.
   - Run `build_cashflow_forecast()` and print weeks 1-8 in detail (every category value).
   - Walk through the first 8 weeks as if you're the CFO presenting to a board. For each week, narrate: "We start with $X. DTC brings in $Y (is that reasonable for ~$7K/day * 7 * 0.94?). Amazon brings in $Z this week (is it a disbursement week? does the amount match ~$45K?). Expenses: payroll hits this week ($16K — is it the right biweekly cadence?). Media $0 this week (correct, it bills monthly). Net is $W, closing at $V."
