@@ -85,12 +85,15 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         ))
 
     # ── Actual balance line — thick, solid, filled markers ──
+    _pos_span = '<span style="color:#22c55e">+'
+    _neg_span = '<span style="color:#ef4444">'
+
     actuals = display[display['is_actual'] == True]  # noqa: E712
     if not actuals.empty:
         hover_actual = [
             f"<b>Week of {ws}</b><br>"
             f"Closing: <b>${cb:,.0f}</b><br>"
-            f"Net: {'<span style=\"color:#22c55e\">+' if nc >= 0 else '<span style=\"color:#ef4444\">'}"
+            f"Net: {_pos_span if nc >= 0 else _neg_span}"
             f"${abs(nc):,.0f}</span>"
             for ws, cb, nc in zip(
                 actuals['week_start'], actuals['closing_balance'], actuals['net_cashflow']
@@ -119,7 +122,7 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         hover_proj = [
             f"<b>Week of {ws}</b><br>"
             f"Closing: <b>${cb:,.0f}</b><br>"
-            f"Net: {'<span style=\"color:#22c55e\">+' if nc >= 0 else '<span style=\"color:#ef4444\">'}"
+            f"Net: {_pos_span if nc >= 0 else _neg_span}"
             f"${abs(nc):,.0f}</span>"
             for ws, cb, nc in zip(
                 bridge['week_start'], bridge['closing_balance'], bridge['net_cashflow']
@@ -320,46 +323,47 @@ def _render_kpi_row(kpis):
     runway_color = '#16a34a' if runway >= 26 else '#d97706' if runway >= 13 else '#dc2626'
 
     st.markdown(f'''
-    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;margin:8px 0 20px;">
-      <div style="flex:1.4;min-width:160px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));
+                gap:16px;margin:8px 0 20px;">
+      <div style="grid-column:span 1;">
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">Current Cash</div>
-        <div style="font-size:2.2rem;font-weight:800;color:{cash_color};
-                    letter-spacing:-0.03em;line-height:1.1;">
+        <div style="font-size:clamp(1.4rem, 3vw, 2.2rem);font-weight:800;color:{cash_color};
+                    letter-spacing:-0.03em;line-height:1.1;white-space:nowrap;">
           ${current:,.0f}
         </div>
         {freshness_html}
       </div>
-      <div style="flex:1;min-width:120px;">
+      <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">13-Week Projected</div>
-        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
-                    letter-spacing:-0.02em;line-height:1.2;">
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           ${kpis['projected_13w']:,.0f}
         </div>
       </div>
-      <div style="flex:1;min-width:120px;">
+      <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">52-Week Projected</div>
-        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
-                    letter-spacing:-0.02em;line-height:1.2;">
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           ${kpis['projected_52w']:,.0f}
         </div>
       </div>
-      <div style="flex:1;min-width:120px;">
+      <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">Monthly Burn</div>
-        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
-                    letter-spacing:-0.02em;line-height:1.2;">
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           ${abs(burn):,.0f}
         </div>
         <span style="font-size:0.7rem;color:{burn_color};font-weight:600;">{burn_label}</span>
       </div>
-      <div style="flex:0.7;min-width:80px;">
+      <div>
         <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
                     color:#94a3b8;font-weight:600;margin-bottom:2px;">Runway</div>
-        <div style="font-size:1.5rem;font-weight:700;color:{runway_color};
-                    letter-spacing:-0.02em;line-height:1.2;">
+        <div style="font-size:clamp(1.1rem, 2vw, 1.5rem);font-weight:700;color:{runway_color};
+                    letter-spacing:-0.02em;line-height:1.2;white-space:nowrap;">
           {runway_text}
         </div>
       </div>
@@ -646,6 +650,7 @@ def _render_total_row(display, col_key, label, color, current_week_col=None,
     current_week_col: Highlights the current week's cell with a subtle stripe.
     """
     bg_style = 'background:#f1f5f9;border-radius:4px;' if bold_bg else ''
+    label_bg = '#f1f5f9' if bold_bg else '#ffffff'
     cells = ''
     for _, r in display.iterrows():
         val = r.get(col_key, 0)
@@ -656,14 +661,15 @@ def _render_total_row(display, col_key, label, color, current_week_col=None,
         cell_bg = 'background:rgba(99,110,250,0.06);' if ws == current_week_col else ''
         cells += (
             f'<td style="text-align:right;padding:6px 8px;font-weight:700;'
-            f'color:{color};{cell_bg}">{formatted}</td>'
+            f'color:{color};white-space:nowrap;{cell_bg}">{formatted}</td>'
         )
 
     html = (
-        f'<div style="overflow-x:auto;{bg_style}margin:2px 0;">'
-        f'<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
+        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;{bg_style}margin:2px 0;">'
+        f'<table style="border-collapse:collapse;font-size:0.75rem;min-width:max-content;">'
         f'<tr><td style="padding:6px 8px;font-weight:700;color:{color};'
-        f'white-space:nowrap;min-width:140px;">{label}</td>'
+        f'white-space:nowrap;position:sticky;left:0;background:{label_bg};'
+        f'z-index:1;min-width:120px;">{label}</td>'
         f'{cells}</tr></table></div>'
     )
     st.markdown(html, unsafe_allow_html=True)
