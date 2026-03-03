@@ -907,8 +907,17 @@ def build_cashflow_forecast(
                 if days_elapsed < days_total:
                     projected_full = _project_revenue_week(conn, cat, ws, we, ctx)
                     projected_full = _apply_scenario(projected_full, 'revenue', scenario)
-                    # Prorate: actual portion + projected remainder
-                    val = actual + projected_full * (days_total - days_elapsed) / days_total
+                    if cat == 'dtc_revenue':
+                        # DOW-weighted proration: DTC is Tuesday-heavy
+                        remaining_weight = 0.0
+                        for d_off in range(days_total):
+                            d = ws + timedelta(days=d_off)
+                            if d > today and d <= we:
+                                remaining_weight += DTC_DOW_WEIGHTS.get(d.weekday(), 0)
+                        total_weight = sum(DTC_DOW_WEIGHTS.values()) or 1.0
+                        val = actual + projected_full * (remaining_weight / total_weight)
+                    else:
+                        val = actual + projected_full * (days_total - days_elapsed) / days_total
                 else:
                     val = actual
             else:
