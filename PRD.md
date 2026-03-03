@@ -594,7 +594,7 @@ Acceptance criteria: 5 final analysts pass. Railway page renders correctly with 
   - **Final 5 — Full Regression**: Run complete forecast, verify all KPIs reasonable, no crashes, no error states.
   - Write results to `ANALYST_FINAL.md`. If any FAIL, add fix tasks and loop back to Phase 3 (max 2 loops).
 
-- [ ] **25. Push and verify on Railway**
+- [x] **25. Push and verify on Railway**
   - Push to main.
   - Open Railway deployment in browser (Playwright).
   - Navigate to Cash Flow page.
