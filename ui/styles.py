@@ -395,16 +395,6 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label > div:first-child {
     display: none !important;
 }
-/* Section label pseudo-element styling */
-section[data-testid="stSidebar"] .nav-section {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: rgba(255,255,255,0.35);
-    padding: 14px 20px 4px;
-    font-weight: 600;
-}
-
 /* ── Sidebar Business Variables expander ── */
 section[data-testid="stSidebar"] [data-testid="stExpander"] {
     background: rgba(255,255,255,0.05) !important;
@@ -521,80 +511,6 @@ section[data-testid="stSidebar"] [data-testid="stExpander"] button[data-testid="
 section[data-testid="stSidebar"] [data-testid="stExpander"] button[kind="primary"]:hover,
 section[data-testid="stSidebar"] [data-testid="stExpander"] button[data-testid="stBaseButton-primary"]:hover {
     background: #5dbdd8 !important;
-}
-
-/* ── Dialog form grids — compact number inputs ── */
-[data-testid="stDialog"] * {
-    color: #1e2d3d;
-}
-[data-testid="stDialog"] [data-testid="stCaptionContainer"] {
-    color: #6b7c93 !important;
-}
-[data-testid="stDialog"] .stNumberInput {
-    margin-bottom: -10px;
-}
-[data-testid="stDialog"] .stNumberInput input {
-    padding: 5px 8px !important;
-    font-size: 0.84rem !important;
-    border-radius: 8px !important;
-    border-color: #D6DEE8 !important;
-    background: #ffffff !important;
-    color: #0F3557 !important;
-    text-align: right;
-}
-[data-testid="stDialog"] .stNumberInput input:focus {
-    border-color: #7ECCE5 !important;
-    box-shadow: 0 0 0 2px rgba(126,204,229,0.15) !important;
-}
-/* Tighten column gaps in dialog grids */
-[data-testid="stDialog"] [data-testid="stHorizontalBlock"] {
-    gap: 0.4rem !important;
-}
-/* Dialog tabs (for quarterly inbound) */
-[data-testid="stDialog"] .stTabs [data-baseweb="tab-list"] {
-    gap: 2px;
-    background: #F0F4F8;
-    border-radius: 10px;
-    padding: 3px;
-}
-[data-testid="stDialog"] .stTabs [data-baseweb="tab"] {
-    font-size: 0.78rem;
-    padding: 6px 14px;
-    border-radius: 8px;
-    color: #5a6f83 !important;
-}
-[data-testid="stDialog"] .stTabs [aria-selected="true"] {
-    background: #0F3557 !important;
-    color: #ffffff !important;
-}
-[data-testid="stDialog"] .stTabs [aria-selected="true"] * {
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-}
-[data-testid="stDialog"] .stTabs [data-baseweb="tab-highlight"],
-[data-testid="stDialog"] .stTabs [data-baseweb="tab-border"] {
-    display: none !important;
-}
-/* Dialog primary button */
-[data-testid="stDialog"] button[kind="primary"],
-[data-testid="stDialog"] button[data-testid="stBaseButton-primary"],
-[data-testid="stDialog"] [data-testid="stFormSubmitButton"] button {
-    background: linear-gradient(135deg, #7ECCE5, #5BB8D4) !important;
-    border: none !important;
-    color: #0F3557 !important;
-    -webkit-text-fill-color: #0F3557 !important;
-    font-weight: 700 !important;
-    border-radius: 10px !important;
-    font-size: 0.85rem !important;
-    padding: 8px 20px !important;
-}
-
-/* ── Styled dataframe (Pandas Styler) ── */
-.stTable {
-    border-radius: 12px;
-    overflow: hidden;
-    border: 1px solid #E8EDF3;
-    box-shadow: 0 2px 12px rgba(15,53,87,0.06);
 }
 
 /* ── Number input styling ── */
