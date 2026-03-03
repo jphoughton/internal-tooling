@@ -791,6 +791,12 @@ def _render_upload_section():
                     with get_db() as conn:
                         result = import_transactions(conn, df)
 
+                st.session_state['cf_import_result'] = result
+                st.rerun()
+
+            # Show import result persisted across rerun
+            if 'cf_import_result' in st.session_state:
+                result = st.session_state.pop('cf_import_result')
                 st.success(
                     f"Import complete: **{result['inserted']}** new, "
                     f"**{result['skipped']}** skipped (duplicates), "
@@ -798,7 +804,6 @@ def _render_upload_section():
                 )
                 if result['unmapped'] > 0:
                     st.info('Go to **Transaction Mappings** to categorize unmapped transactions.')
-                st.rerun()
         except Exception as e:
             st.error(f'Import failed: {e}')
 
