@@ -366,20 +366,31 @@ def _get_week_boundaries(start_date: date, weeks: int) -> list:
 
 
 def _get_actual_weekly_totals(conn: ConnectionWrapper, category: str, weeks: list) -> dict:
-    """Get actual transaction totals for each week, keyed by week_start string."""
+    """Get actual transaction totals for each week, keyed by week_start string.
+
+    Filters by direction based on category group: revenue categories only
+    count credits, expense categories only count debits.  This prevents
+    misclassified transactions (e.g. a debit mapped to a revenue category)
+    from corrupting actuals.
+    """
     if not weeks:
         return {}
     first_start = str(weeks[0][0])
     last_end = str(weeks[-1][1])
 
+    # Determine expected transaction direction from category group
+    group = CASHFLOW_CATEGORIES.get(category, {}).get('group', 'expense')
+    direction_filter = 'credit' if group == 'revenue' else 'debit'
+
     df = read_sql("""
         SELECT tx_date, SUM(amount) as total
         FROM cashflow_transactions
         WHERE category = %s
+            AND direction = %s
             AND tx_date >= %s AND tx_date <= %s
             AND is_transfer = 0 AND is_duplicate = 0
         GROUP BY tx_date
-    """, conn, params=(category, first_start, last_end))
+    """, conn, params=(category, direction_filter, first_start, last_end))
 
     if df.empty:
         return {}

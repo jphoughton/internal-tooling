@@ -430,7 +430,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
 
 ### Generated Fix Tasks (from Task 21 — Analyst Round 2 Findings)
 
-- [ ] **22a. CRITICAL: Fix opening balance double-counting (+$110K / 94% overstatement)**
+- [x] **22a. CRITICAL: Fix opening balance double-counting (+$110K / 94% overstatement)**
   - File: `analytics/cashflow.py`, `build_cashflow_forecast()` (lines 832-852)
   - Bug: The model uses the latest bank balance ($117K, as of Mar 1-3) as the opening balance for row 0 (start_date = 4 weeks ago, ~Feb 2). It then replays 4 weeks of actual transactions that are *already reflected* in that $117K balance. This inflates current cash to $227K — the CFO sees nearly double the actual bank balance. Every downstream balance, KPI, and alert is wrong.
   - Fix: Reconstruct the historical opening balance by subtracting actual transactions between start_date and the latest transaction date. Specifically:
@@ -449,7 +449,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: "Current Cash" KPI should show ~$117K (matching actual bank balances), not $227K. Row 0 opening_balance + 4 weeks of actual net cashflow should converge to ~$117K at the current week.
   - Flagged by: Analysts 4, 7, 11, 14, 17, 19 (most-cited bug in entire audit)
 
-- [ ] **22b. CRITICAL: Fix Jameson loan misclassification ($110K/month swing)**
+- [x] **22b. CRITICAL: Fix Jameson loan misclassification ($110K/month swing)**
   - File: DB `category_mappings` table + `analytics/cashflow.py` function `_get_actual_weekly_totals()` (lines 368-394)
   - Bug: Jameson Companies loan payments ($5K-$76K/month, principal + interest) are mapped as `interest_income` in `category_mappings`, which is a REVENUE category. This creates a $110K/month double swing: revenue inflated by $55K + expenses understated by $55K. The `_get_actual_weekly_totals()` function has no direction filter, so debit transactions in revenue categories are summed as positive revenue.
   - Fix (two parts):

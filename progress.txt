@@ -69,8 +69,12 @@
   - 22h. HIGH: Fix COGS scenario interaction — skip expense multiplier for revenue_pct categories
   No code changes (documentation/planning task only). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass.
 
+- Task 22a: Fixed opening balance double-counting. The model used the latest bank balance (~$117K) as the opening balance for row 0 (4 weeks ago), then replayed 4 weeks of actual transactions already reflected in that balance — inflating Current Cash to ~$227K (94% overstatement). Fix: after computing opening_balance from latest bank balances, subtract the net of all actual transactions (credits - debits) from the model start date to today, reconstructing the historical balance at start_date. Added to build_cashflow_forecast() in analytics/cashflow.py lines 854-872. Error handling logs a warning on failure. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
+
+- Task 22b: Fixed Jameson loan misclassification ($110K/month swing). Two-part fix: (1) Code fix — added direction filter to _get_actual_weekly_totals() in analytics/cashflow.py so revenue categories only count 'credit' transactions and expense categories only count 'debit' transactions. This prevents any misclassified transaction from corrupting actuals regardless of its category mapping. (2) Data fix — created scripts/fix_jameson_misclassification.py that updated all 6 Jameson patterns in category_mappings from interest_income to loan/principal, refreshed stale match_pattern values to match current normalize_summary() output (Task 4 regex fix had made old patterns stale), and directly reclassified all 11 Jameson transactions ($380K total) to loan/principal. Verified: 0 Jameson transactions remain in interest_income. Net effect: interest_income actuals drop by ~$55K/month (no longer inflated by loan debits), loan expenses increase by ~$55K/month (correctly captured). pytest: 8 pre-existing failures (data quality), 174 pass — no regressions.
+
 ## Current
-Next unchecked task: Task 22a (CRITICAL: Fix opening balance double-counting)
+Next unchecked task: Task 22c (HIGH: Fix schedule detection overriding method-based expense timing)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified
