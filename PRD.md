@@ -510,7 +510,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: `compute_payout_ratio(conn, 'amazon')` should return a value (~0.57-0.62) instead of None. Amazon actual weeks should show non-zero values in the forecast.
   - Flagged by: Analysts 2, 5, 12, 15, 18
 
-- [ ] **22e. HIGH: Add logging to all silent exception handlers**
+- [x] **22e. HIGH: Add logging to all silent exception handlers**
   - File: `analytics/cashflow.py` (10 locations), `views/cashflow.py` (2 locations)
   - Bug: 10 of 16 exception handlers silently swallow errors without logging. 3 are bare `except: pass`. Critical data loads (opening balance, Amazon forecast, media plan) have zero logging on failure. If any of these fail, the model silently falls back to defaults with no indication that data is missing.
   - Fix: Add `log.error()` or `log.warning()` to every exception handler. For critical paths (opening balance, revenue sources), log at ERROR level. For non-critical paths (overrides, settings), log at WARNING level. Replace bare `except: pass` with `except Exception as e: log.warning(...)`:

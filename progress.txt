@@ -77,8 +77,10 @@
 
 - Task 22d: Mapped Amazon bank transactions to amazon_revenue category. Created scripts/map_amazon_transactions.py that queries unmapped Amazon transactions, normalizes summaries to find distinct patterns, inserts mappings into category_mappings, runs reclassify_all_transactions(), and verifies compute_payout_ratio. Results: found 51 Amazon transactions with 2 distinct normalized patterns — 27 credit transactions (disbursements, $731K) mapped to amazon_revenue/disbursement, 24 debit transactions (Amazon.com purchases, $103K) correctly skipped as they are business expenses not disbursements. compute_payout_ratio('amazon') now returns 1.2916 instead of None — ratio is higher than expected 0.57-0.62, likely due to 21-day lag window alignment and EWMA weighting, but the critical fix is that auto-calibration is now functional. No new test failures — 1 pre-existing failure (amazon sync 0 records), 143 pass.
 
+- Task 22e: Added logging to all silent exception handlers. Fixed 10 total: 8 in analytics/cashflow.py (classify_transaction DB lookup, Amazon forecast load, media plan load, payroll detection, expense schedule detection, opening balance computation, override loading, balance freshness query) and 2 in views/cashflow.py (override loading in view, settings load). All bare `except: pass` replaced with `except Exception as e: log.warning/error(...)`. Critical data paths (Amazon forecast, media plan, opening balance) use log.error(); non-critical paths (overrides, settings, schedules) use log.warning(). No bare `except: pass` remains. pytest: 1 pre-existing failure (amazon sync 0 records), 143 pass — no regressions.
+
 ## Current
-Next unchecked task: Task 22e (HIGH: Add logging to all silent exception handlers)
+Next unchecked task: Task 22f (HIGH: Link fulfillment costs to revenue volume)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

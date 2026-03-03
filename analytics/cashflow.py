@@ -141,8 +141,8 @@ def classify_transaction(
         if row:
             return (row['category'], row['subcategory'],
                     int(row['is_transfer'] or 0), int(row['is_duplicate'] or 0))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning('classify_transaction DB lookup failed: %s', e)
 
     # Fall back to regex suggestions
     cat, sub = suggest_category(normalized)
@@ -817,13 +817,15 @@ def build_cashflow_forecast(
     try:
         amz_forecast = get_amazon_revenue_forecast(conn)
         ctx['amazon_monthly_revenue'] = {r['month']: r['revenue'] for r in amz_forecast}
-    except Exception:
+    except Exception as e:
+        log.error('Failed to load Amazon revenue forecast: %s', e)
         ctx['amazon_monthly_revenue'] = {}
 
     # Media spend plan (monthly)
     try:
         ctx['monthly_media_spend'] = {r['month']: r['spend'] for r in media_plan}
-    except Exception:
+    except Exception as e:
+        log.error('Failed to load media spend plan: %s', e)
         ctx['monthly_media_spend'] = {}
 
     # Payroll detection
@@ -834,7 +836,8 @@ def build_cashflow_forecast(
             ORDER BY tx_date DESC LIMIT 1
         """).fetchone()
         ctx['last_payroll_amount'] = float(last_payroll['amount']) if last_payroll else 8000
-    except Exception:
+    except Exception as e:
+        log.warning('Payroll schedule detection failed: %s', e)
         ctx['last_payroll_amount'] = 8000
 
     # --- Pre-compute Amazon disbursement schedule (once, not per-week) ---
@@ -847,7 +850,8 @@ def build_cashflow_forecast(
         if sched_key not in ctx:
             try:
                 ctx[sched_key] = _detect_expense_schedule(conn, cat)
-            except Exception:
+            except Exception as e:
+                log.warning('Expense schedule detection failed for %s: %s', cat, e)
                 ctx[sched_key] = {'has_data': False}
 
     # --- Get opening balance (sum latest balance across bank accounts) ---
@@ -869,7 +873,8 @@ def build_cashflow_forecast(
                 opening_balance += float(latest['balance_after'])
         if opening_balance <= 0:
             opening_balance = 153000  # seed from Cash Flow Model
-    except Exception:
+    except Exception as e:
+        log.error('Failed to compute opening balance, using seed: %s', e)
         opening_balance = 153000  # seed from Cash Flow Model
 
     # --- Reconstruct historical opening balance ---
@@ -911,8 +916,8 @@ def build_cashflow_forecast(
         for _, row in override_rows.iterrows():
             key = (row['line_item'], row['week_start'])
             overrides[key] = float(row['override_amount'])
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning('Failed to load cashflow overrides: %s', e)
 
     # --- Build weekly rows ---
     rows = []
@@ -1091,8 +1096,8 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
         ).fetchone()
         if latest_tx and latest_tx['latest']:
             balance_freshness = str(latest_tx['latest'])
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning('Balance freshness query failed: %s', e)
 
     return {
         'current_cash': current_cash,

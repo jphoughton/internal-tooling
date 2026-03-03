@@ -377,8 +377,8 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
             )
             for _, r in override_rows.iterrows():
                 existing_overrides.add((r['line_item'], r['week_start']))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning('Failed to load cashflow overrides in view: %s', e)
 
     # Section headers
     rev_labels = [cat_labels[c] for c in revenue_cats]
@@ -584,7 +584,8 @@ def _render_settings_section():
             cogs_pct = get_cashflow_setting(conn, 'cogs_pct', '0.25')
             min_cash = get_cashflow_setting(conn, 'min_cash_threshold', '100000')
             loc_balance = get_cashflow_setting(conn, 'loc_balance', '510000')
-    except Exception:
+    except Exception as e:
+        log.warning('Failed to load cashflow settings, using defaults: %s', e)
         dtc_ratio, amz_ratio, cogs_pct = '0.94', '0.62', '0.25'
         min_cash, loc_balance = '100000', '510000'
 
