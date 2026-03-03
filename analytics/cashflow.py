@@ -631,8 +631,11 @@ def _project_expense_week(
 ) -> float:
     """Project expense for a single future week.
 
-    Uses schedule detection from bank actuals first. Falls back to
-    seed defaults with timing awareness if no historical data.
+    Priority order:
+    1. COGS (revenue_pct) — always a % of gross revenue
+    2. Method-based timing (media_plan, biweekly_schedule, quarterly_detect)
+    3. Schedule detection from bank actuals (trailing_avg, schedule methods)
+    4. Final fallback to trailing average or seed defaults
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
@@ -649,26 +652,11 @@ def _project_expense_week(
         amz_gross = amz_payout / amz_ratio if amz_ratio > 0 else amz_payout
         return (dtc_gross + amz_gross) * cogs_pct
 
-    # Check for pre-detected schedule from actuals
-    sched_key = f'_schedule_{category}'
-    schedule = ctx.get(sched_key)
+    # --- Method-based projection FIRST for categories with explicit timing ---
+    # These methods encode business-specific timing (biweekly payroll, monthly
+    # media bills, quarterly tax) and must NOT be overridden by schedule
+    # detection from trailing bank data averages.
 
-    if schedule and schedule.get('has_data'):
-        projected = _project_next_payments(schedule, week_start, week_end)
-        if projected > 0:
-            return projected
-
-        # For weekly/daily frequency, use monthly average / 4.33
-        freq = schedule.get('frequency', '')
-        if freq in ('daily', 'weekly'):
-            return schedule['monthly_total'] / 4.33
-
-        # No payment this week for biweekly/monthly/quarterly — return 0
-        # This is intentional: user asked for payments to show when they hit
-        if freq in ('biweekly', 'monthly', 'quarterly'):
-            return 0.0
-
-    # --- Fallback: method-based projection with timing awareness ---
     if method == 'media_plan':
         month_key = week_start.strftime('%Y-%m')
         monthly_media = ctx.get('monthly_media_spend', {})
@@ -695,7 +683,29 @@ def _project_expense_week(
             return avg * 13  # full quarter in one week
         return 0.0
 
-    elif method == 'schedule':
+    # --- Schedule detection for trailing_avg and schedule methods ---
+    # Only use pre-detected schedule from bank actuals for categories that
+    # don't have an explicit timing method above.
+    sched_key = f'_schedule_{category}'
+    schedule = ctx.get(sched_key)
+
+    if schedule and schedule.get('has_data'):
+        projected = _project_next_payments(schedule, week_start, week_end)
+        if projected > 0:
+            return projected
+
+        # For weekly/daily frequency, use monthly average / 4.33
+        freq = schedule.get('frequency', '')
+        if freq in ('daily', 'weekly'):
+            return schedule['monthly_total'] / 4.33
+
+        # No payment this week for biweekly/monthly/quarterly — return 0
+        # This is intentional: payments show when they hit
+        if freq in ('biweekly', 'monthly', 'quarterly'):
+            return 0.0
+
+    # --- Final fallback ---
+    if method == 'schedule':
         avg = compute_trailing_avg(conn, category, lookback_weeks=8)
         seed = CASHFLOW_SEED_DEFAULTS.get(category, 0)
         val = avg if avg > 0 else seed
@@ -705,7 +715,7 @@ def _project_expense_week(
         return 0.0
 
     else:
-        # trailing_avg (default) — use schedule if available, else spread evenly
+        # trailing_avg (default) — spread evenly
         avg = compute_trailing_avg(conn, category, lookback_weeks=8)
         return avg if avg > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
