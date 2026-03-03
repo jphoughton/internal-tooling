@@ -73,8 +73,10 @@
 
 - Task 22b: Fixed Jameson loan misclassification ($110K/month swing). Two-part fix: (1) Code fix — added direction filter to _get_actual_weekly_totals() in analytics/cashflow.py so revenue categories only count 'credit' transactions and expense categories only count 'debit' transactions. This prevents any misclassified transaction from corrupting actuals regardless of its category mapping. (2) Data fix — created scripts/fix_jameson_misclassification.py that updated all 6 Jameson patterns in category_mappings from interest_income to loan/principal, refreshed stale match_pattern values to match current normalize_summary() output (Task 4 regex fix had made old patterns stale), and directly reclassified all 11 Jameson transactions ($380K total) to loan/principal. Verified: 0 Jameson transactions remain in interest_income. Net effect: interest_income actuals drop by ~$55K/month (no longer inflated by loan debits), loan expenses increase by ~$55K/month (correctly captured). pytest: 8 pre-existing failures (data quality), 174 pass — no regressions.
 
+- Task 22c: Fixed schedule detection overriding method-based expense timing. Restructured _project_expense_week() in analytics/cashflow.py to check method-based timing FIRST (media_plan, biweekly_schedule, quarterly_detect) before falling back to schedule detection from bank actuals. Previously, pre-detected schedules from trailing bank data would override explicit timing methods — causing payroll to spread ~$5-7K across every week instead of biweekly $16K spikes on the 10th/25th, media to spread daily instead of billing as a monthly lump near month-end, and sales tax to spread instead of quarterly. Now the priority order is: (1) COGS/revenue_pct, (2) method-based timing, (3) schedule detection (only for trailing_avg and schedule methods), (4) fallback. No new test failures — 1 pre-existing failure (amazon sync 0 records), 7 pre-existing data quality failures. 173 pass.
+
 ## Current
-Next unchecked task: Task 22c (HIGH: Fix schedule detection overriding method-based expense timing)
+Next unchecked task: Task 22d (HIGH: Map Amazon bank transactions to amazon_revenue category)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

@@ -471,7 +471,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: After fix, `interest_income` actuals should show only actual interest credits (near $0). Loan expenses should show $55K+/month. Net monthly cashflow should drop by ~$110K.
   - Flagged by: Analysts 3, 4, 7, 11, 14, 19
 
-- [ ] **22c. HIGH: Fix schedule detection overriding method-based expense timing**
+- [x] **22c. HIGH: Fix schedule detection overriding method-based expense timing**
   - File: `analytics/cashflow.py`, function `_project_expense_week()` (lines 614-699)
   - Bug: The schedule detection from bank actuals (`_detect_expense_schedule`) ALWAYS takes priority over method-based projections (media_plan, biweekly_schedule, quarterly_detect). When bank data exists for a category, the schedule detection classifies it as "daily" or "weekly" frequency and spreads the monthly total evenly. This causes: payroll shows $5-7K every week instead of biweekly $16K spikes; media spreads across all weeks instead of one monthly lump; sales tax spreads daily instead of quarterly.
   - Fix: Invert the priority — method-based projection should take priority over schedule detection for categories that have an explicit method. Move the schedule detection block (lines 641-658) to AFTER the method-based fallback block (lines 660-699). Only use schedule detection as a last resort for categories with method='trailing_avg' or 'schedule':
