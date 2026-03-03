@@ -284,24 +284,37 @@ def _render_variables_inline():
 # Media Spend summary card (sidebar)
 # ---------------------------------------------------------------------------
 def _render_media_spend_summary():
-    """Show a compact summary of media spend with an Edit button."""
+    """Show a compact summary of revenue model with an Edit button."""
+    from db import get_revenue_model
+
     with get_db() as conn:
-        dtc_rows = get_media_spend(conn, source="All Sources")
-        amz_spend_rows = get_media_spend(conn, source="Amazon")
+        db_data = get_revenue_model(conn)
 
-    total_dtc = sum(float(r.get("spend", 0) or 0) for r in dtc_rows)
-    total_amz = sum(float(r.get("spend", 0) or 0) for r in amz_spend_rows)
-    n_months = max(len(dtc_rows), len(amz_spend_rows), 1)
+    # Count months with data
+    dtc_months = db_data.get('dtc_spend', {})
+    n_months = len(dtc_months) if dtc_months else 0
+    total_dtc = sum(dtc_months.values()) if dtc_months else 0
+    amz_months = db_data.get('amazon_spend', {})
+    total_amz = sum(amz_months.values()) if amz_months else 0
 
-    st.markdown(_GROUP_HEADER.format("Media Spend Plan"), unsafe_allow_html=True)
-    st.markdown(
-        f'<div style="{_CARD_STYLE}">'
-        f'<p style="{_CARD_LABEL}">DTC: ${total_dtc:,.0f} · AMZ: ${total_amz:,.0f}</p>'
-        f'<p style="{_CARD_VALUE}">{n_months} months planned</p>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-    return st.button("Edit Media Spend", key="bv_open_media_dialog",
+    st.markdown(_GROUP_HEADER.format("Revenue Model"), unsafe_allow_html=True)
+    if n_months > 0:
+        st.markdown(
+            f'<div style="{_CARD_STYLE}">'
+            f'<p style="{_CARD_LABEL}">DTC: ${total_dtc:,.0f} \u00b7 AMZ: ${total_amz:,.0f}</p>'
+            f'<p style="{_CARD_VALUE}">{n_months} months planned</p>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div style="{_CARD_STYLE}">'
+            f'<p style="{_CARD_LABEL}">No model saved yet</p>'
+            f'<p style="{_CARD_VALUE}">Go to Variables page to set up</p>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    return st.button("Edit Revenue Model", key="bv_open_media_dialog",
                       use_container_width=True)
 
 
@@ -333,74 +346,17 @@ def _render_orders_summary(forecast_skus):
 # ---------------------------------------------------------------------------
 # Media Spend dialog — form grid (DOM-based, no canvas)
 # ---------------------------------------------------------------------------
-@st.dialog("Media Spend Plan", width="large")
+@st.dialog("Revenue Model", width="large")
 def _media_spend_dialog():
-    """Full-screen dialog with a form grid for media spend data."""
-    current = get_business_vars()
-    horizon = current.get("forecast_horizon", 12)
-    months = _month_list(horizon)
-
-    with get_db() as conn:
-        dtc_rows = get_media_spend(conn, source="All Sources")
-        amz_spend_rows = get_media_spend(conn, source="Amazon")
-        amz_rev_rows = get_amazon_revenue_forecast(conn)
-
-    dtc_lookup = {r["month"]: r for r in dtc_rows}
-    amz_spend_lookup = {r["month"]: r["spend"] for r in amz_spend_rows}
-    amz_rev_lookup = {r["month"]: r["revenue"] for r in amz_rev_rows}
-
-    st.caption("Edit monthly media spend across all channels. AMZ Revenue $0 = use velocity-based projection.")
-
-    # Header row
-    hdr = st.columns([1.2, 1, 0.7, 1, 1])
-    hdr[0].markdown("**Month**")
-    hdr[1].markdown("**DTC Spend**")
-    hdr[2].markdown("**ROAS**")
-    hdr[3].markdown("**AMZ Spend**")
-    hdr[4].markdown("**AMZ Revenue**")
-
-    results = []
-    with st.form("media_spend_form"):
-        for i, m in enumerate(months):
-            existing = dtc_lookup.get(m, {"spend": 5000.0, "new_customer_roas": 2.0})
-            cols = st.columns([1.2, 1, 0.7, 1, 1])
-
-            cols[0].markdown(
-                f'<div style="padding:8px 0;font-weight:600;font-size:0.85rem;">'
-                f'{_month_label(m)}</div>',
-                unsafe_allow_html=True,
-            )
-            dtc = cols[1].number_input(
-                "DTC $", value=float(existing.get("spend", 5000.0)),
-                min_value=0.0, step=500.0, format="%.0f",
-                key=f"ms_dtc_{i}", label_visibility="collapsed",
-            )
-            roas = cols[2].number_input(
-                "ROAS", value=float(existing.get("new_customer_roas", 2.0)),
-                min_value=0.1, step=0.1, format="%.1f",
-                key=f"ms_roas_{i}", label_visibility="collapsed",
-            )
-            amz_s = cols[3].number_input(
-                "AMZ $", value=float(amz_spend_lookup.get(m, 0.0)),
-                min_value=0.0, step=500.0, format="%.0f",
-                key=f"ms_amzs_{i}", label_visibility="collapsed",
-            )
-            amz_r = cols[4].number_input(
-                "AMZ Rev", value=float(amz_rev_lookup.get(m, 0.0)),
-                min_value=0.0, step=5000.0, format="%.0f",
-                key=f"ms_amzr_{i}", label_visibility="collapsed",
-            )
-            results.append((m, dtc, roas, amz_s, amz_r))
-
-        if st.form_submit_button("Save Media Spend", type="primary",
-                                  use_container_width=True):
-            with get_db() as conn:
-                for m, dtc, roas, amz_s, amz_r in results:
-                    upsert_media_spend(conn, m, dtc, roas, source="All Sources")
-                    upsert_media_spend(conn, m, amz_s, 0.0, source="Amazon")
-                    upsert_amazon_revenue_forecast(conn, m, amz_r)
-            st.session_state["_bv_media_saved"] = True
-            st.rerun()
+    """Redirect to the Variables page for full revenue model editing."""
+    st.markdown(
+        'The Revenue Model has been upgraded to a full P&L spreadsheet with '
+        'editable inputs and live calculations.'
+    )
+    st.markdown('Navigate to the **Variables** page in the sidebar to edit the '
+                'complete revenue model.')
+    st.info('The Variables page includes: Media Spend, Unit Economics, '
+            'Repeat Revenue, Cost Assumptions, Fixed Expenses, and Funnel Goals.')
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ import logging
 
 import pandas as pd
 
-from db import ConnectionWrapper, DatabaseError, upsert_cashflow_tx
+from db import ConnectionWrapper, upsert_cashflow_tx
 
 log = logging.getLogger(__name__)
 

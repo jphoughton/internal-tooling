@@ -15,7 +15,6 @@ import calendar
 import logging
 import pandas as pd
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
 from db import get_db, get_sku_seasonal_indices, get_seasonal_indices, get_setting
 from analytics.sku_flavors import get_flavor
 from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff, business_today, business_yesterday

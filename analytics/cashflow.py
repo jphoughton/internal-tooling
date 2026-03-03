@@ -15,7 +15,7 @@ from typing import Optional
 import pandas as pd
 import numpy as np
 
-from db import get_db, read_sql, ConnectionWrapper, DatabaseError
+from db import read_sql, ConnectionWrapper
 from utils.constants import (
     CASHFLOW_CATEGORIES, CASHFLOW_SEED_DEFAULTS,
     DTC_DOW_WEIGHTS, CASHFLOW_CONFIDENCE_WEEKLY_GROWTH,

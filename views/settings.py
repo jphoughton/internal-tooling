@@ -9,7 +9,7 @@ from db import (
     upsert_customer, upsert_order, upsert_order_item, upsert_sku,
     get_model_runs,
 )
-from config import save_env, reload_config
+from config import save_env
 import config
 from analytics.waterfall import clear_waterfall_cache
 from ui.components import render_html_table

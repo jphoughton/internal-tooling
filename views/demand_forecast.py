@@ -11,8 +11,7 @@ from db import (
     get_model_runs,
 )
 from analytics.forecast import forecast_sku
-from analytics.waterfall import clear_waterfall_cache
-from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
+from analytics.sku_flavors import sort_df_by_best_seller
 from analytics.dtc_demand import (
     build_master_dtc_forecast,
     get_amazon_sku_velocity,

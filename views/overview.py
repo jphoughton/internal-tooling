@@ -3,15 +3,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql, get_media_spend,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor
-from analytics.retention import get_new_repeat_summary, get_new_repeat_daily_revenue, get_projected_new_repeat_summary
-from ui.components import render_html_table, render_freshness_badge, smart_date_filter
+from analytics.retention import get_new_repeat_daily_revenue, get_projected_new_repeat_summary
+from ui.components import render_freshness_badge, smart_date_filter
 from views.pacing import render_pacing
 
 

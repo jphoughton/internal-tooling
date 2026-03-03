@@ -12,7 +12,7 @@ from db import (
     get_new_rows_since_yesterday, get_synced_sources,
 )
 from ui.components import render_html_table, render_freshness_badge
-from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
+from analytics.sku_flavors import get_flavor
 
 
 def render(ctx, embedded=False):
