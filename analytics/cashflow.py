@@ -683,6 +683,20 @@ def _project_expense_week(
             return avg * 13  # full quarter in one week
         return 0.0
 
+    # --- Loan interest: monthly payment based on outstanding LOC balance ---
+    if method == 'loc_interest':
+        loc_bal = ctx.get('_running_loc_balance', 0)
+        if loc_bal <= 0:
+            return 0.0
+        apr = ctx.get('loc_apr', 0.15)
+        monthly_interest = loc_bal * apr / 12
+        # Interest hits mid-month (~15th)
+        for d_offset in range(7):
+            d = week_start + timedelta(days=d_offset)
+            if d <= week_end and 13 <= d.day <= 17:
+                return monthly_interest
+        return 0.0
+
     # --- Fulfillment / 3PL: percentage of DTC revenue ---
     # Uses the user-configurable fulfillment_pct setting from model parameters.
     if method == 'dtc_revenue_pct':
@@ -793,6 +807,10 @@ def build_cashflow_forecast(
 
     # Fulfillment % of DTC revenue
     ctx['fulfillment_pct'] = float(get_cashflow_setting(conn, 'fulfillment_pct', '0.18'))
+
+    # LOC (line of credit) parameters
+    ctx['loc_apr'] = float(get_cashflow_setting(conn, 'loc_apr', '0.15'))
+    loc_current = float(get_cashflow_setting(conn, 'loc_balance', '510000'))
 
     # DTC monthly revenue from waterfall
     try:
@@ -913,6 +931,24 @@ def build_cashflow_forecast(
             opening_balance -= float(net_since_start.iloc[0]['net'])
     except Exception as e:
         log.warning('Could not reconstruct historical opening balance: %s', e)
+
+    # --- Reconstruct LOC starting balance ---
+    # loc_current is the current balance. Add back loan payments since
+    # forecast start to get the balance at week 0.
+    loc_starting = loc_current
+    try:
+        loan_since_start = read_sql("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM cashflow_transactions
+            WHERE category = 'loan' AND direction = 'debit'
+                AND tx_date >= %s AND tx_date <= %s
+                AND is_transfer = 0 AND is_duplicate = 0
+        """, conn, params=(str(week_list[0][0]), str(today)))
+        if not loan_since_start.empty:
+            loc_starting += float(loan_since_start.iloc[0]['total'])
+    except Exception as e:
+        log.warning('Could not reconstruct LOC starting balance: %s', e)
+    ctx['_running_loc_balance'] = loc_starting
 
     # --- Revenue, expense, and COGS/debt categories ---
     revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
@@ -1061,7 +1097,15 @@ def build_cashflow_forecast(
             row[cat] = round(val, 2)
             total_cogs_debt += val
 
+            # After each loan payment, reduce the running LOC balance
+            # so subsequent interest calculations reflect the new principal.
+            if cat == 'loan' and val > 0:
+                ctx['_running_loc_balance'] = max(
+                    ctx.get('_running_loc_balance', 0) - val, 0
+                )
+
         row['total_cogs_debt'] = round(total_cogs_debt, 2)
+        row['loc_balance'] = round(ctx.get('_running_loc_balance', 0), 2)
 
         total_outflows = total_expenses + total_cogs_debt
         row['total_outflows'] = round(total_outflows, 2)

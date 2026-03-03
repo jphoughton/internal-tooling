@@ -94,6 +94,7 @@ CASHFLOW_CATEGORIES = {
     # COGS & Debt — outflows tracked separately from operating expenses
     'production': {'label': 'Production / COGS', 'group': 'cogs_debt', 'method': 'revenue_pct'},
     'loan': {'label': 'Loan Payments', 'group': 'cogs_debt', 'method': 'schedule'},
+    'loan_interest': {'label': 'Loan Interest', 'group': 'cogs_debt', 'method': 'loc_interest'},
     # Special
     'internal_transfer': {'label': 'Internal Transfer', 'group': 'transfer', 'method': None},
     'duplicate': {'label': 'Duplicate', 'group': 'duplicate', 'method': None},
@@ -105,6 +106,7 @@ CASHFLOW_SEED_DEFAULTS = {
     'media': 12500,        # ~$50K/mo
     'payroll': 8000,       # $16K biweekly = $8K/wk avg
     'loan': 7500,          # ~$30K/mo
+    'loan_interest': 0,    # calculated from LOC balance × APR
     'fulfillment': 5000,   # $5K/wk
     'production': 0,       # spiky, use COGS % instead
     'sales_tax': 1500,     # ~$18K/qtr = ~$1.5K/wk

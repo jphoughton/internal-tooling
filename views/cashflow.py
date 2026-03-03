@@ -619,6 +619,11 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     _render_total_row(display, 'total_cogs_debt', 'Total COGS & Debt', '#d97706',
                       current_week_col)
 
+    # LOC Balance — running balance row (not a flow, shows remaining principal)
+    if 'loc_balance' in display.columns:
+        _render_total_row(display, 'loc_balance', 'LOC Balance', '#6b7c93',
+                          current_week_col, bold_bg=True)
+
     # Total outflows (all outflows combined)
     _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626',
                       current_week_col)
@@ -848,10 +853,11 @@ def _render_settings_section():
             fulfill_pct = get_cashflow_setting(conn, 'fulfillment_pct', '0.18')
             min_cash = get_cashflow_setting(conn, 'min_cash_threshold', '100000')
             loc_balance = get_cashflow_setting(conn, 'loc_balance', '510000')
+            loc_apr = get_cashflow_setting(conn, 'loc_apr', '0.15')
     except Exception as e:
         log.warning('Failed to load cashflow settings, using defaults: %s', e)
         dtc_ratio, amz_ratio, cogs_pct, fulfill_pct = '0.94', '0.62', '0.25', '0.18'
-        min_cash, loc_balance = '100000', '510000'
+        min_cash, loc_balance, loc_apr = '100000', '510000', '0.15'
 
     with st.form('cf_settings_form'):
         cols = st.columns(4)
@@ -872,14 +878,18 @@ def _render_settings_section():
             min_value=5.0, max_value=50.0, step=1.0, format='%.0f',
         )
 
-        cols2 = st.columns(2)
+        cols2 = st.columns(3)
         new_min = cols2[0].number_input(
             'Min Cash Threshold ($)', value=float(min_cash),
             min_value=0.0, step=10000.0, format='%.0f',
         )
         new_loc = cols2[1].number_input(
-            'Line of Credit ($)', value=float(loc_balance),
+            'LOC Balance ($)', value=float(loc_balance),
             min_value=0.0, step=10000.0, format='%.0f',
+        )
+        new_apr = cols2[2].number_input(
+            'Loan APR %', value=float(loc_apr) * 100,
+            min_value=0.0, max_value=30.0, step=0.5, format='%.1f',
         )
 
         if st.form_submit_button('Save Settings', type='primary'):
@@ -890,6 +900,7 @@ def _render_settings_section():
                 set_cashflow_setting(conn, 'fulfillment_pct', str(new_fulfill / 100))
                 set_cashflow_setting(conn, 'min_cash_threshold', str(new_min))
                 set_cashflow_setting(conn, 'loc_balance', str(new_loc))
+                set_cashflow_setting(conn, 'loc_apr', str(new_apr / 100))
             st.success('Settings saved!')
             st.rerun()
 
