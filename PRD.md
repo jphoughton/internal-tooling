@@ -352,7 +352,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Flag any week where the narrative breaks down (e.g., "payroll hits 3 weeks in a row" or "Amazon disbursement is $120K which is the full month not half").
   - Append the full narrative to `ANALYST_ROUND2.md`.
 
-- [ ] **20f. Analyst 15 — Actuals vs Projection Backtest**
+- [x] **20f. Analyst 15 — Actuals vs Projection Backtest**
   - Read ALL prior findings.
   - This is the most important analyst. Run `build_cashflow_forecast()` starting 8 weeks ago. The first 4 weeks should be marked `is_actual=True` and use real bank data. Weeks 5-8 should be projections.
   - Now compare weeks 5-8 projections against what ACTUALLY happened in the bank (query `cashflow_transactions` for those weeks).

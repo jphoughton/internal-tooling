@@ -2415,3 +2415,142 @@ If the CFO presented this 8-week forecast to the board:
 4. **(HIGH)** Fix media expense lumpiness. File: `analytics/cashflow.py`, `_project_expense_week()`. Media should project as ~$0 most weeks and ~$40-55K in the billing week (typically end of month), not spread across all weeks. The `monthly_media_spend` plan exists in ctx but may not be consumed correctly by the expense projector.
 
 5. **(MEDIUM)** Map Amazon bank transactions to enable auto-calibration and actuals validation. File: `category_mappings` table via `views/tx_mapping.py`.
+
+---
+
+## Analyst 15 — Actuals vs Projection Backtest
+
+**Date:** 2026-03-03
+
+### Methodology
+
+This is the gold standard test: can the model predict what will actually happen 4-8 weeks out?
+
+**Approach:** Monkey-patched `date.today()` to Feb 3, 2026 (4 weeks ago) so the model treats weeks 1-4 (Jan 5 - Feb 1) as actuals and weeks 5-8 (Feb 2 - Mar 1) as projections. Then compared those projections against real bank data for weeks 5-8 (which are now in the past).
+
+**Key parameters:**
+- Forecast start: Jan 6, 2026 (8 weeks before real today)
+- Simulated "today": Feb 3, 2026 (4 weeks before real today)
+- Actual data: Weeks 1-4 (Jan 5 - Feb 1) — 4 weeks of real bank transactions
+- Backtest window: Weeks 5-8 (Feb 2 - Mar 1) — projections compared against actuals
+- Scenario: Base
+
+### Weekly Comparison Table
+
+| Week | Dates | Proj Inflows | Actual Inflows | Inflow Error | Proj Outflows | Actual Outflows | Outflow Error |
+|------|-------|-------------|---------------|-------------|--------------|----------------|--------------|
+| 5 | Feb 2-8 | $72,952 | $70,834 | 3.0% | $41,674 | $19,277 | 116.2% |
+| 6 | Feb 9-15 | $11,585 | $31,370 | 63.1% | $22,079 | $32,500 | 32.1% |
+| 7 | Feb 16-22 | $11,585 | $69,930 | 83.4% | $24,536 | $22,468 | 9.2% |
+| 8 | Feb 23 - Mar 1 | $58,085 | $46,223 | 25.7% | $42,077 | $79,977 | 47.4% |
+
+| Week | Proj Net | Actual Net | Net Error ($) |
+|------|---------|-----------|--------------|
+| 5 | $31,278 | $51,557 | $20,279 |
+| 6 | -$10,494 | -$1,130 | $9,364 |
+| 7 | -$12,951 | $47,462 | $60,413 |
+| 8 | $16,008 | -$33,754 | $49,762 |
+
+### Summary Statistics
+
+| Metric | Value |
+|--------|-------|
+| Weeks backtested | 4 |
+| Average weekly inflow error | 43.8% |
+| Average weekly outflow error | 51.2% |
+| Average weekly net error (abs) | $34,955 |
+| Total projected inflows | $154,207 |
+| Total actual inflows | $218,356 |
+| **Total inflow error** | **29.4%** |
+| Total projected outflows | $130,366 |
+| Total actual outflows | $154,221 |
+| **Total outflow error** | **15.5%** |
+| Opening balance (start of projections) | $206,986 |
+| Projected closing (end of week 8) | $230,827 |
+| Actual closing (end of week 8) | $271,121 |
+| **Closing balance error** | **$40,294** |
+| **Overall average error** | **47.5%** |
+
+### Per-Category Error Analysis
+
+| Category | Projected (4wk) | Actual (4wk) | Error % | Direction | Verdict |
+|----------|----------------|-------------|---------|-----------|---------|
+| dtc_revenue | $31,428 | $109,295 | 71.2% | UNDER | FAIL |
+| amazon_revenue | $79,714 | $0 | inf% | OVER | FAIL |
+| interest_income | $43,064 | $55,012 | 21.7% | UNDER | PASS |
+| media | $28,387 | $0 | inf% | OVER | FAIL |
+| payroll | $30,740 | $23,977 | 28.2% | OVER | WARN |
+| fulfillment | $23,912 | $16,159 | 48.0% | OVER | WARN |
+| production | $32,143 | $2,614 | 1129.9% | OVER | FAIL |
+| sales_tax | $1,361 | $1,844 | 26.2% | UNDER | WARN |
+| software | $69 | $80 | 13.4% | UNDER | PASS |
+| shipping | $991 | $33 | 2880.2% | OVER | FAIL |
+| agency | $4,988 | $1,600 | 211.8% | OVER | FAIL |
+| accounting | $2,203 | $7,749 | 71.6% | UNDER | FAIL |
+| insurance | $3,714 | $0 | inf% | OVER | FAIL |
+| other_expense | $1,857 | $0 | inf% | OVER | FAIL |
+
+### Top 5 Error Contributors (by absolute $ difference)
+
+| Rank | Category | Abs Error | Error % | Direction |
+|------|----------|----------|---------|-----------|
+| 1 | amazon_revenue | $79,714 | inf% | OVER |
+| 2 | dtc_revenue | $77,867 | 71% | UNDER |
+| 3 | production | $29,529 | 1130% | OVER |
+| 4 | media | $28,387 | inf% | OVER |
+| 5 | interest_income | $11,948 | 22% | UNDER |
+
+### Root Cause Analysis
+
+**1. Amazon revenue: $79,714 OVER (projected vs $0 actual) — CRITICAL**
+All 51 Amazon bank disbursement transactions remain unmapped (category='unmapped'). The model projects ~$80K of Amazon revenue for weeks 5-8 (two disbursement events × $40K each), but the actual bank data shows $0 in the 'amazon_revenue' category because those transactions have never been mapped. The money DID arrive — it's just invisible to the category-based accounting. This is the single largest source of backtest error and is a **data mapping problem, not a code bug**.
+
+**2. DTC revenue: $77,867 UNDER (projected $31K vs actual $109K) — HIGH**
+The model projected only $31K of DTC revenue over 4 weeks (~$7.9K/week) vs $109K actual (~$27K/week). This is a 3.5x undercount. Root cause: the waterfall model's monthly DTC figure is distributed across weeks using DOW weights, but the resulting weekly cash figure seems too low. The auto-calibrated payout ratio (0.984) is correct, but the monthly gross figure from `build_waterfall()` may not align with actual Shopify bank deposit timing. DTC bank deposits include Shopify payouts that may also be partially unmapped — the $109K "actual" in interest_income + dtc_revenue needs investigation.
+
+**3. Production: $29,529 OVER (projected $32K vs actual $3K) — HIGH**
+The `revenue_pct` method projects COGS at 25% of gross revenue every week. But actual production spend is spiky and PO-driven — the real February production spend was only $2,614 across 4 weeks. The COGS method fundamentally doesn't match how production spend works (large POs every few months, not continuous weekly spend).
+
+**4. Media: $28,387 OVER (projected vs $0 actual) — HIGH**
+Media expense transactions in the bank are likely unmapped (category='unmapped'), so actual shows $0 for 'media' category even though real media bills were paid. Same class of problem as Amazon revenue.
+
+**5. Interest income: $11,948 UNDER (projected $43K vs actual $55K) — MEDIUM**
+This is the Jameson loan misclassification issue identified by Analyst 3 — Jameson loan payments ($55K/month) are classified as interest_income (a revenue category) instead of loan (an expense). The model under-projects this phantom revenue because it doesn't have enough historical data for interest_income trailing average to capture the full Jameson amount.
+
+### Week-by-Week Narrative
+
+**Week 5 (Feb 2-8):** Best week — inflows within 3% (projected $73K vs actual $71K). An Amazon disbursement was projected and likely did arrive, but shows up in the wrong category bucket. Outflows were 116% over-projected ($42K vs $19K actual) — the model expected expenses that didn't land this week.
+
+**Week 6 (Feb 9-15):** Inflows massively under-projected ($12K vs $31K). This is a non-disbursement week for Amazon, so the model projects near-zero Amazon revenue. But real DTC deposits continued at ~$27K/week while the model projected only ~$8K.
+
+**Week 7 (Feb 16-22):** Worst week — inflows 83% under-projected ($12K vs $70K). Another non-disbursement week, but $70K of actual credits landed (DTC payouts + possibly a Jameson transaction). The model sees this as a quiet week.
+
+**Week 8 (Feb 23 - Mar 1):** Outflows massively under-projected ($42K vs $80K). A major expense landed this week (possibly end-of-month media billing or a production PO). The model expected $42K but reality was $80K.
+
+### Structural Issues Identified
+
+1. **Unmapped transactions are the #1 backtest killer.** 35% of transactions are unmapped, meaning the model's "actuals" baseline is incomplete. When the model looks back at 4 weeks of "actuals" to calibrate, it's seeing partial data. Amazon revenue, media expenses, and potentially DTC payouts are invisible to category-based queries.
+
+2. **The backtest methodology itself is confounded by mapping gaps.** We compare projected category totals against actual category totals, but actual categories are incomplete. The "actual" $0 for Amazon revenue doesn't mean Amazon didn't pay — it means the transaction isn't mapped. A fairer test would compare against ALL credits/ALL debits regardless of category.
+
+3. **Total inflow error (29.4%) is near the borderline.** When aggregated across categories, the over-projection of Amazon ($80K) partially cancels the under-projection of DTC ($78K), yielding a net inflow error of only 29.4%. This suggests the total revenue magnitude is roughly right, but the category attribution is wrong.
+
+4. **Total outflow error (15.5%) is actually acceptable.** Expense projections in aggregate are within 15.5% of reality. The model over-projects some categories (production, insurance, shipping) and under-projects others (accounting, payroll timing), but the net result is reasonable.
+
+5. **Closing balance error ($40,294) is 15% of the actual balance.** Starting from the same $207K opening, the model projected closing at $231K while reality was $271K. A $40K miss over 4 weeks is not terrible for operational cash planning, but it's not great either — that's the difference between approving and rejecting an $80K production PO.
+
+### Verdict
+
+**FAIL — Overall average error 47.5% (threshold: <20% PASS, >30% FAIL)**
+
+The 47.5% average weekly error far exceeds the 30% FAIL threshold. However, this result is heavily confounded by **unmapped transactions** (35% of bank data). The true forecast accuracy is obscured by data quality issues rather than algorithmic failures.
+
+**Adjusted assessment:** If the unmapped transaction problem were resolved (mapping Amazon disbursements, media bills, and other categories), the model's total inflow/outflow errors (29.4% and 15.5% respectively) suggest the forecast could potentially achieve a CONDITIONAL PASS for aggregate cash flow, though weekly timing accuracy would remain a challenge due to the lumpy nature of disbursements and billing cycles.
+
+**Recommendations for Phase 3:**
+1. **(CRITICAL)** Map all Amazon disbursement transactions to 'amazon_revenue' category — this alone would eliminate the largest single error ($80K/4 weeks).
+2. **(CRITICAL)** Map media billing transactions to 'media' category.
+3. **(HIGH)** Investigate DTC revenue under-projection — waterfall monthly figure may need re-calibration against actual Shopify bank deposits.
+4. **(HIGH)** Replace COGS `revenue_pct` method with trailing average or PO-based projection for production expenses.
+5. **(MEDIUM)** Re-run this backtest after mapping fixes to measure true algorithmic accuracy.
+6. **(LOW)** Consider a category-agnostic backtest (total credits vs total debits) as a complementary accuracy metric that's robust to mapping gaps.
