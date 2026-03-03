@@ -90,7 +90,7 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
 
     # Today line
     fig.add_vline(
-        x=pd.Timestamp(today),
+        x=str(today),
         line_dash='dash',
         line_color='rgba(255,255,255,0.3)',
         annotation_text='Today',
