@@ -319,13 +319,25 @@ def compute_trailing_avg(
     end_date = date.today()
     start_date = end_date - timedelta(weeks=lookback_weeks)
 
-    result = conn.execute("""
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM cashflow_transactions
-        WHERE category = %s
-            AND tx_date >= %s AND tx_date <= %s
-            AND is_transfer = 0 AND is_duplicate = 0
-    """, (category, str(start_date), str(end_date))).fetchone()
+    # Determine direction from category group (expenses are debits, revenue is credits)
+    cat_group = CASHFLOW_CATEGORIES.get(category, {}).get('group', '')
+    if cat_group == 'expense':
+        result = conn.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM cashflow_transactions
+            WHERE category = %s
+                AND tx_date >= %s AND tx_date <= %s
+                AND is_transfer = 0 AND is_duplicate = 0
+                AND direction = 'debit'
+        """, (category, str(start_date), str(end_date))).fetchone()
+    else:
+        result = conn.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM cashflow_transactions
+            WHERE category = %s
+                AND tx_date >= %s AND tx_date <= %s
+                AND is_transfer = 0 AND is_duplicate = 0
+        """, (category, str(start_date), str(end_date))).fetchone()
 
     total = float(result['total'] or 0)
     return total / max(lookback_weeks, 1)
@@ -584,14 +596,18 @@ def _project_expense_week(
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    # COGS is always a % of revenue, no schedule detection needed
+    # COGS is always a % of GROSS revenue, no schedule detection needed.
+    # Must gross-up payout amounts to recover pre-fee revenue.
     if method == 'revenue_pct':
         cogs_pct = ctx.get('cogs_pct', 0.25)
-        total_rev = sum(
-            _project_revenue_week(conn, cat, week_start, week_end, ctx)
-            for cat in ('dtc_revenue', 'amazon_revenue')
-        )
-        return total_rev * cogs_pct
+        dtc_payout = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
+        amz_payout = _project_revenue_week(conn, 'amazon_revenue', week_start, week_end, ctx)
+        dtc_ratio = ctx.get('dtc_payout_ratio', 0.94)
+        amz_ratio = ctx.get('amazon_payout_ratio', 0.62)
+        # Gross up: payout / ratio = gross revenue
+        dtc_gross = dtc_payout / dtc_ratio if dtc_ratio > 0 else dtc_payout
+        amz_gross = amz_payout / amz_ratio if amz_ratio > 0 else amz_payout
+        return (dtc_gross + amz_gross) * cogs_pct
 
     # Check for pre-detected schedule from actuals
     sched_key = f'_schedule_{category}'
@@ -781,22 +797,22 @@ def build_cashflow_forecast(
 
     # --- Get opening balance (sum latest balance across bank accounts) ---
     try:
-        # Get the most recent balance_after for each distinct account,
-        # excluding credit card accounts (negative balances are liabilities)
-        latest_balances = read_sql("""
-            SELECT account, balance_after
-            FROM cashflow_transactions t1
-            WHERE balance_after IS NOT NULL
-              AND balance_after > 0
-              AND tx_date = (
-                  SELECT MAX(tx_date) FROM cashflow_transactions t2
-                  WHERE t2.account = t1.account AND t2.balance_after IS NOT NULL
-              )
-            GROUP BY account
-        """, conn)
-        if not latest_balances.empty:
-            opening_balance = float(latest_balances['balance_after'].sum())
-        else:
+        # Get all distinct accounts, then find the latest balance for each.
+        # Exclude negative balances (credit card liabilities).
+        accounts = conn.execute(
+            "SELECT DISTINCT account FROM cashflow_transactions WHERE balance_after IS NOT NULL"
+        ).fetchall()
+        opening_balance = 0.0
+        for acct_row in (accounts or []):
+            acct = acct_row['account']
+            latest = conn.execute("""
+                SELECT balance_after FROM cashflow_transactions
+                WHERE account = %s AND balance_after IS NOT NULL
+                ORDER BY tx_date DESC, created_at DESC LIMIT 1
+            """, (acct,)).fetchone()
+            if latest and float(latest['balance_after']) > 0:
+                opening_balance += float(latest['balance_after'])
+        if opening_balance <= 0:
             opening_balance = 153000  # seed from Cash Flow Model
     except Exception:
         opening_balance = 153000  # seed from Cash Flow Model
