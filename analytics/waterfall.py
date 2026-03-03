@@ -629,21 +629,38 @@ def _get_sku_mix(source_filter=None, lookback_months=3):
         dict: {sku: variant_name}
     """
     with get_db() as conn:
-        rows = conn.execute(f"""
+        # Aggregate by SKU only — product_name varies over time for the same SKU
+        qty_rows = conn.execute(f"""
+            SELECT oi.sku, SUM(oi.quantity) as qty
+            FROM order_items oi
+            JOIN orders o ON oi.order_id = o.order_id
+            WHERE o.order_date >= date('now', '-{lookback_months} months')
+              AND o.source = 'shopify'
+            GROUP BY oi.sku
+        """).fetchall()
+
+        # Grab the most common product_name per SKU for the variant label
+        name_rows = conn.execute(f"""
             SELECT oi.sku, oi.product_name, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.order_date >= date('now', '-{lookback_months} months')
               AND o.source = 'shopify'
             GROUP BY oi.sku, oi.product_name
+            ORDER BY oi.sku, qty DESC
         """).fetchall()
 
-    total = sum(r["qty"] for r in rows) or 1
+    total = sum(r["qty"] for r in qty_rows) or 1
     mix = {}
-    variants = {}
-    for r in rows:
+    for r in qty_rows:
         mix[r["sku"]] = r["qty"] / total
-        variants[r["sku"]] = _extract_variant(r["product_name"])
+
+    # Keep the highest-volume product_name per SKU
+    variants = {}
+    for r in name_rows:
+        if r["sku"] not in variants:
+            variants[r["sku"]] = _extract_variant(r["product_name"])
+
     return mix, variants
 
 
