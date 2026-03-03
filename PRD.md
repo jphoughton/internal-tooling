@@ -381,7 +381,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - **Disbursement gap stress**: What's the longest gap between Amazon disbursements in the 52-week forecast? If any gap is >21 days, flag it — that's longer than normal and could indicate a model timing bug.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20i. Analyst 18 — Ratio Drift Detection**
+- [x] **20i. Analyst 18 — Ratio Drift Detection**
   - Read ALL prior findings.
   - The model auto-calibrates payout ratios from actuals using EWMA. Check:
   - **DTC payout ratio**: Call `compute_payout_ratio(conn, 'dtc')`. Compare result against the seed value (0.94). If the auto-calibrated value is >5% different from seed (i.e., below 0.89 or above 0.99), flag it with the direction of drift and what it means: dropping ratio = rising processing fees or more refunds; rising ratio = improving margins.

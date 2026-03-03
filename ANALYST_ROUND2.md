@@ -2813,3 +2813,124 @@ The maximum gap of 21 days occurs 4 times (at month boundaries where the early d
 3. **The freeze simulation is unreliable** until the opening balance double-counting and Jameson misclassification are fixed. The model shows Hydrant surviving indefinitely without Amazon, which is almost certainly wrong. The corrected estimate (4 weeks to $0) is the opposite extreme. The true answer requires clean data.
 4. **Amazon disbursement timing is mechanically correct** — exactly 2 per month, no overcounting, no gaps >21 days. The Task 1 fix is working as designed.
 5. **Recommendation:** After fixing the data issues (Phase 3), re-run this analysis. The CFO needs an accurate answer to "how long can we survive without Amazon?" for contingency planning.
+
+---
+
+## Analyst 18 — Ratio Drift Detection
+
+**Date:** 2026-03-03
+
+### Mandate
+
+Check auto-calibrated payout ratios for drift from seed values. DTC seed: 0.94, Amazon seed: 0.62, COGS seed: 0.25. Flag any drift >5% from seed.
+
+### 1. DTC Payout Ratio
+
+| Metric | Value |
+|--------|-------|
+| Auto-calibrated (EWMA, 12-week) | 0.983 |
+| Seed value | 0.94 |
+| Absolute drift | +0.043 |
+| Drift % | 4.5% |
+| Direction | UP (rising) |
+
+**Weekly ratio detail (last 13 weeks):**
+
+| Week | Shopify Revenue | Bank Deposits | Ratio |
+|------|----------------|---------------|-------|
+| 2025-12-08 | $21,070 | $3,172 | 0.151 |
+| 2025-12-15 | $27,122 | $25,897 | 0.955 |
+| 2025-12-22 | $25,710 | $23,986 | 0.933 |
+| 2025-12-29 | $30,412 | $27,413 | 0.901 |
+| 2026-01-05 | $28,554 | $34,552 | 1.210 |
+| 2026-01-12 | $30,097 | $28,442 | 0.945 |
+| 2026-01-19 | $25,193 | $30,369 | 1.205 |
+| 2026-01-26 | $33,439 | $26,197 | 0.783 |
+| 2026-02-02 | $25,334 | $31,428 | 1.241 |
+| 2026-02-09 | $27,699 | $23,137 | 0.835 |
+| 2026-02-16 | $27,607 | $26,217 | 0.950 |
+| 2026-02-23 | $31,649 | $28,512 | 0.901 |
+| 2026-03-02 | $4,353 | $4,699 | 1.079 |
+
+**Summary statistics:** Simple avg 0.930, Median 0.945, Min 0.151, Max 1.241.
+
+**Analysis:** The EWMA auto-calibrated value of 0.983 drifts 4.5% above the 0.94 seed — just under the 5% flag threshold. This means actual Shopify processing fees + refunds are approximately 1.7% of gross revenue, not 6% as the seed assumes. This is consistent with Analyst 5's findings (0.984 EWMA) and Analyst 1's validation (monthly ratios of 96-98%).
+
+The weekly volatility (0.15 to 1.24) is extreme but expected — it's caused by the 3-day settlement lag. Revenue earned on Thu-Sun doesn't deposit until the following week, creating artificial ratio swings. The EWMA smoothing correctly filters this noise.
+
+**Verdict: CONDITIONAL PASS** — drift is 4.5%, just under the 5% threshold. However, the seed (0.94) is meaningfully wrong: actual processing costs are ~2%, not 6%. While the auto-calibration system correctly compensates, the seed should be updated to 0.97 so the model is accurate even without enough bank data for auto-calibration.
+
+**Impact if not fixed:** Seed fallback underestimates DTC cash inflows by ~3% ($3-4K/month). Low severity because auto-calibration overrides the seed when bank data exists.
+
+### 2. Amazon Payout Ratio
+
+| Metric | Value |
+|--------|-------|
+| Auto-calibrated (EWMA) | **None** (returned null) |
+| Seed value | 0.62 |
+| Root cause | All 27 Amazon bank deposits are category='unmapped' |
+| Mapped Amazon deposits (category='amazon_revenue') | 0 transactions, $0 |
+| Unmapped Amazon-like deposits | 27 transactions, $731,499 |
+
+**Manual payout ratio calculation (Jan-Feb 2026, 2 months of Amazon gross revenue data):**
+
+| Method | Amazon Gross Revenue | Bank Deposits | Ratio |
+|--------|---------------------|---------------|-------|
+| Same period (no lag) | $278,383 | $157,912 (5 txns) | 0.567 (56.7%) |
+| 21-day lag adjustment | $278,383 | $121,851 (4 txns) | 0.438 (43.8%) |
+
+**Analysis:** `compute_payout_ratio(conn, 'amazon')` returns None because zero Amazon bank transactions are mapped to category='amazon_revenue'. This was previously flagged by Analysts 2, 5, and 12.
+
+The manual calculation is unreliable with only 2 months of overlapping data (Amazon SP-API data starts Jan 2026). The same-period ratio of 0.567 suggests the seed (0.62) may be 5-8% high, but the sample is too small and boundary effects from biweekly disbursements make period matching imprecise.
+
+**Verdict: FAIL (HIGH severity)** — Auto-calibration is completely non-functional for Amazon. The seed (0.62) is the only value used, and it cannot self-correct. This was already flagged by Analysts 2 and 5, and the root cause is the same: Amazon bank transactions need to be mapped to 'amazon_revenue' category.
+
+**If seed is wrong by 5-8% (0.62 vs actual ~0.57):** Amazon cash inflows would be overstated by 8-9% — approximately $5-8K/month. This compounds over 52 weeks to $60-96K overstatement in closing balance.
+
+**Recommendation:** Map the 27 Amazon bank transactions to category='amazon_revenue'. Once mapped, auto-calibration will activate and self-correct. Until then, consider reducing the seed from 0.62 to 0.57 based on the limited manual evidence.
+
+### 3. COGS Ratio
+
+| Metric | Value |
+|--------|-------|
+| Model seed (cogs_pct) | 0.25 (25%) |
+| Actual production spend (mapped) | $134,360 |
+| Gross revenue (Jul 2025 - Mar 2026) | $1,344,946 |
+| Actual COGS ratio | 0.100 (10.0%) |
+| Difference from seed | -15.0 percentage points |
+
+**Mapped production spend by month:**
+
+| Month | Production Spend | Tx Count |
+|-------|-----------------|----------|
+| 2025-10 | $70,812 | 4 |
+| 2025-11 | $883 | 1 |
+| 2025-12 | $60,051 | 4 |
+| 2026-01 | $0 | 0 |
+| 2026-02 | $2,614 | 1 |
+
+**Analysis:** Mapped production spend is only 10% of gross revenue vs the 25% seed. However, this is almost certainly a **data completeness issue**, not a real COGS ratio problem:
+
+1. **Production spend is PO-driven and extremely spiky** — $70K in October, $0 in January, $60K in December. This is expected for a CPG brand that manufactures in batches.
+2. **Only 10 production transactions are mapped** across 8 months, suggesting significant production costs are either on the AMEX card (excluded from cash analysis since it's a liability balance of -$30K) or unmapped.
+3. **No unmapped production-like transactions found** (searching for stikpak, manufacturer, production, packaging, raw material).
+4. **The planned_inbound table shows 38K units in Apr-May** (per Analyst 12), suggesting real production is happening — the costs just aren't flowing through the bank accounts being tracked.
+
+**Verdict: FAIL (MEDIUM severity — data gap, not model bug)** — The 25% COGS seed cannot be validated because production costs don't fully flow through the tracked bank accounts. The model's COGS projection uses `revenue_pct` method which mechanically applies 25% — this is a reasonable business input from the CFO, but the actual ratio may be different.
+
+**Recommendation:** Keep the 25% seed as-is — it's a CFO-provided business input that represents the true unit economics (including costs that hit AMEX or are paid via other channels). Do NOT reduce to 10% based on incomplete bank data. If the CFO knows the true COGS ratio is different, update `cashflow_settings` key `cogs_pct` manually.
+
+### Summary
+
+| Ratio | Seed | Auto-Calibrated | Drift | Status |
+|-------|------|----------------|-------|--------|
+| DTC payout | 0.94 | 0.983 | +4.5% | CONDITIONAL PASS (under 5% threshold, but seed is meaningfully wrong) |
+| Amazon payout | 0.62 | None (unmapped) | Unknown | FAIL (HIGH) — auto-calibration non-functional |
+| COGS % | 0.25 | N/A (no auto-cal) | 10% actual vs 25% seed | FAIL (MEDIUM) — data gap, not model bug |
+
+### Recommendations
+
+1. **Update DTC seed from 0.94 to 0.97** in `cashflow_settings` — actual processing fees are ~2-3%, not 6%. This ensures the fallback value is closer to reality even when auto-calibration can't run.
+2. **Map 27 Amazon bank transactions** to category='amazon_revenue' to enable auto-calibration. This is the single most impactful data quality fix — it was flagged by Analysts 2, 5, 12, and now 18.
+3. **Keep COGS at 0.25** — it's a business input, not something that should auto-calibrate from incomplete bank data. Production costs are PO-driven and don't all flow through the tracked checking accounts.
+4. **Consider adding a "ratio health" indicator** to the Cash Flow page that shows whether each ratio is auto-calibrated (green) or using seed fallback (yellow/red). This gives the CFO visibility into data quality without requiring code changes.
