@@ -80,10 +80,56 @@ BUSINESS_VARS = {
         "unit": "wks",
         "help": "Weeks to ship from 3PL to Amazon FBA.",
     },
+    # --- Cash Flow ---
+    "bv.cogs_pct": {
+        "label": "COGS %",
+        "group": "Cash Flow",
+        "type": "float",
+        "min": 5.0, "max": 60.0, "step": 1.0,
+        "default": 25.0,
+        "unit": "%",
+        "help": "Cost of goods as % of revenue (auto-computed from actuals, overridable).",
+    },
+    "bv.dtc_payout_ratio": {
+        "label": "DTC Payout Ratio",
+        "group": "Cash Flow",
+        "type": "float",
+        "min": 0.50, "max": 1.00, "step": 0.01,
+        "default": 0.94,
+        "unit": "ratio",
+        "help": "DTC Total Sales to Cash ratio (~94%, auto-calibrated from bank actuals).",
+    },
+    "bv.amazon_payout_ratio": {
+        "label": "Amazon Payout Ratio",
+        "group": "Cash Flow",
+        "type": "float",
+        "min": 0.30, "max": 0.90, "step": 0.01,
+        "default": 0.62,
+        "unit": "ratio",
+        "help": "Amazon Revenue to Cash ratio (~62%, auto-calibrated from bank actuals).",
+    },
+    "bv.min_cash_threshold": {
+        "label": "Min Cash Target",
+        "group": "Cash Flow",
+        "type": "int",
+        "min": 0, "max": 1000000, "step": 10000,
+        "default": 100000,
+        "unit": "$",
+        "help": "Alert threshold for projected cash balance.",
+    },
+    "bv.loc_balance": {
+        "label": "Line of Credit",
+        "group": "Cash Flow",
+        "type": "int",
+        "min": 0, "max": 2000000, "step": 10000,
+        "default": 510000,
+        "unit": "$",
+        "help": "Remaining line of credit balance (declining).",
+    },
 }
 
 # Ordered groups for display
-_GROUPS = ["Forecasting", "Supply Chain"]
+_GROUPS = ["Forecasting", "Supply Chain", "Cash Flow"]
 
 _GROUP_HEADER = ('<p style="margin:0 0 4px;font-size:0.7rem;font-weight:700;'
                  'text-transform:uppercase;letter-spacing:0.06em;'
@@ -124,8 +170,18 @@ def get_business_vars():
     return result
 
 
+_CASHFLOW_SETTINGS_KEYS = {
+    'cogs_pct', 'dtc_payout_ratio', 'amazon_payout_ratio',
+    'min_cash_threshold', 'loc_balance',
+}
+
+
 def save_business_vars(values: dict):
-    """Batch-save a dict of short_key -> value to DB."""
+    """Batch-save a dict of short_key -> value to DB.
+
+    Cash Flow variables are also synced to the cashflow_settings table
+    so the projection engine picks up user overrides immediately.
+    """
     with get_db() as conn:
         for short_key, value in values.items():
             if short_key == "seasonality_enabled":
@@ -133,6 +189,18 @@ def save_business_vars(values: dict):
             else:
                 full_key = f"bv.{short_key}"
                 set_setting(conn, full_key, str(value))
+
+            # Sync Cash Flow vars to cashflow_settings table
+            if short_key in _CASHFLOW_SETTINGS_KEYS:
+                try:
+                    from db import set_cashflow_setting
+                    # Convert percentage display values back to decimals
+                    cf_value = str(value)
+                    if short_key == 'cogs_pct':
+                        cf_value = str(float(value) / 100)
+                    set_cashflow_setting(conn, short_key, cf_value)
+                except Exception:
+                    pass  # cashflow_settings table may not exist yet
 
 
 # ---------------------------------------------------------------------------
