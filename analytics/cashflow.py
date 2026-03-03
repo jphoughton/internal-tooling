@@ -377,6 +377,34 @@ def _get_actual_weekly_totals(conn: ConnectionWrapper, category: str, weeks: lis
     return result
 
 
+def _is_amazon_disbursement_week(week_start: date, week_end: date) -> dict:
+    """Detect Amazon disbursement events within a week.
+
+    Amazon disburses biweekly, typically landing around the 7th-10th and
+    23rd-25th of each month.  A single week can span two calendar months,
+    so we check every day in the range and return a dict of
+    {month_key: count_of_disbursement_events} (0, 1, or rarely 2).
+    """
+    EARLY_WINDOW = range(7, 11)   # days 7, 8, 9, 10
+    LATE_WINDOW = range(23, 26)   # days 23, 24, 25
+
+    disbursements = {}  # {YYYY-MM: number of disbursement events}
+    # Track which (month, window) pairs we have already counted so a
+    # multi-day window landing entirely inside one week only counts once.
+    seen = set()
+
+    d = week_start
+    while d <= week_end:
+        month_key = d.strftime('%Y-%m')
+        for label, window in (('early', EARLY_WINDOW), ('late', LATE_WINDOW)):
+            if d.day in window and (month_key, label) not in seen:
+                seen.add((month_key, label))
+                disbursements[month_key] = disbursements.get(month_key, 0) + 1
+        d += timedelta(days=1)
+
+    return disbursements
+
+
 def _project_revenue_week(
     conn: ConnectionWrapper,
     category: str,
@@ -386,24 +414,49 @@ def _project_revenue_week(
 ) -> float:
     """Project revenue for a single future week."""
     if category == 'dtc_revenue':
-        # Use waterfall forecast monthly revenue, distribute to weeks
+        # Use waterfall forecast monthly revenue, distribute to weeks.
+        # Apply DTC_DOW_WEIGHTS to handle weeks that span two months:
+        # each day's share of the weekly revenue is weighted by its
+        # day-of-week payout weight, attributed to the correct month.
         monthly_rev = ctx.get('dtc_monthly_revenue', {})
-        month_key = week_start.strftime('%Y-%m')
-        monthly = monthly_rev.get(month_key, 0)
-        # Approximate: 4.33 weeks per month
-        weekly = monthly / 4.33
-        # Apply payout ratio
         ratio = ctx.get('dtc_payout_ratio', 0.94)
-        return weekly * ratio
+
+        # Accumulate weighted daily revenue across the week
+        total = 0.0
+        weight_sum = sum(DTC_DOW_WEIGHTS.values())
+        if weight_sum <= 0:
+            weight_sum = 1.0
+
+        d = week_start
+        while d <= week_end:
+            dow_weight = DTC_DOW_WEIGHTS.get(d.weekday(), 0.0)
+            month_key = d.strftime('%Y-%m')
+            monthly = monthly_rev.get(month_key, 0)
+            # Daily share = monthly / ~30.44 days, then scaled by DOW weight
+            # relative to the average daily weight (weight_sum / 7)
+            daily_share = (monthly / 30.44) * (dow_weight / (weight_sum / 7))
+            total += daily_share
+            d += timedelta(days=1)
+
+        return total * ratio
 
     elif category == 'amazon_revenue':
+        # Amazon disburses biweekly (~7th-10th and ~23rd-25th of each
+        # month).  Non-disbursement weeks should show $0 so the cash
+        # flow table reflects actual deposit timing.
         monthly_rev = ctx.get('amazon_monthly_revenue', {})
-        month_key = week_start.strftime('%Y-%m')
-        monthly = monthly_rev.get(month_key, 0)
-        # Amazon: biweekly disbursements, roughly even across weeks
-        weekly = monthly / 4.33
         ratio = ctx.get('amazon_payout_ratio', 0.62)
-        return weekly * ratio
+
+        disbursements = _is_amazon_disbursement_week(week_start, week_end)
+        if not disbursements:
+            return 0.0
+
+        # Each disbursement event = half the month's payout
+        total = 0.0
+        for month_key, count in disbursements.items():
+            monthly = monthly_rev.get(month_key, 0)
+            total += (monthly * ratio / 2) * count
+        return total
 
     else:
         # Trailing average for other revenue categories
