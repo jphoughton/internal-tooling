@@ -377,12 +377,9 @@ _LEGACY_PAGE_MAP = {
 }
 
 def _nav_format(x):
-    """Strip channel prefix for display: 'DTC Overview' → '📊  Overview'."""
+    """Format nav label — keep full name for unique radio identity."""
     icon = _NAV_ICONS.get(x, '')
-    if x in _STANDALONE_PAGES:
-        return f'{icon}  {x}'
-    parts = x.split(' ', 1)
-    return f'{icon}  {parts[1]}' if len(parts) == 2 else f'{icon}  {x}'
+    return f'{icon}  {x}'
 
 # Flatten all pages for the single radio
 _ALL_NAV_PAGES = []
