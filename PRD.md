@@ -576,7 +576,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Work through each task (22a-22h) one at a time.
   - For each fix: read the file, make the change, run `pytest tests/ -x`, commit separately.
 
-- [ ] **23. Commit and push Phase 3 fixes**
+- [x] **23. Commit and push Phase 3 fixes**
   - Commit: `fix(cashflow): phase 3 — analyst round 2 fixes`
   - Push to main.
 
