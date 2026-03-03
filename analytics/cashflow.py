@@ -639,18 +639,24 @@ def _project_expense_week(
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    # COGS is always a % of GROSS revenue, no schedule detection needed.
-    # Must gross-up payout amounts to recover pre-fee revenue.
+    # COGS is always a % of GROSS revenue, spread evenly across weeks.
+    # Uses monthly revenue / 4.33 (not payout timing) so COGS doesn't
+    # spike on Amazon disbursement weeks and drop to zero otherwise.
     if method == 'revenue_pct':
         cogs_pct = ctx.get('cogs_pct', 0.25)
-        dtc_payout = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
-        amz_payout = _project_revenue_week(conn, 'amazon_revenue', week_start, week_end, ctx)
-        dtc_ratio = ctx.get('dtc_payout_ratio', 0.94)
-        amz_ratio = ctx.get('amazon_payout_ratio', 0.62)
-        # Gross up: payout / ratio = gross revenue
-        dtc_gross = dtc_payout / dtc_ratio if dtc_ratio > 0 else dtc_payout
-        amz_gross = amz_payout / amz_ratio if amz_ratio > 0 else amz_payout
-        return (dtc_gross + amz_gross) * cogs_pct
+
+        # DTC: smooth weekly gross from monthly forecast
+        dtc_monthly = ctx.get('dtc_monthly_revenue', {})
+        month_key = week_start.strftime('%Y-%m')
+        dtc_month_total = dtc_monthly.get(month_key, 0)
+        dtc_weekly_gross = dtc_month_total / 4.33
+
+        # Amazon: smooth weekly gross from monthly forecast
+        amz_monthly = ctx.get('amazon_monthly_revenue', {})
+        amz_month_total = amz_monthly.get(month_key, 0)
+        amz_weekly_gross = amz_month_total / 4.33
+
+        return (dtc_weekly_gross + amz_weekly_gross) * cogs_pct
 
     # --- Method-based projection FIRST for categories with explicit timing ---
     # These methods encode business-specific timing (biweekly payroll, monthly
