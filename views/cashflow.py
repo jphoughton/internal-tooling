@@ -777,6 +777,8 @@ def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map
                 continue  # skip actuals
             orig_val = original_df.at[label, col_key] if label in original_df.index else 0
             new_val = edited_df.at[label, col_key]
+            if pd.isna(new_val):
+                continue
             if orig_val != new_val:
                 changes.append((cat, col_key, int(new_val)))
 
