@@ -89,7 +89,8 @@ def render_pacing(ctx):
     _cm_orders = int(mkt_df.loc[_cm_mask, "_orders"].sum())
     _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
 
-    # Amazon MTD from DB (spend from google sheets rollup, revenue from daily_sku_sales)
+    # Amazon MTD from DB (revenue from daily_sku_sales, spend from amazon_daily_rollup,
+    # NC/NC Rev from orders+order_items via fulfillment report)
     _cm_amz_rev = 0
     _cm_amz_spend = 0
     try:
@@ -106,6 +107,32 @@ def render_pacing(ctx):
             ).fetchone()
             if _amz_rollup and _amz_rollup["total_spend"] is not None:
                 _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
+            # Amazon NC from fulfillment report data in orders table
+            _amz_nc_row = _amz_conn.execute(
+                "WITH cust_first AS ("
+                "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                "  FROM orders WHERE source = ?"
+                "  GROUP BY customer_id"
+                ") "
+                "SELECT"
+                "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
+                "       AND cf.first_order_date <= ?"
+                "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(CASE WHEN cf.first_order_date >= ?"
+                "       AND cf.first_order_date <= ?"
+                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                " FROM orders o"
+                " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                " JOIN order_items oi ON o.order_id = oi.order_id"
+                " WHERE o.order_date BETWEEN ? AND ?"
+                " AND o.source = ?",
+                ('amazon', f"{_cur_month}-01", _yesterday_str,
+                 f"{_cur_month}-01", _yesterday_str,
+                 f"{_cur_month}-01", _yesterday_str, 'amazon'),
+            ).fetchone()
+            if _amz_nc_row:
+                _cm_amz_nc = int(_amz_nc_row["new_customers"] or 0)
+                _cm_amz_nc_rev = float(_amz_nc_row["new_rev"] or 0)
     except Exception:
         pass
 
@@ -167,7 +194,8 @@ def render_pacing(ctx):
     _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
     _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-    # Amazon L7D (spend from google sheets rollup, revenue from daily_sku_sales)
+    # Amazon L7D (revenue from daily_sku_sales, spend from amazon_daily_rollup,
+    # NC/NC Rev from orders+order_items)
     _l7d_amz_rev = 0
     _l7d_amz_spend = 0
     try:
@@ -185,6 +213,32 @@ def render_pacing(ctx):
             ).fetchone()
             if _l7_rollup and _l7_rollup["total_spend"] is not None:
                 _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
+            # Amazon NC L7D from fulfillment report data in orders table
+            _l7_nc_row = _l7_conn.execute(
+                "WITH cust_first AS ("
+                "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                "  FROM orders WHERE source = ?"
+                "  GROUP BY customer_id"
+                ") "
+                "SELECT"
+                "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
+                "       AND cf.first_order_date <= ?"
+                "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(CASE WHEN cf.first_order_date >= ?"
+                "       AND cf.first_order_date <= ?"
+                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                " FROM orders o"
+                " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                " JOIN order_items oi ON o.order_id = oi.order_id"
+                " WHERE o.order_date BETWEEN ? AND ?"
+                " AND o.source = ?",
+                ('amazon', _l7d_start_str, _yesterday_str,
+                 _l7d_start_str, _yesterday_str,
+                 _l7d_start_str, _yesterday_str, 'amazon'),
+            ).fetchone()
+            if _l7_nc_row:
+                _l7d_amz_nc = float(_l7_nc_row["new_customers"] or 0) / 7
+                _l7d_amz_nc_rev = float(_l7_nc_row["new_rev"] or 0) / 7
     except Exception:
         pass
 
@@ -196,7 +250,8 @@ def render_pacing(ctx):
     _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
     _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-    # Amazon yesterday (spend from google sheets rollup, revenue from daily_sku_sales)
+    # Amazon yesterday (revenue from daily_sku_sales, spend from amazon_daily_rollup,
+    # NC/NC Rev from orders+order_items)
     _yd_amz_rev = 0
     _yd_amz_spend = 0
     try:
@@ -212,6 +267,29 @@ def render_pacing(ctx):
             ).fetchone()
             if _yd_rollup:
                 _yd_amz_spend = float(_yd_rollup[0] or 0)
+            # Amazon NC yesterday from fulfillment report data in orders table
+            _yd_nc_row = _yd_conn.execute(
+                "WITH cust_first AS ("
+                "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                "  FROM orders WHERE source = ?"
+                "  GROUP BY customer_id"
+                ") "
+                "SELECT"
+                "  COUNT(DISTINCT CASE WHEN cf.first_order_date = ?"
+                "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(CASE WHEN cf.first_order_date = ?"
+                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                " FROM orders o"
+                " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                " JOIN order_items oi ON o.order_id = oi.order_id"
+                " WHERE o.order_date = ?"
+                " AND o.source = ?",
+                ('amazon', _yesterday_str, _yesterday_str,
+                 _yesterday_str, 'amazon'),
+            ).fetchone()
+            if _yd_nc_row:
+                _yd_amz_nc = int(_yd_nc_row["new_customers"] or 0)
+                _yd_amz_nc_rev = float(_yd_nc_row["new_rev"] or 0)
     except Exception:
         pass
 
