@@ -657,7 +657,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Check that the page doesn't feel like a wall of numbers. There should be visual breathing room between sections.
   - The scenario and horizon controls should feel like filters, not primary actions. They should be visually secondary to the data.
 
-- [ ] **31. Table UX — make editing intuitive**
+- [x] **31. Table UX — make editing intuitive**
   - File: `views/cashflow.py`
   - The editable table is the core interactive element. It needs to feel obvious:
     - **Future weeks should look editable** — slightly different background, or a subtle border, so the user knows they can click and type. Past weeks should look "locked" — dimmed or greyed out.

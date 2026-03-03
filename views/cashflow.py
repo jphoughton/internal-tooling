@@ -365,7 +365,7 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     Past weeks (actuals) are read-only. Future weeks are editable.
     Edits persist to cashflow_overrides and are used in projections.
-    Each category row has a 'Reset to Smart Projection' action.
+    Overridden rows show an inline reset link.
     """
     display = forecast_df.head(horizon_weeks)
     today = date.today()
@@ -377,6 +377,15 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     week_starts = display['week_start'].tolist()
     is_actual_map = dict(zip(display['week_start'], display['is_actual']))
+
+    # Identify current week (the week containing today)
+    current_week_col = None
+    for ws in week_starts:
+        ws_date = date.fromisoformat(ws[:10])
+        we_date = ws_date + timedelta(days=6)
+        if ws_date <= today <= we_date:
+            current_week_col = ws[:10]
+            break
 
     # Build pivot: rows = categories, columns = week_start dates
     pivot_data = {}
@@ -405,6 +414,14 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     except Exception as e:
         log.warning('Failed to load cashflow overrides in view: %s', e)
 
+    # Build set of categories that have overrides (for row labels)
+    overridden_cat_keys = set()
+    for cat in all_cats:
+        for ws in week_starts:
+            if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
+                overridden_cat_keys.add(cat)
+                break
+
     # Section headers
     rev_labels = [cat_labels[c] for c in revenue_cats]
     exp_labels = [cat_labels[c] for c in expense_cats]
@@ -418,10 +435,12 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     )
     rev_df = pivot_df.loc[pivot_df.index.isin(rev_labels)].copy()
     _render_category_section(rev_df, revenue_cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, '#22c55e', 'rev')
+                             is_actual_map, existing_overrides, overridden_cat_keys,
+                             current_week_col, '#22c55e', 'rev')
 
     # Total inflows row
-    _render_total_row(display, 'total_inflows', 'Total Inflows', '#16a34a')
+    _render_total_row(display, 'total_inflows', 'Total Inflows', '#16a34a',
+                      current_week_col)
 
     # Render expense section
     st.markdown(
@@ -432,29 +451,51 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     )
     exp_df = pivot_df.loc[pivot_df.index.isin(exp_labels)].copy()
     _render_category_section(exp_df, expense_cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, '#ef4444', 'exp')
+                             is_actual_map, existing_overrides, overridden_cat_keys,
+                             current_week_col, '#ef4444', 'exp')
 
     # Total outflows row
-    _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626')
+    _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626',
+                      current_week_col)
 
-    # Summary rows
-    st.markdown('---')
-    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#d97706')
-    _render_total_row(display, 'closing_balance', 'Closing Balance', '#0F3557')
+    # Summary separator
+    st.markdown(
+        '<div style="border-top:2px solid #e2e8f0;margin:12px 0 8px;"></div>',
+        unsafe_allow_html=True,
+    )
+    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#d97706',
+                      current_week_col, bold_bg=True)
+    _render_total_row(display, 'closing_balance', 'Closing Balance', '#0F3557',
+                      current_week_col, bold_bg=True)
 
 
 def _render_category_section(section_df, cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, color, key_prefix):
+                             is_actual_map, existing_overrides, overridden_cat_keys,
+                             current_week_col, color, key_prefix):
     """Render an editable data_editor section for a group of categories."""
-    # Create the editor DataFrame with integer values
-    editor_df = section_df.astype(int)
+    # Modify index to show override indicator on rows with manual overrides
+    label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
+    display_labels = {}
+    for cat in cats:
+        lbl = cat_labels[cat]
+        if cat in overridden_cat_keys:
+            display_labels[lbl] = f'{lbl}  ●'
+        else:
+            display_labels[lbl] = lbl
+    editor_df = section_df.rename(index=display_labels).astype(int)
 
     # Configure columns: actuals are disabled, future are editable
+    # Current week gets a "▸" indicator
     col_config = {}
     for ws in week_starts:
         col_key = ws[:10]
         is_actual = is_actual_map.get(ws, False)
-        label = f'{col_key} ✓' if is_actual else col_key
+        if col_key == current_week_col:
+            label = f'▸ {col_key}'
+        elif is_actual:
+            label = f'{col_key} ✓'
+        else:
+            label = col_key
         col_config[col_key] = st.column_config.NumberColumn(
             label,
             format='$,.0f',
@@ -470,57 +511,73 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
         height=min(35 * (len(editor_df) + 1), 400),
     )
 
-    # Detect changes and save overrides
-    label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
+    # Detect changes and save overrides — map display labels back to original
+    reverse_display = {v: k for k, v in display_labels.items()}
+    original_label_to_cat = {}
+    for disp_label in editor_df.index:
+        orig_label = reverse_display.get(disp_label, disp_label)
+        cat = label_to_cat.get(orig_label)
+        if cat:
+            original_label_to_cat[disp_label] = cat
 
     if edited is not None and not edited.equals(editor_df):
-        _save_edits(editor_df, edited, label_to_cat, week_starts, is_actual_map)
+        _save_edits(editor_df, edited, original_label_to_cat, week_starts, is_actual_map)
 
-    # Smart projection reset buttons
-    _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key_prefix)
+    # Per-row reset buttons — inline, compact, only for rows with overrides
+    _render_inline_resets(cats, cat_labels, overridden_cat_keys, key_prefix)
 
 
-def _render_total_row(display, col_key, label, color):
-    """Render a read-only summary total row as HTML."""
+def _render_total_row(display, col_key, label, color, current_week_col=None,
+                      bold_bg=False):
+    """Render a read-only summary total row as HTML.
+
+    bold_bg: If True, adds a subtle background to make summary rows
+    (Net Cash Flow, Closing Balance) feel like results, not inputs.
+    current_week_col: Highlights the current week's cell with a subtle stripe.
+    """
+    bg_style = 'background:#f1f5f9;border-radius:4px;' if bold_bg else ''
     cells = ''
     for _, r in display.iterrows():
         val = r.get(col_key, 0)
         if val is None or (isinstance(val, float) and np.isnan(val)):
             val = 0
         formatted = f'-${abs(val):,.0f}' if val < 0 else f'${val:,.0f}'
-        cells += f'<td style="text-align:right;padding:4px 8px;font-weight:700;color:{color};">{formatted}</td>'
+        ws = str(r.get('week_start', ''))[:10]
+        cell_bg = 'background:rgba(99,110,250,0.06);' if ws == current_week_col else ''
+        cells += (
+            f'<td style="text-align:right;padding:6px 8px;font-weight:700;'
+            f'color:{color};{cell_bg}">{formatted}</td>'
+        )
 
     html = (
-        f'<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
-        f'<tr><td style="padding:4px 8px;font-weight:700;color:{color};white-space:nowrap;">{label}</td>'
+        f'<div style="overflow-x:auto;{bg_style}margin:2px 0;">'
+        f'<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
+        f'<tr><td style="padding:6px 8px;font-weight:700;color:{color};'
+        f'white-space:nowrap;min-width:140px;">{label}</td>'
         f'{cells}</tr></table></div>'
     )
     st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key_prefix):
-    """Render 'Use Smart Projection' buttons for categories with manual overrides."""
-    # Preserve category order from cats list (use list, not set)
-    overridden_cats = []
-    for cat in cats:
-        for ws in week_starts:
-            if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
-                overridden_cats.append(cat)
-                break
+def _render_inline_resets(cats, cat_labels, overridden_cat_keys, key_prefix):
+    """Render compact per-row reset links for categories with manual overrides.
 
-    if not overridden_cats:
+    Only renders for categories that have active overrides. Each reset link
+    appears on a single line with the category name, making the connection
+    between the row and its reset action obvious.
+    """
+    overridden = [c for c in cats if c in overridden_cat_keys]
+    if not overridden:
         return
 
-    st.caption('Manual overrides active:')
-    # Render buttons in rows of up to 4
-    for row_start in range(0, len(overridden_cats), 4):
-        row_cats = overridden_cats[row_start:row_start + 4]
-        cols = st.columns(min(len(row_cats), 4))
-        for i, cat in enumerate(row_cats):
-            if cols[i].button(
+    for cat in overridden:
+        cols = st.columns([6, 1])
+        with cols[1]:
+            if st.button(
                 f'Reset {cat_labels[cat]}',
                 key=f'cf_reset_{key_prefix}_{cat}',
-                type='secondary',
+                type='tertiary',
+                use_container_width=True,
             ):
                 try:
                     with get_db() as conn:
@@ -528,7 +585,7 @@ def _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key
                             'DELETE FROM cashflow_overrides WHERE line_item = %s',
                             (cat,),
                         )
-                    st.success(f'Cleared overrides for {cat_labels[cat]}')
+                    st.toast(f'Reset {cat_labels[cat]} to auto')
                     st.rerun()
                 except Exception as e:
                     st.error(f'Failed to clear overrides: {e}')
