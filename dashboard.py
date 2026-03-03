@@ -396,20 +396,26 @@ _default_page = _qp.get('page', 'DTC Overview')
 if _default_page in _LEGACY_PAGE_MAP:
     _default_page = _LEGACY_PAGE_MAP[_default_page]
     st.query_params['page'] = _default_page
-_default_idx = _ALL_NAV_PAGES.index(_default_page) if _default_page in _ALL_NAV_PAGES else 0
+if _default_page not in _ALL_NAV_PAGES:
+    _default_page = 'DTC Overview'
+
+# Initialize session state from URL on first load only — avoid passing
+# index= to the radio, which can conflict with session_state and reset
+# the user's selection on reruns triggered by query_params changes.
+if '_nav_radio' not in st.session_state:
+    st.session_state['_nav_radio'] = _default_page
 
 # Single radio drives actual selection (hidden, styled via CSS)
 page = st.sidebar.radio(
     'Navigate',
     _ALL_NAV_PAGES,
-    index=_default_idx,
     format_func=_nav_format,
     label_visibility='collapsed',
     key='_nav_radio',
 )
 
 # Persist selected page to URL query params
-if page != _default_page:
+if page != _qp.get('page', ''):
     st.query_params['page'] = page
 
 # Extract channel and page type from the selected page
