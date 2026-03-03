@@ -2554,3 +2554,105 @@ The 47.5% average weekly error far exceeds the 30% FAIL threshold. However, this
 4. **(HIGH)** Replace COGS `revenue_pct` method with trailing average or PO-based projection for production expenses.
 5. **(MEDIUM)** Re-run this backtest after mapping fixes to measure true algorithmic accuracy.
 6. **(LOW)** Consider a category-agnostic backtest (total credits vs total debits) as a complementary accuracy metric that's robust to mapping gaps.
+
+---
+
+## Analyst 16 — LOC Trigger & Payroll Coverage
+
+**Date:** 2026-03-03
+
+### Setup
+
+Ran `build_cashflow_forecast(conn, start_date=today-4w, weeks=56, scenario='base')` against Railway DB. 56 rows: 4 actual (Feb 2 – Mar 1) + 52 projected (Mar 2 – Feb 28, 2027). All analysis below uses the Base scenario.
+
+### 1. LOC Draw Timing
+
+**Question:** When does the model first project `closing_balance < $50,000`?
+
+| Check | Result |
+|-------|--------|
+| First week below $50K | **None** |
+| Lowest projected closing balance | $202,758 (Week 5, Mar 2-8) |
+| Balance trajectory | Monotonically increasing after Week 5 |
+| 52-week ending balance | $2,332,920 |
+
+**Verdict: PASS — No LOC draw needed.**
+
+No week in the 56-week forecast dips below $50,000. The lowest closing balance in the projected period is $202,758 (Week 5), which is the first projected week and reflects a $24,500 net outflow due to the proration of the current partial week.
+
+**However, this PASS is unreliable.** As documented by Analysts 4, 7, and 11, the model's trajectory is inflated by:
+- **Opening balance double-counting** (+$110K at Week 4, compounding forward)
+- **Jameson loan misclassification** as interest_income (+$55K/month phantom revenue, -$55K/month missing expense = $110K/month net swing)
+- **Optimistic media spend inputs** ($75-190K planned vs $24-65K actual) inflating waterfall DTC revenue
+- **Missing expense categories** (~$42K/month unmapped software, loan expenses)
+
+If these issues were corrected, the trajectory would be dramatically flatter. A rough adjusted estimate: starting cash ~$117K (actual), net monthly cash flow ~$28K (per Analyst 7 adjusted), which would yield ~$117K + (12 × $28K) = $453K at week 52 — still unlikely to trigger a $50K LOC draw, but the margin of safety is much thinner than the model suggests.
+
+### 2. Payroll Stress Test
+
+**Question:** For every week with a payroll payment, does `opening_balance - payroll_amount > 0`?
+
+| Metric | Value |
+|--------|-------|
+| Weeks with payroll > $0 | 55 of 56 (only W3 has $0) |
+| Weeks where after-payroll balance < $0 | **0** |
+| Lowest after-payroll balance | $112,337 (Week 1, actual) |
+| All 55 payroll weeks | OK — balance always positive |
+
+**Per-week detail (first 12 weeks):**
+
+| Week | Date | Actual? | Opening | Payroll | After Payroll | Status |
+|------|------|---------|---------|---------|---------------|--------|
+| W1 | 2026-02-02 | Yes | $117,007 | $4,670 | $112,337 | OK |
+| W2 | 2026-02-09 | Yes | $138,258 | $9,650 | $128,608 | OK |
+| W3 | 2026-02-16 | Yes | $142,551 | $0 | $142,551 | OK |
+| W4 | 2026-02-23 | Yes | $163,191 | $9,657 | $153,534 | OK |
+| W5 | 2026-03-02 | No | $227,258 | $5,327 | $221,931 | OK |
+| W6 | 2026-03-09 | No | $202,758 | $7,458 | $195,300 | OK |
+| W7 | 2026-03-16 | No | $216,046 | $5,454 | $210,592 | OK |
+| W8 | 2026-03-23 | No | $234,431 | $7,458 | $226,973 | OK |
+| W9 | 2026-03-30 | No | $275,507 | $7,458 | $268,049 | OK |
+| W10 | 2026-04-06 | No | $293,754 | $7,458 | $286,296 | OK |
+| W11 | 2026-04-13 | No | $342,759 | $7,458 | $335,301 | OK |
+| W12 | 2026-04-20 | No | $362,662 | $5,454 | $357,207 | OK |
+
+**Verdict: PASS (with caveats) — Payroll never causes negative balance.**
+
+**FAIL (MEDIUM): Payroll cadence is wrong.** The model spreads payroll across all 52 projected weeks at $5-7K/week instead of biweekly at ~$16K. Real payroll (from PRD): $16K biweekly, hitting ~10th and ~25th of each month. This was already flagged by Analyst 3 — the schedule detection in `_project_expense_week()` falls back to trailing average, smoothing the biweekly lump into a weekly stream.
+
+**Impact on payroll stress test:** The true stress test should check whether opening balance exceeds $16K on the specific biweekly payroll dates. With the model's smoothing, $7K/week appears safe, but in reality a $16K lump on a low-cash week could be tighter than it looks. Given the model's projected balances are all above $200K (even with inflation), the margin is large enough that a properly biweekly $16K payroll would still not cause a negative balance. But the test result is less meaningful because it's testing the wrong payroll pattern.
+
+**Projected payroll stats:**
+- Projected payroll per week: $5,327 – $7,458 (should be $0 or ~$16,000)
+- Monthly total (first 4 projected weeks): $25,698 (vs expected ~$32K/month)
+- The model projects ~$6,993/week average × 4.33 = ~$30,279/month — 5% below the $32K reference
+
+### 3. Minimum Cash Week
+
+**Question:** What is the single week with the lowest closing balance?
+
+| Metric | Value |
+|--------|-------|
+| Minimum closing balance | $138,258 |
+| Week | W2 (2026-02-09 to 2026-02-15) |
+| Is actual | Yes |
+| Opening balance that week | $138,258 |
+| Net cash flow that week | $4,292 |
+
+**Verdict: PASS — Minimum balance $138,258 is well above $50K.**
+
+The lowest point in the entire 56-week forecast is an actual week (W2, Feb 9-15) where closing balance was $138,258. This is 2.8x above the $50K warning threshold and 1.4x above the $100K min cash threshold from the PRD.
+
+**Note:** The balance never decreases after Week 5 in the projected period. Every projected week shows positive net cash flow, driven by the overly optimistic revenue projections documented by Analysts 1, 7, and 11. In a corrected model, some weeks would likely show negative net cash flow (especially media billing and production PO weeks), creating a more realistic "sawtooth" pattern.
+
+### Summary
+
+| Check | Result | Confidence |
+|-------|--------|------------|
+| LOC draw timing | PASS — No week below $50K | LOW — model inflated by known bugs |
+| Payroll coverage | PASS — Balance always positive after payroll | MEDIUM — wrong cadence (weekly vs biweekly) |
+| Minimum cash week | PASS — $138,258 (actual W2) | HIGH — based on actual bank data |
+
+**Overall: 3 PASS, but 1 MEDIUM severity issue (payroll cadence smoothing) and LOW confidence in LOC timing due to previously documented model inflation.**
+
+The model is not useful for LOC draw planning in its current state because the balance trajectory is inflated by $110K+ from opening balance double-counting and $110K/month from Jameson misclassification. The true LOC trigger point, if any, is obscured by these data issues. The payroll stress test passes even with the wrong cadence, but the CFO should not rely on the model's week-by-week payroll timing until schedule detection properly handles biweekly patterns.

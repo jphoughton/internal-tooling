@@ -365,7 +365,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - **FAIL if average error >30%.** Identify which categories contribute the most error.
   - Append detailed comparison table to `ANALYST_ROUND2.md`.
 
-- [ ] **20g. Analyst 16 — LOC Trigger & Payroll Coverage**
+- [x] **20g. Analyst 16 — LOC Trigger & Payroll Coverage**
   - Read ALL prior findings.
   - Run `build_cashflow_forecast()` for 52 weeks in Base scenario.
   - **LOC draw timing**: Find the first week where `closing_balance < 50000`. This is when the CFO would need to draw on the $510K line of credit. Report the week number and projected balance. If no week dips below $50K, report "No LOC draw needed — PASS."
