@@ -1376,3 +1376,148 @@ The cash flow engine handles edge cases robustly. No crashes on any tested edge 
 **Recommendations for Phase 3:**
 1. Fix the 4 dead uppercase strip patterns: `ID:` → `id:`, `REF:` → `ref:`, `TRACE:` → `trace:`, `SEQ:` → `seq:`
 2. Consider reordering `_STRIP_PATTERNS` to run date patterns before `\b\d{4,}\b` for cleaner date stripping (optional, negligible impact)
+
+---
+
+## Analyst 10 — Code Quality & Security
+
+**Date:** 2026-03-02
+
+### 1. SQL Injection — Parameterized Queries
+
+Audited all SQL queries across `analytics/cashflow.py` (1066 lines) and `views/cashflow.py` (648 lines).
+
+| Location | Query | Parameterized? | Status |
+|----------|-------|----------------|--------|
+| analytics/cashflow.py:137 | `classify_transaction` SELECT | `%s` placeholder | **PASS** |
+| analytics/cashflow.py:156-175 | `get_unmapped_patterns` SELECT | Hardcoded category — no user input | **PASS** |
+| analytics/cashflow.py:181-191 | `get_mapping_stats` COUNTs | No params needed | **PASS** |
+| analytics/cashflow.py:211-213 | `reclassify_all_transactions` SELECT | No params needed | **PASS** |
+| analytics/cashflow.py:228-231 | `reclassify_all_transactions` UPDATE | f-string builds `%s` placeholders for IN clause, values passed as params | **PASS** |
+| analytics/cashflow.py:270-278 | `compute_payout_ratio` revenue query | `%s` placeholders via params tuple | **PASS** |
+| analytics/cashflow.py:283-293 | `compute_payout_ratio` deposit query | `%s` placeholders via params tuple | **PASS** |
+| analytics/cashflow.py:330-337 | `compute_trailing_avg` expense query | `%s` placeholders | **PASS** |
+| analytics/cashflow.py:339-345 | `compute_trailing_avg` revenue query | `%s` placeholders | **PASS** |
+| analytics/cashflow.py:524-531 | `_detect_expense_schedule` query | `%s` placeholders via params tuple | **PASS** |
+| analytics/cashflow.py:810-813 | payroll detection query | Hardcoded `'payroll'` — no user input | **PASS** |
+| analytics/cashflow.py:837 | account list query | No params needed | **PASS** |
+| analytics/cashflow.py:842-845 | per-account balance query | `%s` placeholder for account name | **PASS** |
+| analytics/cashflow.py:866-868 | overrides query | No params needed | **PASS** |
+| analytics/cashflow.py:1048-1049 | freshness query | No params needed | **PASS** |
+| views/cashflow.py:376 | overrides read | No params needed | **PASS** |
+| views/cashflow.py:495-497 | override DELETE | `%s` placeholder | **PASS** |
+| views/cashflow.py:528-533 | override INSERT/UPSERT | `%s` placeholders | **PASS** |
+
+**Note on line 228-231:** The f-string `f"WHERE tx_id IN ({placeholders})"` looks like it could be injection-prone, but `placeholders` is constructed via `','.join(['%s'] * len(tx_ids))` — it only produces `%s,%s,%s` patterns, not actual values. Values are passed via the params tuple. This is the standard safe pattern for parameterized IN clauses.
+
+**Verdict: PASS** — All 18 SQL queries use parameterized `%s` placeholders. No f-string injection risk. No string concatenation of user input into queries.
+
+### 2. Division-by-Zero Guards
+
+| Location | Division | Guard | Status |
+|----------|----------|-------|--------|
+| analytics/cashflow.py:303 | `deposits / revenue` | `.replace(0, np.nan)` converts 0 to NaN | **PASS** |
+| analytics/cashflow.py:348 | `total / lookback_weeks` | `max(lookback_weeks, 1)` | **PASS** |
+| analytics/cashflow.py:466-467 | DOW weight sum | `if weight_sum <= 0: weight_sum = 1.0` | **PASS** |
+| analytics/cashflow.py:476 | `(weight_sum / 7)` | weight_sum guarded above | **PASS** |
+| analytics/cashflow.py:597-598 | `avg_gap` in payment projection | `if avg_gap <= 0: return 0.0` | **PASS** |
+| analytics/cashflow.py:637-638 | payout ratio gross-up | `if dtc_ratio > 0 else dtc_payout` / `if amz_ratio > 0 else amz_payout` | **PASS** |
+| analytics/cashflow.py:1031 | `current_cash / weekly_burn` | `if monthly_burn > 0 else 0` → `if weekly_burn > 0` | **PASS** |
+| views/cashflow.py:636 | `(total - unmapped) / total` | `if total > 0 else 0` | **PASS** |
+
+**Verdict: PASS** — All 8 division operations have explicit zero-guards.
+
+### 3. Exception Handling — Silently Swallowed Errors
+
+Found **10 exception handlers** that swallow errors without logging across both files:
+
+| Location | Context | Logs? | Shows user? | Status |
+|----------|---------|-------|-------------|--------|
+| analytics/cashflow.py:144-145 | `classify_transaction` DB lookup fails | No | No | **FAIL** |
+| analytics/cashflow.py:799-800 | Amazon revenue forecast load fails | No | No | **FAIL** |
+| analytics/cashflow.py:805-806 | Media spend plan load fails | No | No | **FAIL** |
+| analytics/cashflow.py:816-817 | Payroll detection fails | No | No | **FAIL** |
+| analytics/cashflow.py:829-830 | Expense schedule detection fails | No | No | **FAIL** |
+| analytics/cashflow.py:851-852 | Opening balance calc fails | No | No | **FAIL** |
+| analytics/cashflow.py:873-874 | Override loading fails | No (`pass`) | No | **FAIL** |
+| analytics/cashflow.py:1053-1054 | Balance freshness query fails | No (`pass`) | No | **FAIL** |
+| views/cashflow.py:380-381 | Override loading in view fails | No (`pass`) | No | **FAIL** |
+| views/cashflow.py:587-589 | Settings load fails | No | No | **FAIL** |
+
+**3 are bare `except: pass`** (lines 873, 1053 in analytics; line 380 in views) — worst case: these completely hide DB connection failures, schema mismatches, or corrupt data.
+
+**7 more** silently fall back to defaults without logging — if the Amazon forecast table is empty due to a schema change, the model silently uses $0 for all Amazon revenue. If the opening balance query fails, it silently uses $153K from months ago. The CFO would see wrong numbers with no indication anything is wrong.
+
+**Exceptions that DO log properly:**
+- analytics/cashflow.py:791 — waterfall build: `log.warning()` ✓
+- views/cashflow.py:278-280 — main forecast error: `st.error()` + `log.exception()` ✓
+- views/cashflow.py:501-502, 536-537, 572-573 — edit/import errors: `st.error()` ✓
+
+**Verdict: FAIL (MEDIUM severity)**
+- 10 of 16 exception handlers swallow errors without logging
+- 3 are bare `except: pass` with zero feedback
+- Impact: DB failures, schema changes, or corrupt data would silently produce wrong forecasts
+- Recommendation: Add `log.warning('Context: %s', exc)` to every catch block. For critical ones (opening balance, revenue loads), add `log.error()`.
+
+### 4. Logging Coverage
+
+| Area | Logged? | Status |
+|------|---------|--------|
+| Forecast completion (line 978-981) | `log.info()` with summary stats | **PASS** |
+| Waterfall build failure (line 791-792) | `log.warning()` | **PASS** |
+| Main page render error (views:280) | `log.exception()` | **PASS** |
+| Amazon forecast load failure (line 799) | Nothing | **FAIL** |
+| Media plan load failure (line 805) | Nothing | **FAIL** |
+| Payroll detection failure (line 816) | Nothing | **FAIL** |
+| Schedule detection failure (line 829) | Nothing | **FAIL** |
+| Opening balance failure (line 851) | Nothing | **FAIL** |
+| Override load failure (line 873) | Nothing | **FAIL** |
+| Classify transaction DB error (line 144) | Nothing | **FAIL** |
+| Settings load failure (views:587) | Nothing | **FAIL** |
+
+**Verdict: FAIL (MEDIUM)** — Only 3 of 14 error paths are logged. The most critical ones (opening balance, revenue source loading) have zero logging.
+
+### 5. Dead Code, TODOs, Commented-Out Blocks
+
+**Dead regex patterns (same bug class as Task 4):**
+Lines 37-40 in `_STRIP_PATTERNS`:
+```python
+r'ID:\S*',      # Applied AFTER lowercasing — never matches "id:xxx"
+r'REF:\S*',     # Same — never matches "ref:xxx"
+r'TRACE:\S*',   # Same — never matches "trace:xxx"
+r'SEQ:\S*',     # Same — never matches "seq:xxx"
+```
+Input is lowercased on line 60 (`text = raw.lower().strip()`) before patterns run on line 61-62. These uppercase patterns are dead code. Analyst 9 already flagged this.
+
+**No TODO/FIXME/HACK comments found.** ✓
+**No commented-out code blocks found.** ✓
+
+**Verdict: FAIL (LOW)** — 4 dead regex patterns. No other dead code.
+
+### 6. Task 4 Fix Verification — Lowercase `_STRIP_PATTERNS`
+
+Line 34: `r'\b[a-z0-9]{8,}\b'` — **CONFIRMED FIXED**. Previously `[A-Z0-9]`, now correctly lowercase to match lowercased input.
+
+**Verdict: PASS**
+
+---
+
+### Summary
+
+| Check | Result | Severity |
+|-------|--------|----------|
+| SQL parameterization | **PASS** | — |
+| Division-by-zero guards | **PASS** | — |
+| Silent exception swallowing | **FAIL** | MEDIUM |
+| Logging coverage | **FAIL** | MEDIUM |
+| Dead code / TODOs | **FAIL** | LOW |
+| Task 4 regex fix verified | **PASS** | — |
+
+**Overall: 3 FAIL (2 MEDIUM, 1 LOW), 3 PASS**
+
+The cash flow engine has good security posture — no SQL injection vectors and no division-by-zero vulnerabilities. The main quality issue is poor error observability: 10 of 16 exception handlers silently swallow errors, and only 3 of 14 error paths log anything. This means DB failures or schema changes could silently produce wrong forecasts with no trace in logs. The 4 dead uppercase regex patterns are the same bug class as Task 4 (already flagged by Analyst 9).
+
+**Recommendations for Phase 3:**
+1. **(MEDIUM)** Add `log.warning()` to all 10 silent exception handlers in `analytics/cashflow.py` and `views/cashflow.py`. For the 3 bare `except: pass` blocks, add both logging and a sensible fallback message.
+2. **(MEDIUM)** For critical data loads (opening balance line 851, Amazon forecast line 799, media plan line 805), upgrade to `log.error()` since wrong values here cascade through the entire forecast.
+3. **(LOW)** Fix the 4 dead uppercase strip patterns on lines 37-40: `ID:` → `id:`, `REF:` → `ref:`, `TRACE:` → `trace:`, `SEQ:` → `seq:`.

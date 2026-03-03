@@ -296,7 +296,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Test: confidence intervals — do they widen over time? Is week 1 tighter than week 13?
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20. Analyst 10 — Code Quality & Security**
+- [x] **20. Analyst 10 — Code Quality & Security**
   - Read prior findings.
   - Check all SQL queries in `analytics/cashflow.py` use parameterized queries (%s placeholders), not f-strings.
   - Check for division-by-zero guards on all ratio calculations.

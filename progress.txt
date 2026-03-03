@@ -36,8 +36,10 @@
 
 - Task 19: Analyst 9 — Edge Cases & Robustness. Tested 7 edge cases against analytics/cashflow.py. Key findings: (1) PASS: Cross-month week revenue attribution — _project_revenue_week() iterates day-by-day, attributing each day's revenue to its calendar month via strftime('%Y-%m'). (2) PASS: Empty amazon_revenue_forecast — try/except sets ctx to empty dict, monthly_rev.get(month_key, 0) returns $0 gracefully. (3) PASS: COGS division by zero — guarded by 'if dtc_ratio > 0 else dtc_payout' on lines 637-638. All zero-ratio scenarios produce valid output. (4) PASS: normalize_summary() with None, empty string, only numbers, only special chars, very long string, unicode — all return valid strings, no crashes. (5) FAIL (LOW): 4 dead uppercase strip patterns (ID:\S*, REF:\S*, TRACE:\S*, SEQ:\S*) applied after input is lowercased — same class of bug as Task 4. (6) PASS: Confidence intervals widen from 1% (week 1) to 26% (week 13) to 30% cap (week 15+), with 0.5x near-term multiplier for tighter first 4 weeks. No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass.
 
+- Task 20: Analyst 10 — Code Quality & Security. Audited all SQL queries (18 total) — all use parameterized %s placeholders, no injection risk. All 8 division operations have zero-guards. Task 4 regex fix verified (line 34 correctly lowercase). Found 3 issues: (1) FAIL (MEDIUM) — 10 of 16 exception handlers silently swallow errors without logging, 3 are bare `except: pass`; (2) FAIL (MEDIUM) — only 3 of 14 error paths log anything, critical data loads (opening balance, Amazon forecast, media plan) have zero logging; (3) FAIL (LOW) — 4 dead uppercase regex patterns on lines 37-40 (same bug class as Task 4, already flagged by Analyst 9). No TODO/FIXME comments, no commented-out code blocks. No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended detailed findings to ANALYST_ROUND2.md.
+
 ## Current
-Next unchecked task: Task 20 (Analyst 10 — Code Quality & Security)
+Next unchecked task: Task 20b (Analyst 11 — Business Sanity Check)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified
