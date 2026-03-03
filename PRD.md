@@ -401,7 +401,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - For each question: PASS if the answer is clear within 5 seconds of looking. FAIL if you'd need to open a spreadsheet to double-check.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20k. Analyst 20 — "Does Last Month's Forecast Match What Actually Happened?"**
+- [x] **20k. Analyst 20 — "Does Last Month's Forecast Match What Actually Happened?"**
   - Read ALL prior findings. This is the ultimate trust test.
   - Query `cashflow_transactions` for the most recent COMPLETE month (all weeks fully in the past).
   - Sum actual credits (inflows) and actual debits (outflows) for that month from bank data.

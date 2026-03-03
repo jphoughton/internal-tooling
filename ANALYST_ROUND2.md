@@ -3097,3 +3097,131 @@ All 5 failures trace back to 3 previously identified root causes:
 2. **CRITICAL — Reclassify Jameson loan from interest_income to loan expense.** Map the Jameson bank transactions correctly so $55K/month goes to expenses, not revenue.
 3. **HIGH — Fix schedule detection to not override method-based timing.** Payroll should use biweekly_schedule, media should use media_plan, regardless of what the trailing average shows.
 4. **MEDIUM — Add a what-if PO input.** Allow the CEO to enter "proposed $80K PO in week X" and see the impact on the balance trajectory without permanently changing the forecast.
+
+---
+
+## Analyst 20 — "Does Last Month's Forecast Match What Actually Happened?"
+
+**Date:** 2026-03-03
+
+### Methodology
+
+The most recent complete month is **February 2026** (today is March 3, all February weeks are in the past).
+
+**Actual bank data for February 2026:**
+- Total credits (inflows): $218,325 (178 transactions, excl. transfers/duplicates)
+- Total debits (outflows): $155,951 (64 transactions, excl. transfers/duplicates)
+- Net: +$62,374
+- Opening cash (end of Jan bank balances): $120,531
+- Closing cash (end of Feb bank balances): $174,549
+- Actual change in cash: +$54,018
+
+**Backtest approach:** Monkey-patched `date.today()` to December 8, 2025 (8 weeks before February) and ran `build_cashflow_forecast(start_date=date(2025, 12, 8), weeks=20, scenario='base')`. This makes February weeks appear as "projected" (future) instead of "actual" (past), allowing comparison of what the model would have predicted vs what actually happened.
+
+### 1. Projected vs Actual Monthly Totals
+
+| Metric | Projected | Actual | Error % | Verdict |
+|--------|-----------|--------|---------|---------|
+| Monthly inflows | $111,117 | $218,325 | **-49.1%** | **FAIL** (>25%) |
+| Monthly outflows | $129,628 | $155,951 | **-16.9%** | WARN (15-25%) |
+| Monthly net | -$18,511 | +$62,374 | **-130%** | **FAIL** |
+| Month-end cash | -$170,712 | $174,549 | **-$345K** | **FAIL** (>$30K) |
+
+**Overall: FAIL on all three primary metrics.**
+
+### 2. Per-Week Comparison
+
+| Week | Proj Inflows | Actual Inflows | Proj Outflows | Actual Outflows |
+|------|-------------|----------------|---------------|-----------------|
+| Feb 2-8 | $51,029 | $70,834 | $45,294 | $19,276 |
+| Feb 9-15 | $4,529 | $31,370 | $19,988 | $32,500 |
+| Feb 16-22 | $4,529 | $69,930 | $23,443 | $22,467 |
+| Feb 23-Mar 1 | $51,029 | $46,223 | $40,903 | $79,977 |
+| **TOTAL** | **$111,117** | **$218,325** | **$129,628** | **$155,951** |
+
+**Inflow pattern mismatch:** Model shows bimodal pattern (high in Amazon disbursement weeks, near-zero otherwise). Actuals show a more even distribution with DTC deposits landing every week plus unmapped credits.
+
+**Outflow pattern mismatch:** Model spreads expenses relatively evenly. Actuals show lumpy pattern — week of Feb 23 had $80K outflows (Jameson $55K + payroll $10K + accounting $8K), while week of Feb 2 had only $19K.
+
+### 3. Per-Category Projected vs Actual
+
+| Category | Projected Feb | Actual Feb | Error | Root Cause |
+|----------|-------------|-----------|-------|------------|
+| **dtc_revenue** | **$0** | **$109,295** | **-100%** | **CRITICAL: Waterfall doesn't cover Feb** |
+| amazon_revenue | $93,000 | $0 (unmapped) | N/A — data gap | All 51 Amazon bank txs unmapped |
+| interest_income (credit) | $18,062 | $35 | +51,506% | Model treats Jameson as interest revenue |
+| interest_income (debit) | N/A | $54,947 | N/A | Jameson loan misclassified |
+| unmapped (credit) | N/A | $108,996 | N/A | Model can't project unmapped |
+| unmapped (debit) | N/A | $46,948 | N/A | Model can't project unmapped |
+| payroll | $26,091 | $23,977 | +8.8% | **PASS** — close match |
+| fulfillment | $15,855 | $16,159 | -1.9% | **PASS** — near-perfect |
+| media | $34,183 | $0 (unmapped) | N/A — data gap | Media bills not mapped |
+| production | $37,500 | $2,614 | +1,334% | Model uses revenue_pct; reality is PO-driven |
+| accounting | $3,871 | $7,749 | -50% | Model uses trailing avg, missed spike |
+| agency | $2,910 | $1,600 | +82% | Small absolute error ($1.3K) |
+| sales_tax | $1,632 | $1,844 | -11.5% | **PASS** — close match |
+| insurance | $4,000 | $0 | N/A | No mapped insurance txs in Feb |
+| software | $140 | $80 | +75% | Small absolute error ($60) |
+
+### 4. Root Cause Analysis
+
+The 49% inflow error and $345K cash error trace to **three root causes**, all previously identified by prior analysts:
+
+**Root Cause 1 — DTC revenue completely missing from projections (CRITICAL)**
+
+The waterfall model (`build_waterfall()`) only produces revenue projections starting from **March 2026**, regardless of when `build_cashflow_forecast()` is called. The media spend plan starts at `2026-02`, but the waterfall's output begins at `2026-03`. When `_project_revenue_week()` looks up `'2026-02'` in `ctx['dtc_monthly_revenue']`, it finds nothing and returns $0.
+
+This means: **any backtest more than ~4 weeks in the past will show zero DTC revenue** because the waterfall doesn't produce historical months. DTC revenue ($109K/month, 50% of actual inflows) is the single largest revenue line item and has no fallback mechanism — unlike other categories that use `compute_trailing_avg()`.
+
+*Impact:* If DTC were projected at its actual level ($109K), total projected inflows would be ~$220K vs $218K actual — essentially a 1% error. The model's non-DTC projections are reasonable; the missing DTC is catastrophic.
+
+**Root Cause 2 — Unmapped transactions ($156K/month, 35% of all activity)**
+
+$109K in unmapped credits and $47K in unmapped debits are invisible to the model. Amazon disbursements ($39K+ of those unmapped credits) inflate actual inflows above what the model can match. The model projects Amazon at $93K/month via the forecast table, which may be accurate but can't be validated because all Amazon bank deposits are unmapped.
+
+**Root Cause 3 — Balance chain cascade (previously identified by Analyst 4)**
+
+Because DTC revenue is zero from Dec 8 onward, the balance chain plummets from $117K to -$152K by the start of February. Each missing DTC week (~$25K) compounds into the opening balance. The opening balance alone accounts for $273K of the $345K cash error.
+
+### 5. Model Strengths (What Worked)
+
+Despite the overall FAIL, several categories projected accurately:
+
+- **Payroll:** $26K projected vs $24K actual (+8.8%) — trailing average captures biweekly cadence reasonably well at monthly granularity, even though weekly timing is spread (per Analyst 3).
+- **Fulfillment:** $16K projected vs $16K actual (-1.9%) — near-perfect match. Trailing average works well for steady weekly expenses.
+- **Sales tax:** $1.6K projected vs $1.8K actual (-11.5%) — reasonable.
+- **Amazon disbursement timing:** 2 events per month (weeks of Feb 2 and Feb 23), correctly placed. Per-event amount ($46.5K) is in the right ballpark. Task 1 fix confirmed working.
+
+### 6. Trust Calibration
+
+The CEO uses this model to decide whether to approve $80K production runs and draw on the line of credit. The key question: **can you trust it?**
+
+| Metric | Error | CEO Impact |
+|--------|-------|-----------|
+| Monthly inflows | -49% | Would understate incoming cash by $107K → could reject a viable PO |
+| Monthly outflows | -17% | Slightly understated → would underestimate burn, minor risk |
+| Month-end cash | -$345K | Model shows negative cash when reality is $175K positive → completely misleading |
+
+**Verdict:** The model is **not trustworthy for cash management decisions** at current data quality levels. The 49% inflow error and $345K cash error far exceed the <20% and <$30K thresholds.
+
+However, this is primarily a **data completeness and waterfall coverage issue**, not an algorithm bug:
+- Fix the waterfall to produce DTC revenue for all projected months → inflow error drops to ~1%
+- Map Amazon bank transactions → validate/calibrate Amazon projections
+- Reclassify Jameson loan → fix the $55K/month expense misattribution
+- Map media, software, and other unmapped categories → reduce the 35% blind spot
+
+### 7. Comparison to Analyst 15 (Prior Backtest)
+
+Analyst 15 ran a shorter backtest (patched today to Feb 3, compared 4-week projections vs actuals) and found 47.5% average error. This analyst's finding of 49.1% inflow error is consistent, confirming the structural issues are reproducible and not timing-dependent.
+
+### Summary
+
+| Check | Threshold | Result | Verdict |
+|-------|-----------|--------|---------|
+| Monthly inflow error | <25% | 49.1% | **FAIL** |
+| Monthly outflow error | <25% | 16.9% | WARN |
+| Month-end cash error | <$30K | $345K | **FAIL** |
+
+**Overall: FAIL (2 of 3 primary metrics exceeded thresholds)**
+
+The model cannot accurately predict even one month out due to: (1) waterfall not covering projected months for backtest periods, (2) 35% of bank transactions unmapped, and (3) Jameson loan misclassification creating a $110K/month swing. Fix these three data issues and the underlying projection algorithms (payroll, fulfillment, Amazon timing) appear sound.
