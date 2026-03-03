@@ -288,8 +288,8 @@ def render(ctx):
         if not alert_rows.empty:
             alert_balance = alert_rows.iloc[0]['closing_balance']
             st.error(
-                f"Cash below ${kpis['min_cash_threshold']:,.0f} projected in **Week {week_num}** "
-                f"(est. ${alert_balance:,.0f})",
+                'Cash below \\$%s projected in **Week %d** (est. \\$%s)'
+                % (f"{kpis['min_cash_threshold']:,.0f}", week_num, f"{alert_balance:,.0f}"),
             )
 
     # KPI row

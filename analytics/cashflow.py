@@ -607,8 +607,8 @@ def _project_expense_week(
         if freq in ('daily', 'weekly'):
             return schedule['monthly_total'] / 4.33
 
-        # No payment in this week for biweekly/monthly/quarterly — return 0
-        # (the payment is concentrated in the weeks it actually hits)
+        # No payment this week for biweekly/monthly/quarterly — return 0
+        # This is intentional: user asked for payments to show when they hit
         if freq in ('biweekly', 'monthly', 'quarterly'):
             return 0.0
 
