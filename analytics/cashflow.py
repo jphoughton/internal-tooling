@@ -464,6 +464,112 @@ def _project_revenue_week(
         return avg
 
 
+def _detect_expense_schedule(
+    conn: ConnectionWrapper,
+    category: str,
+    lookback_months: int = 6,
+) -> dict:
+    """Detect when payments typically hit for a category from bank history.
+
+    Analyzes inter-payment gaps to determine frequency (weekly, biweekly,
+    monthly, quarterly) and predicts future payment dates.
+
+    Returns dict with: has_data, frequency, avg_gap_days, last_payment_date,
+    last_payment_amount, avg_amount, monthly_total, payment_dates (day-of-month list).
+    """
+    end_date = date.today()
+    start_date = end_date - timedelta(days=lookback_months * 30)
+
+    df = read_sql("""
+        SELECT tx_date, amount
+        FROM cashflow_transactions
+        WHERE category = %s AND direction = 'debit'
+            AND tx_date >= %s AND tx_date <= %s
+            AND is_transfer = 0 AND is_duplicate = 0
+        ORDER BY tx_date ASC
+    """, conn, params=(category, str(start_date), str(end_date)))
+
+    if df.empty or len(df) < 2:
+        return {'has_data': False}
+
+    df['tx_date'] = pd.to_datetime(df['tx_date'])
+    df = df.sort_values('tx_date')
+
+    # Compute inter-payment gaps
+    gaps = df['tx_date'].diff().dt.days.dropna()
+    # Filter out same-day duplicates (gap=0)
+    gaps = gaps[gaps > 0]
+
+    if gaps.empty:
+        return {'has_data': False}
+
+    avg_gap = float(gaps.mean())
+    last_date = df['tx_date'].iloc[-1].date()
+    last_amount = float(df['amount'].iloc[-1])
+    avg_amount = float(df['amount'].mean())
+    monthly_total = float(df['amount'].sum()) / max(lookback_months, 1)
+
+    # Classify frequency
+    if avg_gap <= 5:
+        frequency = 'daily'
+    elif avg_gap <= 10:
+        frequency = 'weekly'
+    elif avg_gap <= 18:
+        frequency = 'biweekly'
+    elif avg_gap <= 45:
+        frequency = 'monthly'
+    else:
+        frequency = 'quarterly'
+
+    # Detect common payment days-of-month
+    payment_days = sorted(df['tx_date'].dt.day.value_counts().head(3).index.tolist())
+
+    return {
+        'has_data': True,
+        'frequency': frequency,
+        'avg_gap_days': avg_gap,
+        'last_payment_date': last_date,
+        'last_payment_amount': last_amount,
+        'avg_amount': avg_amount,
+        'monthly_total': monthly_total,
+        'payment_days': payment_days,
+    }
+
+
+def _project_next_payments(
+    schedule: dict,
+    week_start: date,
+    week_end: date,
+) -> float:
+    """Project how much hits in a specific week based on schedule detection.
+
+    Walks forward from last known payment using detected gap to predict
+    which future payment dates fall within the target week.
+    """
+    if not schedule.get('has_data'):
+        return 0.0
+
+    last_date = schedule['last_payment_date']
+    avg_gap = schedule['avg_gap_days']
+    avg_amount = schedule['avg_amount']
+
+    if avg_gap <= 0:
+        return 0.0
+
+    # Walk forward from last payment date, finding payments in target week
+    total = 0.0
+    next_payment = last_date + timedelta(days=int(round(avg_gap)))
+
+    # Safety: walk up to 400 days into the future
+    max_date = last_date + timedelta(days=400)
+    while next_payment <= min(week_end, max_date):
+        if next_payment >= week_start:
+            total += avg_amount
+        next_payment += timedelta(days=int(round(avg_gap)))
+
+    return total
+
+
 def _project_expense_week(
     conn: ConnectionWrapper,
     category: str,
@@ -471,24 +577,15 @@ def _project_expense_week(
     week_end: date,
     ctx: dict,
 ) -> float:
-    """Project expense for a single future week."""
+    """Project expense for a single future week.
+
+    Uses schedule detection from bank actuals first. Falls back to
+    seed defaults with timing awareness if no historical data.
+    """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    if method == 'media_plan':
-        # Use media spend plan from DB
-        month_key = week_start.strftime('%Y-%m')
-        monthly_media = ctx.get('monthly_media_spend', {})
-        monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
-        return monthly / 4.33
-
-    elif method == 'biweekly_schedule':
-        # Payroll: detect last amount and schedule
-        last_amount = ctx.get('last_payroll_amount', CASHFLOW_SEED_DEFAULTS.get('payroll', 8000))
-        # Biweekly = every other week averages to half per week
-        return last_amount
-
-    elif method == 'revenue_pct':
-        # COGS: percentage of total revenue
+    # COGS is always a % of revenue, no schedule detection needed
+    if method == 'revenue_pct':
         cogs_pct = ctx.get('cogs_pct', 0.25)
         total_rev = sum(
             _project_revenue_week(conn, cat, week_start, week_end, ctx)
@@ -496,22 +593,63 @@ def _project_expense_week(
         )
         return total_rev * cogs_pct
 
+    # Check for pre-detected schedule from actuals
+    sched_key = f'_schedule_{category}'
+    schedule = ctx.get(sched_key)
+
+    if schedule and schedule.get('has_data'):
+        projected = _project_next_payments(schedule, week_start, week_end)
+        if projected > 0:
+            return projected
+
+        # For weekly/daily frequency, use monthly average / 4.33
+        freq = schedule.get('frequency', '')
+        if freq in ('daily', 'weekly'):
+            return schedule['monthly_total'] / 4.33
+
+        # No payment in this week for biweekly/monthly/quarterly — return 0
+        # (the payment is concentrated in the weeks it actually hits)
+        if freq in ('biweekly', 'monthly', 'quarterly'):
+            return 0.0
+
+    # --- Fallback: method-based projection with timing awareness ---
+    if method == 'media_plan':
+        month_key = week_start.strftime('%Y-%m')
+        monthly_media = ctx.get('monthly_media_spend', {})
+        monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
+        # Media typically bills monthly near end of month
+        if week_end.day >= 25 or week_start.day >= 25:
+            return monthly
+        return 0.0
+
+    elif method == 'biweekly_schedule':
+        last_amount = ctx.get('last_payroll_amount', CASHFLOW_SEED_DEFAULTS.get('payroll', 8000))
+        # Payroll hits ~10th and ~25th of month
+        for d_offset in range(7):
+            d = week_start + timedelta(days=d_offset)
+            if d <= week_end and d.day in (9, 10, 11, 24, 25, 26):
+                return last_amount
+        return 0.0
+
     elif method == 'quarterly_detect':
-        # Sales tax: detect from actuals, project quarterly
         avg = compute_trailing_avg(conn, category, lookback_weeks=13)
-        # Quarterly payments happen in specific months
         month = week_start.month
-        if month in (1, 4, 7, 10):  # tax quarter months
-            return avg * 3  # lump sum in quarter month
-        return avg * 0.1  # small ongoing payments
+        # Quarterly tax payments in Jan, Apr, Jul, Oct — mid-month
+        if month in (1, 4, 7, 10) and 10 <= week_start.day <= 20:
+            return avg * 13  # full quarter in one week
+        return 0.0
 
     elif method == 'schedule':
-        # Loan: use trailing average from actuals
         avg = compute_trailing_avg(conn, category, lookback_weeks=8)
-        return avg if avg > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+        seed = CASHFLOW_SEED_DEFAULTS.get(category, 0)
+        val = avg if avg > 0 else seed
+        # Loan payments typically monthly near end of month
+        if week_end.day >= 25 or week_start.day >= 25:
+            return val * 4.33  # monthly lump
+        return 0.0
 
     else:
-        # trailing_avg (default)
+        # trailing_avg (default) — use schedule if available, else spread evenly
         avg = compute_trailing_avg(conn, category, lookback_weeks=8)
         return avg if avg > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
@@ -630,6 +768,16 @@ def build_cashflow_forecast(
         ctx['last_payroll_amount'] = float(last_payroll['amount']) if last_payroll else 8000
     except Exception:
         ctx['last_payroll_amount'] = 8000
+
+    # --- Pre-detect expense schedules (once, not per-week) ---
+    expense_cats_list = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
+    for cat in expense_cats_list:
+        sched_key = f'_schedule_{cat}'
+        if sched_key not in ctx:
+            try:
+                ctx[sched_key] = _detect_expense_schedule(conn, cat)
+            except Exception:
+                ctx[sched_key] = {'has_data': False}
 
     # --- Get opening balance ---
     try:

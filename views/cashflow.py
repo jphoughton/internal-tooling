@@ -13,6 +13,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 
 from db import get_db, read_sql, get_cashflow_setting, set_cashflow_setting
@@ -312,10 +313,9 @@ def render(ctx):
     fig = _build_balance_chart(forecast_df, kpis['min_cash_threshold'], horizon_weeks + 4)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Weekly cash flow table
+    # Weekly cash flow table (editable)
     st.markdown('#### Weekly Detail')
-    table_html = _format_cash_table(forecast_df, horizon_weeks + 4)
-    st.markdown(table_html, unsafe_allow_html=True)
+    _render_editable_table(forecast_df, horizon_weeks + 4)
 
     # Inflow/Outflow chart in expander
     with st.expander('Inflows vs Outflows', expanded=False):
@@ -333,6 +333,208 @@ def render(ctx):
     # Mapping link
     with st.expander('Transaction Mappings', expanded=False):
         _render_mapping_link()
+
+
+def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
+    """Render an editable cash flow table with per-cell persistence.
+
+    Past weeks (actuals) are read-only. Future weeks are editable.
+    Edits persist to cashflow_overrides and are used in projections.
+    Each category row has a 'Reset to Smart Projection' action.
+    """
+    display = forecast_df.head(horizon_weeks)
+    today = date.today()
+
+    revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
+    expense_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
+    all_cats = revenue_cats + expense_cats
+    cat_labels = {k: v['label'] for k, v in CASHFLOW_CATEGORIES.items() if k in all_cats}
+
+    week_starts = display['week_start'].tolist()
+    is_actual_map = dict(zip(display['week_start'], display['is_actual']))
+
+    # Build pivot: rows = categories, columns = week_start dates
+    pivot_data = {}
+    for cat in all_cats:
+        row_vals = {}
+        for _, r in display.iterrows():
+            ws = r['week_start']
+            val = r.get(cat, 0)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                val = 0
+            row_vals[ws] = round(val)
+        pivot_data[cat_labels[cat]] = row_vals
+
+    pivot_df = pd.DataFrame(pivot_data).T
+    pivot_df.columns = [ws[:10] for ws in week_starts]
+
+    # Load existing overrides to show which cells have manual values
+    existing_overrides = set()
+    try:
+        with get_db() as conn:
+            override_rows = read_sql(
+                'SELECT line_item, week_start FROM cashflow_overrides', conn,
+            )
+            for _, r in override_rows.iterrows():
+                existing_overrides.add((r['line_item'], r['week_start']))
+    except Exception:
+        pass
+
+    # Section headers
+    rev_labels = [cat_labels[c] for c in revenue_cats]
+    exp_labels = [cat_labels[c] for c in expense_cats]
+
+    # Render revenue section
+    st.markdown(
+        '<p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:rgba(255,255,255,0.4);font-weight:700;margin:12px 0 4px;">Revenue</p>',
+        unsafe_allow_html=True,
+    )
+    rev_df = pivot_df.loc[pivot_df.index.isin(rev_labels)].copy()
+    _render_category_section(rev_df, revenue_cats, cat_labels, week_starts,
+                             is_actual_map, existing_overrides, '#22c55e', 'rev')
+
+    # Total inflows row
+    _render_total_row(display, 'total_inflows', 'Total Inflows', '#22c55e')
+
+    # Render expense section
+    st.markdown(
+        '<p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:rgba(255,255,255,0.4);font-weight:700;margin:12px 0 4px;">Expenses</p>',
+        unsafe_allow_html=True,
+    )
+    exp_df = pivot_df.loc[pivot_df.index.isin(exp_labels)].copy()
+    _render_category_section(exp_df, expense_cats, cat_labels, week_starts,
+                             is_actual_map, existing_overrides, '#ef4444', 'exp')
+
+    # Total outflows row
+    _render_total_row(display, 'total_outflows', 'Total Outflows', '#ef4444')
+
+    # Summary rows
+    st.markdown('---')
+    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#fbbf24')
+    _render_total_row(display, 'closing_balance', 'Closing Balance', '#ffffff')
+
+
+def _render_category_section(section_df, cats, cat_labels, week_starts,
+                             is_actual_map, existing_overrides, color, key_prefix):
+    """Render an editable data_editor section for a group of categories."""
+    # Create the editor DataFrame with integer values
+    editor_df = section_df.astype(int)
+
+    # Configure columns: actuals are disabled, future are editable
+    col_config = {}
+    for ws in week_starts:
+        col_key = ws[:10]
+        is_actual = is_actual_map.get(ws, False)
+        col_config[col_key] = st.column_config.NumberColumn(
+            col_key,
+            format='$%d',
+            disabled=is_actual,
+            width='small',
+        )
+
+    edited = st.data_editor(
+        editor_df,
+        column_config=col_config,
+        use_container_width=True,
+        key=f'cf_edit_{key_prefix}',
+        height=min(35 * (len(editor_df) + 1), 400),
+    )
+
+    # Detect changes and save overrides
+    label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
+
+    if edited is not None and not edited.equals(editor_df):
+        _save_edits(editor_df, edited, label_to_cat, week_starts, is_actual_map)
+
+    # Smart projection reset buttons
+    _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key_prefix)
+
+
+def _render_total_row(display, col_key, label, color):
+    """Render a read-only summary total row as HTML."""
+    cells = ''
+    for _, r in display.iterrows():
+        val = r.get(col_key, 0)
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            val = 0
+        cells += f'<td style="text-align:right;padding:4px 8px;font-weight:700;color:{color};">${val:,.0f}</td>'
+
+    html = (
+        f'<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
+        f'<tr><td style="padding:4px 8px;font-weight:700;color:{color};white-space:nowrap;">{label}</td>'
+        f'{cells}</tr></table></div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key_prefix):
+    """Render 'Use Smart Projection' buttons for categories with manual overrides."""
+    overridden_cats = set()
+    for cat in cats:
+        for ws in week_starts:
+            if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
+                overridden_cats.add(cat)
+                break
+
+    if not overridden_cats:
+        return
+
+    st.caption('Manual overrides active:')
+    cols = st.columns(min(len(overridden_cats), 4))
+    for i, cat in enumerate(overridden_cats):
+        col_idx = i % min(len(overridden_cats), 4)
+        if cols[col_idx].button(
+            f'Reset {cat_labels[cat]}',
+            key=f'cf_reset_{key_prefix}_{cat}',
+            type='secondary',
+        ):
+            try:
+                with get_db() as conn:
+                    conn.execute(
+                        'DELETE FROM cashflow_overrides WHERE line_item = %s',
+                        (cat,),
+                    )
+                st.success(f'Cleared overrides for {cat_labels[cat]}')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to clear overrides: {e}')
+
+
+def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map):
+    """Save changed cells to cashflow_overrides table."""
+    changes = []
+    for label in edited_df.index:
+        cat = label_to_cat.get(label)
+        if not cat:
+            continue
+        for ws in week_starts:
+            col_key = ws[:10]
+            if is_actual_map.get(ws, False):
+                continue  # skip actuals
+            orig_val = original_df.at[label, col_key] if label in original_df.index else 0
+            new_val = edited_df.at[label, col_key]
+            if orig_val != new_val:
+                changes.append((cat, col_key, int(new_val)))
+
+    if not changes:
+        return
+
+    try:
+        with get_db() as conn:
+            for cat, ws, amount in changes:
+                # Upsert override
+                conn.execute(
+                    """INSERT INTO cashflow_overrides (line_item, week_start, override_amount)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (line_item, week_start)
+                       DO UPDATE SET override_amount = %s""",
+                    (cat, ws, amount, amount),
+                )
+        st.toast(f'Saved {len(changes)} override(s)')
+    except Exception as e:
+        st.error(f'Failed to save overrides: {e}')
 
 
 def _render_upload_section():
