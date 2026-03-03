@@ -263,7 +263,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - If ratios differ by >5% from the reference values (DTC ~0.94, Amazon ~0.62), flag it.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **16. Analyst 6 — Seasonality Impact**
+- [x] **16. Analyst 6 — Seasonality Impact**
   - Read prior analyst findings.
   - Check if `seasonal_indices` table has data. If empty, flag as FAIL (Task 3 won't work).
   - If populated: verify March revenue forecast uses index ~0.98 and June uses ~1.10. The ratio between June and March projected DTC revenue should be approximately 1.12x.

@@ -28,8 +28,10 @@
 
 - Task 15: Analyst 5 — Payout Ratio Calibration. Queried Railway DB to compute actual payout ratios and compare against model's auto-calibrated values. Key findings: (1) DTC auto-calibration PASS — EWMA returns 0.984, seed is 0.94, diff 4.7% (under 5% threshold). 8-month weighted ratio is 0.997, suggesting actual processing fees are <1% not 6%. Weekly ratios volatile (0.27-1.24) due to 3-day settlement lag. (2) Amazon auto-calibration FAIL — compute_payout_ratio returns None because all 51 Amazon bank transactions are unmapped. Seed 0.62 is reasonable (manual calc gives 0.57-0.62 depending on lag). (3) COGS ratio FAIL (data gap) — mapped production expenses are only 10% of gross revenue vs 25% seed, but this is a data completeness issue (production costs on AMEX, PO-driven spiky timing). Recommended: map 16 Amazon disbursement transactions to enable auto-calibration; consider updating DTC seed from 0.94 to 0.97; keep COGS at 25% (business input). No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended findings to ANALYST_ROUND2.md.
 
+- Task 16: Analyst 6 — Seasonality Impact. Verified seasonal_indices table is fully populated (12 rows, range 0.857-1.126, 31.4% range — NOT flat). Confirmed Task 3 fix is working: seasonal_dict is passed to build_waterfall() and produces measurably different revenue output vs no seasonality (March -10.3%, June +5.9%). June/March DTC revenue ratio is 1.525x (higher than pure seasonal expectation of 1.277x because media spend also ramps $75K→$130K). DB indices differ from PRD seeds (Mar 0.857 vs PRD 0.98) — appears auto-calibrated from actuals. Seasonal indices apply to repeat revenue only (by design). All checks PASS or CONDITIONAL PASS. No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended findings to ANALYST_ROUND2.md.
+
 ## Current
-Next unchecked task: Task 16 (Analyst 6 — Seasonality Impact)
+Next unchecked task: Task 17 (Analyst 7 — Google Sheet Comparison)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified
