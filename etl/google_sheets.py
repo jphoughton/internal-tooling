@@ -138,8 +138,8 @@ def sync_amazon_rollup(conn):
     """
     Fetch the Amazon Roll Up Date tab and store in amazon_daily_rollup table.
 
-    Columns used: date, new_customers, new_customer_rev, spend
-    (Repeat Revenue and Total Revenue are NOT used per business rules.)
+    Columns used: date, spend
+    (Customer counts, revenue, and other columns are NOT used — spend only.)
     Full refresh on each sync.
 
     Returns:
@@ -152,15 +152,11 @@ def sync_amazon_rollup(conn):
     # Clean column names
     df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
 
-    # Keep only relevant columns
+    # Keep only relevant columns (date + spend only)
     col_map = {}
     for c in df.columns:
         if "date" in c:
             col_map[c] = "date"
-        elif "new_customer" in c and "rev" in c:
-            col_map[c] = "new_customer_rev"
-        elif "new_customer" in c:
-            col_map[c] = "new_customers"
         elif "spend" in c:
             col_map[c] = "spend"
 
@@ -169,7 +165,7 @@ def sync_amazon_rollup(conn):
         return -1
 
     df = df.rename(columns=col_map)
-    keep_cols = [c for c in ["date", "new_customers", "new_customer_rev", "spend"] if c in df.columns]
+    keep_cols = [c for c in ["date", "spend"] if c in df.columns]
     df = df[keep_cols].copy()
 
     # Drop rows with empty/zero dates
@@ -180,10 +176,9 @@ def sync_amazon_rollup(conn):
     df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=False).dt.strftime("%Y-%m-%d")
 
     # Parse numeric columns (strip $ and commas)
-    for c in ["new_customers", "new_customer_rev", "spend"]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "spend" in df.columns:
+        df["spend"] = df["spend"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
+        df["spend"] = pd.to_numeric(df["spend"], errors="coerce")
 
     # Backfill missing/zero spend for past days (before today) using L7D average.
     # The Google Sheet often lags a few days on spend data — NaN or 0 means
@@ -213,20 +208,14 @@ def sync_amazon_rollup(conn):
                     new_rows = pd.DataFrame({
                         "date": [d.strftime("%Y-%m-%d") for d in missing_dates],
                         "spend": round(l7d_avg, 2),
-                        "new_customers": 0,
-                        "new_customer_rev": 0,
                     })
                     df = pd.concat([df, new_rows], ignore_index=True)
                     logger.info(f"Added {len(missing_dates)} missing date rows with L7D avg spend ${l7d_avg:.2f}")
 
-    # Fill remaining NaN with 0 and drop rows with all-zero data
-    for c in ["new_customers", "new_customer_rev", "spend"]:
-        if c in df.columns:
-            df[c] = df[c].fillna(0)
-
-    # Keep only rows that have any non-zero data
-    data_cols = [c for c in ["new_customers", "new_customer_rev", "spend"] if c in df.columns]
-    df = df[df[data_cols].sum(axis=1) > 0]
+    # Fill remaining NaN with 0 and drop rows with zero spend
+    if "spend" in df.columns:
+        df["spend"] = df["spend"].fillna(0)
+        df = df[df["spend"] > 0]
 
     # Create table
     conn.execute("DROP TABLE IF EXISTS amazon_daily_rollup")
@@ -234,8 +223,6 @@ def sync_amazon_rollup(conn):
         CREATE TABLE amazon_daily_rollup (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
-            new_customers REAL DEFAULT 0,
-            new_customer_rev REAL DEFAULT 0,
             spend REAL DEFAULT 0,
             synced_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
@@ -243,8 +230,8 @@ def sync_amazon_rollup(conn):
 
     for _, row in df.iterrows():
         conn.execute(
-            "INSERT INTO amazon_daily_rollup (date, new_customers, new_customer_rev, spend) VALUES (?, ?, ?, ?)",
-            (row["date"], row.get("new_customers", 0), row.get("new_customer_rev", 0), row.get("spend", 0)),
+            "INSERT INTO amazon_daily_rollup (date, spend) VALUES (?, ?)",
+            (row["date"], row.get("spend", 0)),
         )
 
     logger.info(f"Synced {len(df)} rows to amazon_daily_rollup table")
