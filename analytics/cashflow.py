@@ -851,6 +851,26 @@ def build_cashflow_forecast(
     except Exception:
         opening_balance = 153000  # seed from Cash Flow Model
 
+    # --- Reconstruct historical opening balance ---
+    # The bank balance above is as-of today, but row 0 starts at week_list[0]
+    # (typically 4 weeks ago).  Subtract the net of actual transactions from
+    # start_date to today so the opening balance represents what it was at
+    # start_date — not today.  Without this, the 4 weeks of actuals that have
+    # already been reflected in the current bank balance get replayed, causing
+    # double-counting (~$110K overstatement).
+    try:
+        model_start = str(week_list[0][0])
+        net_since_start = read_sql("""
+            SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount
+                                     ELSE -amount END), 0) as net
+            FROM cashflow_transactions
+            WHERE tx_date >= %s AND is_transfer = 0 AND is_duplicate = 0
+        """, conn, params=(model_start,))
+        if not net_since_start.empty:
+            opening_balance -= float(net_since_start.iloc[0]['net'])
+    except Exception:
+        log.warning('Could not reconstruct historical opening balance')
+
     # --- Revenue and expense categories ---
     revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
     expense_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
