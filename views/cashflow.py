@@ -641,7 +641,7 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
             label = col_key
         col_config[col_key] = st.column_config.NumberColumn(
             label,
-            format='$%,d',
+            format='$%d',
             disabled=is_actual,
             width='small',
         )
