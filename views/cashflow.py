@@ -641,7 +641,7 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
             label = col_key
         col_config[col_key] = st.column_config.NumberColumn(
             label,
-            format='$%d',
+            format='$%,d',
             disabled=is_actual,
             width='small',
         )
@@ -695,7 +695,7 @@ def _render_total_row(display, col_key, label, color, current_week_col=None,
 
     html = (
         f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;{bg_style}margin:2px 0;">'
-        f'<table style="border-collapse:collapse;font-size:0.75rem;min-width:max-content;">'
+        f'<table style="border-collapse:collapse;font-size:0.75rem;width:100%;table-layout:auto;">'
         f'<tr><td style="padding:6px 8px;font-weight:700;color:{color};'
         f'white-space:nowrap;position:sticky;left:0;background:{label_bg};'
         f'z-index:1;min-width:120px;">{label}</td>'
