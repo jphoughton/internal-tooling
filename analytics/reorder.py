@@ -14,7 +14,6 @@ The engine answers: "When do I need to place each order so I don't stock out?"
 import math
 import pandas as pd
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 from analytics.sku_flavors import get_flavor
 
 # --- Defaults ---

@@ -8,7 +8,6 @@ Amazon inventory aligns with Shopify/Packiyo data.
 import logging
 import time
 from sp_api.api import Inventories
-from sp_api.base import Marketplaces
 from etl.amazon import get_credentials, get_marketplace
 from etl.amazon_sku_map import map_amazon_sku, register_seller_sku, ASIN_TO_MASTER_SKU
 import config as cfg
@@ -242,7 +241,7 @@ def _fetch_missing_by_sku(inv_api, missing_asins, inventory):
     that can be used to query specific items. We also try without the
     `details` param in case that's causing items to be filtered.
     """
-    from etl.amazon_sku_map import MASTER_SKU_TO_ASIN, _SELLER_SKU_TO_ASIN
+    from etl.amazon_sku_map import _SELLER_SKU_TO_ASIN
 
     # Build reverse: ASIN → known seller-SKUs
     asin_to_seller_skus = {}

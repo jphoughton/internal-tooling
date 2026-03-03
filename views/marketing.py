@@ -12,8 +12,7 @@ from db import (
     update_klaviyo_campaign_metrics, update_klaviyo_flow_metrics,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
-from analytics.retention import get_new_repeat_summary, get_projected_new_repeat_summary
-from analytics.sku_flavors import get_flavor, sort_df_by_best_seller
+from analytics.retention import get_projected_new_repeat_summary
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
 from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday

@@ -14,7 +14,6 @@ import sys
 import schedule
 import time
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from config import SYNC_HOUR, SYNC_MINUTE, SYNC_TIMEZONE
 from etl.sync import run_daily_sync, run_parallel_backfill, run_amazon_catchup
 

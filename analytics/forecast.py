@@ -4,7 +4,6 @@ Per-SKU time series forecasting with seasonality, confidence intervals,
 and reorder quantity recommendations.
 """
 import pandas as pd
-import numpy as np
 from prophet import Prophet
 import logging
 from db import get_db, read_sql

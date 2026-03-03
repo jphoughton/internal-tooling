@@ -15,7 +15,6 @@ Models:
 """
 import logging
 import time
-from datetime import datetime
 from db import get_db, log_model_run, get_model_run
 
 logger = logging.getLogger(__name__)
@@ -126,7 +125,6 @@ def run_sku_sales_mix(triggered_by='scheduler'):
 def run_waterfall(triggered_by='scheduler'):
     """Build full waterfall forecast using current media plan and seasonality."""
     def _compute():
-        import json
         from analytics.waterfall import build_waterfall, clear_waterfall_cache
         from db import get_media_spend, get_seasonal_indices, get_setting
 
