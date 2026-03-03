@@ -107,7 +107,7 @@ def render_pacing(ctx):
             ).fetchone()
             if _amz_rollup and _amz_rollup["total_spend"] is not None:
                 _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
-            # Amazon NC from fulfillment report data in orders table
+            # Amazon NC count + proportional NC Rev (matches DoD table approach)
             _amz_nc_row = _amz_conn.execute(
                 "WITH cust_first AS ("
                 "  SELECT customer_id, MIN(order_date) AS first_order_date"
@@ -118,9 +118,10 @@ def render_pacing(ctx):
                 "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
                 "       AND cf.first_order_date <= ?"
                 "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(oi.total_price) AS oi_total_rev,"
                 "  SUM(CASE WHEN cf.first_order_date >= ?"
                 "       AND cf.first_order_date <= ?"
-                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
                 " FROM orders o"
                 " JOIN cust_first cf ON o.customer_id = cf.customer_id"
                 " JOIN order_items oi ON o.order_id = oi.order_id"
@@ -132,7 +133,10 @@ def render_pacing(ctx):
             ).fetchone()
             if _amz_nc_row:
                 _cm_amz_nc = int(_amz_nc_row["new_customers"] or 0)
-                _cm_amz_nc_rev = float(_amz_nc_row["new_rev"] or 0)
+                _oi_total = float(_amz_nc_row["oi_total_rev"] or 0)
+                _oi_new = float(_amz_nc_row["oi_new_rev"] or 0)
+                _new_frac = _oi_new / _oi_total if _oi_total > 0 else 0
+                _cm_amz_nc_rev = _cm_amz_rev * _new_frac
     except Exception:
         pass
 
@@ -213,7 +217,7 @@ def render_pacing(ctx):
             ).fetchone()
             if _l7_rollup and _l7_rollup["total_spend"] is not None:
                 _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
-            # Amazon NC L7D from fulfillment report data in orders table
+            # Amazon NC L7D count + proportional NC Rev (matches DoD table approach)
             _l7_nc_row = _l7_conn.execute(
                 "WITH cust_first AS ("
                 "  SELECT customer_id, MIN(order_date) AS first_order_date"
@@ -224,9 +228,10 @@ def render_pacing(ctx):
                 "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
                 "       AND cf.first_order_date <= ?"
                 "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(oi.total_price) AS oi_total_rev,"
                 "  SUM(CASE WHEN cf.first_order_date >= ?"
                 "       AND cf.first_order_date <= ?"
-                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
                 " FROM orders o"
                 " JOIN cust_first cf ON o.customer_id = cf.customer_id"
                 " JOIN order_items oi ON o.order_id = oi.order_id"
@@ -238,7 +243,10 @@ def render_pacing(ctx):
             ).fetchone()
             if _l7_nc_row:
                 _l7d_amz_nc = float(_l7_nc_row["new_customers"] or 0) / 7
-                _l7d_amz_nc_rev = float(_l7_nc_row["new_rev"] or 0) / 7
+                _l7_oi_total = float(_l7_nc_row["oi_total_rev"] or 0)
+                _l7_oi_new = float(_l7_nc_row["oi_new_rev"] or 0)
+                _l7_new_frac = _l7_oi_new / _l7_oi_total if _l7_oi_total > 0 else 0
+                _l7d_amz_nc_rev = (_l7d_amz_rev * 7) * _l7_new_frac / 7
     except Exception:
         pass
 
@@ -267,7 +275,7 @@ def render_pacing(ctx):
             ).fetchone()
             if _yd_rollup:
                 _yd_amz_spend = float(_yd_rollup[0] or 0)
-            # Amazon NC yesterday from fulfillment report data in orders table
+            # Amazon NC yesterday count + proportional NC Rev (matches DoD table approach)
             _yd_nc_row = _yd_conn.execute(
                 "WITH cust_first AS ("
                 "  SELECT customer_id, MIN(order_date) AS first_order_date"
@@ -277,8 +285,9 @@ def render_pacing(ctx):
                 "SELECT"
                 "  COUNT(DISTINCT CASE WHEN cf.first_order_date = ?"
                 "       THEN o.customer_id END) AS new_customers,"
+                "  SUM(oi.total_price) AS oi_total_rev,"
                 "  SUM(CASE WHEN cf.first_order_date = ?"
-                "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
                 " FROM orders o"
                 " JOIN cust_first cf ON o.customer_id = cf.customer_id"
                 " JOIN order_items oi ON o.order_id = oi.order_id"
@@ -289,7 +298,10 @@ def render_pacing(ctx):
             ).fetchone()
             if _yd_nc_row:
                 _yd_amz_nc = int(_yd_nc_row["new_customers"] or 0)
-                _yd_amz_nc_rev = float(_yd_nc_row["new_rev"] or 0)
+                _yd_oi_total = float(_yd_nc_row["oi_total_rev"] or 0)
+                _yd_oi_new = float(_yd_nc_row["oi_new_rev"] or 0)
+                _yd_new_frac = _yd_oi_new / _yd_oi_total if _yd_oi_total > 0 else 0
+                _yd_amz_nc_rev = _yd_amz_rev * _yd_new_frac
     except Exception:
         pass
 
