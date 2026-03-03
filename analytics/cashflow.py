@@ -683,6 +683,19 @@ def _project_expense_week(
             return avg * 13  # full quarter in one week
         return 0.0
 
+    # --- Fulfillment: scale with DTC revenue volume ---
+    # Fulfillment costs (3PL fees) scale with order volume. Instead of using
+    # a flat trailing average, calculate the historical fulfillment-to-DTC ratio
+    # and apply it to projected DTC revenue.
+    if category == 'fulfillment':
+        trailing_fulfillment = compute_trailing_avg(conn, 'fulfillment', lookback_weeks=8)
+        trailing_dtc = compute_trailing_avg(conn, 'dtc_revenue', lookback_weeks=8)
+        if trailing_dtc > 0:
+            fulfill_ratio = trailing_fulfillment / trailing_dtc
+            projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
+            return projected_dtc * fulfill_ratio
+        return trailing_fulfillment if trailing_fulfillment > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+
     # --- Schedule detection for trailing_avg and schedule methods ---
     # Only use pre-detected schedule from bank actuals for categories that
     # don't have an explicit timing method above.

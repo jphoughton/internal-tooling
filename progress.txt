@@ -79,8 +79,10 @@
 
 - Task 22e: Added logging to all silent exception handlers. Fixed 10 total: 8 in analytics/cashflow.py (classify_transaction DB lookup, Amazon forecast load, media plan load, payroll detection, expense schedule detection, opening balance computation, override loading, balance freshness query) and 2 in views/cashflow.py (override loading in view, settings load). All bare `except: pass` replaced with `except Exception as e: log.warning/error(...)`. Critical data paths (Amazon forecast, media plan, opening balance) use log.error(); non-critical paths (overrides, settings, schedules) use log.warning(). No bare `except: pass` remains. pytest: 1 pre-existing failure (amazon sync 0 records), 143 pass — no regressions.
 
+- Task 22f: Linked fulfillment costs to DTC revenue volume. Added a fulfillment-specific block in _project_expense_week() (analytics/cashflow.py lines 686-697) that calculates the trailing 8-week fulfillment-to-DTC-revenue ratio, then applies it to projected DTC revenue for each future week. Previously, fulfillment used a flat trailing average (~$5K/week) that never increased even as DTC revenue grew. Now fulfillment scales proportionally — if DTC revenue doubles, fulfillment approximately doubles. Falls back to trailing average if no DTC revenue data, and to seed default ($5K) if no fulfillment data either. No new test failures — 8 pre-existing data quality failures, 174 pass.
+
 ## Current
-Next unchecked task: Task 22f (HIGH: Link fulfillment costs to revenue volume)
+Next unchecked task: Task 22g (HIGH: Fix past-week overrides being honored over actuals)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

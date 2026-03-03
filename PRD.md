@@ -527,7 +527,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: After fix, no bare `except: pass` should remain. `grep -n "except.*pass" analytics/cashflow.py` should return 0 results.
   - Flagged by: Analyst 10
 
-- [ ] **22f. HIGH: Link fulfillment costs to revenue volume**
+- [x] **22f. HIGH: Link fulfillment costs to revenue volume**
   - File: `analytics/cashflow.py`, function `_project_expense_week()` (lines 696-699, trailing_avg fallback)
   - Bug: Fulfillment costs stay flat at ~$5K/week regardless of projected revenue growth. In reality, fulfillment scales with order volume — more orders = more 3PL fees. The model uses a trailing average which never increases even as DTC revenue is projected to grow.
   - Fix: For fulfillment category, use a revenue-scaling method similar to COGS (revenue_pct). Calculate the historical fulfillment-to-DTC-revenue ratio from actuals, then project future fulfillment as that ratio × projected DTC revenue:
