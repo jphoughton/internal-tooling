@@ -58,8 +58,19 @@
 
 - Task 20k: Analyst 20 — "Does Last Month's Forecast Match What Actually Happened?" Backtested February 2026 by running build_cashflow_forecast() from Dec 8 (8 weeks before Feb). Results: FAIL — monthly inflow error 49.1% (threshold <25%), month-end cash error $345K (threshold <$30K), outflow error 16.9% (WARN). Root causes: (1) CRITICAL — DTC revenue completely missing ($0 projected vs $109K actual) because waterfall only produces months starting from March, not February; if DTC were included, inflow error drops to ~1%; (2) 35% of bank transactions unmapped ($109K credits + $47K debits invisible to model); (3) Jameson loan misclassification creates $55K/month debit in interest_income revenue category. Positive findings: payroll (+8.8%), fulfillment (-1.9%), and sales_tax (-11.5%) project accurately; Amazon disbursement timing correct (2 events/month). The underlying algorithms are sound but data quality issues dominate the error. No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended detailed findings to ANALYST_ROUND2.md.
 
+- Task 21: Generated Phase 3 fix tasks from Analyst Round 2 findings. Read all FAIL/HIGH/CRITICAL issues from ANALYST_ROUND2.md (14 analysts, ~3000 lines of findings). Synthesized into 8 concrete fix tasks (22a-22h) appended to PRD.md Phase 3 section. The 8 tasks are:
+  - 22a. CRITICAL: Fix opening balance double-counting (+$110K/94% overstatement) — reconstruct historical balance by subtracting intervening transactions
+  - 22b. CRITICAL: Fix Jameson loan misclassification ($110K/month swing) — reclassify from interest_income to loan + add direction filter to _get_actual_weekly_totals()
+  - 22c. HIGH: Fix schedule detection overriding method-based expense timing — invert priority so media_plan/biweekly_schedule/quarterly_detect take precedence over trailing averages
+  - 22d. HIGH: Map Amazon bank transactions to amazon_revenue category — enable auto-calibration
+  - 22e. HIGH: Add logging to all 10 silent exception handlers — replace bare except:pass
+  - 22f. HIGH: Link fulfillment costs to revenue volume — scale with DTC revenue instead of flat trailing average
+  - 22g. HIGH: Fix past-week overrides being honored over actuals — skip override lookup for is_past weeks
+  - 22h. HIGH: Fix COGS scenario interaction — skip expense multiplier for revenue_pct categories
+  No code changes (documentation/planning task only). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass.
+
 ## Current
-Next unchecked task: Task 21 (Generate Phase 3 fix tasks)
+Next unchecked task: Task 22a (CRITICAL: Fix opening balance double-counting)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

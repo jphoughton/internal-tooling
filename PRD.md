@@ -416,7 +416,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - This is the number the CEO will use to calibrate trust. If the model said February would end at $130K and it actually ended at $95K, that's a $35K miss — not trustworthy for $80K PO decisions.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **21. Generate Phase 3 fix tasks**
+- [x] **21. Generate Phase 3 fix tasks**
   - Read `ANALYST_ROUND2.md` from top to bottom.
   - For each FAIL or issue with severity HIGH or CRITICAL, append a new task to this PRD at the bottom of Phase 3 with: file, bug description, fix, verify.
   - If ALL analysts PASSed, write "ALL PASS — skipping Phase 3" and skip to task 24.
@@ -428,8 +428,152 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
 
 Acceptance criteria: All dynamically-generated tasks complete. Code committed and pushed.
 
+### Generated Fix Tasks (from Task 21 — Analyst Round 2 Findings)
+
+- [ ] **22a. CRITICAL: Fix opening balance double-counting (+$110K / 94% overstatement)**
+  - File: `analytics/cashflow.py`, `build_cashflow_forecast()` (lines 832-852)
+  - Bug: The model uses the latest bank balance ($117K, as of Mar 1-3) as the opening balance for row 0 (start_date = 4 weeks ago, ~Feb 2). It then replays 4 weeks of actual transactions that are *already reflected* in that $117K balance. This inflates current cash to $227K — the CFO sees nearly double the actual bank balance. Every downstream balance, KPI, and alert is wrong.
+  - Fix: Reconstruct the historical opening balance by subtracting actual transactions between start_date and the latest transaction date. Specifically:
+    ```python
+    # After computing opening_balance from latest bank balances:
+    # Subtract actual net transactions from start_date to latest_tx_date
+    # so the opening balance represents what it was at start_date, not today.
+    net_since_start = read_sql("""
+        SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount ELSE -amount END), 0) as net
+        FROM cashflow_transactions
+        WHERE tx_date >= %s AND is_transfer = 0 AND is_duplicate = 0
+    """, conn, params=(str(start_date),))
+    if not net_since_start.empty:
+        opening_balance -= float(net_since_start.iloc[0]['net'])
+    ```
+  - Verify: "Current Cash" KPI should show ~$117K (matching actual bank balances), not $227K. Row 0 opening_balance + 4 weeks of actual net cashflow should converge to ~$117K at the current week.
+  - Flagged by: Analysts 4, 7, 11, 14, 17, 19 (most-cited bug in entire audit)
+
+- [ ] **22b. CRITICAL: Fix Jameson loan misclassification ($110K/month swing)**
+  - File: DB `category_mappings` table + `analytics/cashflow.py` function `_get_actual_weekly_totals()` (lines 368-394)
+  - Bug: Jameson Companies loan payments ($5K-$76K/month, principal + interest) are mapped as `interest_income` in `category_mappings`, which is a REVENUE category. This creates a $110K/month double swing: revenue inflated by $55K + expenses understated by $55K. The `_get_actual_weekly_totals()` function has no direction filter, so debit transactions in revenue categories are summed as positive revenue.
+  - Fix (two parts):
+    1. **Data fix**: Update `category_mappings` to reclassify Jameson from `interest_income` to `loan`:
+       ```python
+       conn.execute("""
+           UPDATE category_mappings SET category='loan', subcategory='principal'
+           WHERE match_pattern LIKE '%jameson%' AND category='interest_income'
+       """)
+       ```
+       Then call `reclassify_all_transactions(conn)` to propagate.
+    2. **Code fix**: Add direction filter to `_get_actual_weekly_totals()` to prevent this class of bug:
+       ```python
+       # Determine expected direction from category group
+       group = CASHFLOW_CATEGORIES.get(category, {}).get('group', 'expense')
+       direction_filter = 'credit' if group == 'revenue' else 'debit'
+       # Add to WHERE clause: AND direction = %s
+       ```
+  - Verify: After fix, `interest_income` actuals should show only actual interest credits (near $0). Loan expenses should show $55K+/month. Net monthly cashflow should drop by ~$110K.
+  - Flagged by: Analysts 3, 4, 7, 11, 14, 19
+
+- [ ] **22c. HIGH: Fix schedule detection overriding method-based expense timing**
+  - File: `analytics/cashflow.py`, function `_project_expense_week()` (lines 614-699)
+  - Bug: The schedule detection from bank actuals (`_detect_expense_schedule`) ALWAYS takes priority over method-based projections (media_plan, biweekly_schedule, quarterly_detect). When bank data exists for a category, the schedule detection classifies it as "daily" or "weekly" frequency and spreads the monthly total evenly. This causes: payroll shows $5-7K every week instead of biweekly $16K spikes; media spreads across all weeks instead of one monthly lump; sales tax spreads daily instead of quarterly.
+  - Fix: Invert the priority — method-based projection should take priority over schedule detection for categories that have an explicit method. Move the schedule detection block (lines 641-658) to AFTER the method-based fallback block (lines 660-699). Only use schedule detection as a last resort for categories with method='trailing_avg' or 'schedule':
+    ```python
+    # 1. COGS (revenue_pct) — already handled, no change
+    # 2. Method-based projection FIRST for: media_plan, biweekly_schedule, quarterly_detect
+    if method == 'media_plan':
+        ...
+    elif method == 'biweekly_schedule':
+        ...
+    elif method == 'quarterly_detect':
+        ...
+    # 3. Schedule detection ONLY for trailing_avg and schedule methods
+    elif schedule and schedule.get('has_data'):
+        ...
+    # 4. Final fallback
+    else:
+        ...
+    ```
+  - Verify: Payroll should show $0 in non-payroll weeks and ~$16K in biweekly payroll weeks. Media should show ~$0 most weeks and the full monthly amount near end of month. Sales tax should show in one week per quarter only.
+  - Flagged by: Analysts 3, 14, 16, 19
+
+- [ ] **22d. HIGH: Map Amazon bank transactions to amazon_revenue category**
+  - File: DB `category_mappings` table (via code in `analytics/cashflow.py` or `views/tx_mapping.py`)
+  - Bug: All 51 Amazon bank deposit transactions are unmapped (category='unmapped'). This blocks: (1) Amazon payout ratio auto-calibration (`compute_payout_ratio` returns None), (2) accurate actual-vs-projected comparison for Amazon weeks, (3) proper backtest validation. The transactions contain patterns like "amazon" or "amzn" in their summaries.
+  - Fix: Add category mapping entries for Amazon disbursements:
+    ```python
+    # Insert mapping for Amazon deposit patterns
+    conn.execute("""
+        INSERT INTO category_mappings (match_pattern, category, subcategory, is_transfer, is_duplicate)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (match_pattern) DO UPDATE SET category=EXCLUDED.category, subcategory=EXCLUDED.subcategory
+    """, ('amazon', 'amazon_revenue', 'disbursement', False, False))
+    ```
+    Then identify the actual normalized patterns from the Amazon transactions and add appropriate mappings. Run `reclassify_all_transactions(conn)` after.
+  - Verify: `compute_payout_ratio(conn, 'amazon')` should return a value (~0.57-0.62) instead of None. Amazon actual weeks should show non-zero values in the forecast.
+  - Flagged by: Analysts 2, 5, 12, 15, 18
+
+- [ ] **22e. HIGH: Add logging to all silent exception handlers**
+  - File: `analytics/cashflow.py` (10 locations), `views/cashflow.py` (2 locations)
+  - Bug: 10 of 16 exception handlers silently swallow errors without logging. 3 are bare `except: pass`. Critical data loads (opening balance, Amazon forecast, media plan) have zero logging on failure. If any of these fail, the model silently falls back to defaults with no indication that data is missing.
+  - Fix: Add `log.error()` or `log.warning()` to every exception handler. For critical paths (opening balance, revenue sources), log at ERROR level. For non-critical paths (overrides, settings), log at WARNING level. Replace bare `except: pass` with `except Exception as e: log.warning(...)`:
+    - Line 144-145: classify_transaction DB lookup → `log.warning('classify_transaction DB lookup failed: %s', e)`
+    - Line 799-800: Amazon forecast load → `log.error('Failed to load Amazon revenue forecast: %s', e)`
+    - Line 805-806: Media plan load → `log.error('Failed to load media spend plan: %s', e)`
+    - Line 816-817: Payroll detection → `log.warning('Payroll schedule detection failed: %s', e)`
+    - Line 829-830: Expense schedule detection → `log.warning('Expense schedule detection failed for %s: %s', cat, e)`
+    - Line 851-852: Opening balance → `log.error('Failed to compute opening balance, using seed: %s', e)`
+    - Line 873-874: Override loading → `log.warning('Failed to load cashflow overrides: %s', e)`
+    - Line 1053-1054: Balance freshness → `log.warning('Balance freshness query failed: %s', e)`
+    - views/cashflow.py:380-381: Override loading in view → `log.warning(...)`
+    - views/cashflow.py:587-589: Settings load → `log.warning(...)`
+  - Verify: After fix, no bare `except: pass` should remain. `grep -n "except.*pass" analytics/cashflow.py` should return 0 results.
+  - Flagged by: Analyst 10
+
+- [ ] **22f. HIGH: Link fulfillment costs to revenue volume**
+  - File: `analytics/cashflow.py`, function `_project_expense_week()` (lines 696-699, trailing_avg fallback)
+  - Bug: Fulfillment costs stay flat at ~$5K/week regardless of projected revenue growth. In reality, fulfillment scales with order volume — more orders = more 3PL fees. The model uses a trailing average which never increases even as DTC revenue is projected to grow.
+  - Fix: For fulfillment category, use a revenue-scaling method similar to COGS (revenue_pct). Calculate the historical fulfillment-to-DTC-revenue ratio from actuals, then project future fulfillment as that ratio × projected DTC revenue:
+    ```python
+    if category == 'fulfillment':
+        # Calculate fulfillment as % of DTC revenue from trailing actuals
+        trailing_fulfillment = compute_trailing_avg(conn, 'fulfillment', lookback_weeks=8)
+        trailing_dtc = compute_trailing_avg(conn, 'dtc_revenue', lookback_weeks=8)
+        if trailing_dtc > 0:
+            fulfill_ratio = trailing_fulfillment / trailing_dtc
+            projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
+            return projected_dtc * fulfill_ratio
+        return trailing_fulfillment if trailing_fulfillment > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+    ```
+  - Verify: As DTC revenue grows month-over-month, fulfillment should grow proportionally. If DTC doubles, fulfillment should approximately double.
+  - Flagged by: Analyst 11
+
+- [ ] **22g. HIGH: Fix past-week overrides being honored over actuals**
+  - File: `analytics/cashflow.py`, `build_cashflow_forecast()` (override lookup in weekly row loop, ~lines 876-920)
+  - Bug: The engine checks for overrides BEFORE checking if a week is in the past (is_actual=True). A manually inserted override for a past week overrides actual bank data. The UI correctly prevents editing past weeks (disabled columns), but the engine has no guard — any direct DB insert can override actuals.
+  - Fix: In the weekly row loop, skip override lookup for past weeks. Only apply overrides when `is_past` is False:
+    ```python
+    # Only check overrides for future weeks
+    if not is_past:
+        override_key = (category, str(ws))
+        if override_key in overrides:
+            val = overrides[override_key]
+            ...
+    ```
+  - Verify: Insert a test override for a past week. Re-run forecast. The past week should show actual bank data, not the override value.
+  - Flagged by: Analyst 8
+
+- [ ] **22h. HIGH: Fix COGS scenario interaction (expense multiplier on revenue_pct)**
+  - File: `analytics/cashflow.py`, `_apply_scenario()` (line 702) and COGS calculation in `_project_expense_week()` (lines 630-639)
+  - Bug: COGS uses `revenue_pct` method (25% of gross revenue), but the main loop also applies the expense scenario multiplier (conservative: +10%) on top. In conservative scenario, revenue drops 15% but COGS gets the expense +10% multiplier applied to already-reduced revenue, creating a perverse margin squeeze. In aggressive, COGS gets -5% on already-increased revenue, creating unrealistic margin expansion.
+  - Fix: Skip the scenario expense multiplier for COGS since it already inherits the revenue scenario adjustment through its revenue inputs:
+    ```python
+    # In _apply_scenario or in the main loop where scenario is applied to expenses:
+    if category == 'production' or method == 'revenue_pct':
+        return amount  # COGS already tracks revenue scenario via its revenue inputs
+    ```
+  - Verify: In conservative scenario, COGS should be ~15% lower (matching revenue drop), not higher. COGS/revenue ratio should stay constant across scenarios.
+  - Flagged by: Analyst 13
+
 - [ ] **22. Implement all Phase 3 fixes**
-  - Work through each task appended by task 21, one at a time.
+  - Work through each task (22a-22h) one at a time.
   - For each fix: read the file, make the change, run `pytest tests/ -x`, commit separately.
 
 - [ ] **23. Commit and push Phase 3 fixes**
