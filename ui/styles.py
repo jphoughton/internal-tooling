@@ -308,25 +308,17 @@ hr {
     box-shadow: 0 0 0 3px rgba(126,204,229,0.15) !important;
 }
 
-/* ── Data editor — force white background ── */
-[data-testid="stDataEditor"] {
+/* ── Data editor — styling ── */
+[data-testid="stDataFrame"] {
     border: 1px solid #E8EDF3;
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 2px 12px rgba(15,53,87,0.06);
-    background: #ffffff !important;
 }
-[data-testid="stDataEditor"] > div,
-[data-testid="stDataEditor"] > div > div,
-[data-testid="stDataEditor"] > div > div > div,
-[data-testid="stDataEditor"] div[style],
-[data-testid="stDataEditor"] [data-testid="glideDataEditor"],
-[data-testid="stDataEditor"] canvas,
-[data-testid="stDataEditor"] [role="grid"],
-[data-testid="stDataEditor"] [role="gridcell"],
-[data-testid="stDataEditor"] [role="columnheader"] {
-    background: #ffffff !important;
-    background-color: #ffffff !important;
+/* dvn-scroller must be transparent so the canvas content is visible */
+[data-testid="stDataFrame"] .dvn-scroller {
+    background: transparent !important;
+    background-color: transparent !important;
 }
 
 /* ── File uploader ── */
