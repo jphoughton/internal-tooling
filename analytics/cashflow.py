@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 # Patterns to strip from summaries to create stable matching keys
 _STRIP_PATTERNS = [
     # Numeric IDs (funding IDs, invoice numbers, reference numbers)
-    r'\b[A-Z0-9]{8,}\b',           # long alphanumeric IDs
+    r'\b[a-z0-9]{8,}\b',           # long alphanumeric IDs
     r'\b\d{4,}\b',                  # 4+ digit numbers
     r'#\S+',                        # anything after #
     r'ID:\S*',                      # ID:xxx
