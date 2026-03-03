@@ -2656,3 +2656,160 @@ The lowest point in the entire 56-week forecast is an actual week (W2, Feb 9-15)
 **Overall: 3 PASS, but 1 MEDIUM severity issue (payroll cadence smoothing) and LOW confidence in LOC timing due to previously documented model inflation.**
 
 The model is not useful for LOC draw planning in its current state because the balance trajectory is inflated by $110K+ from opening balance double-counting and $110K/month from Jameson misclassification. The true LOC trigger point, if any, is obscured by these data issues. The payroll stress test passes even with the wrong cadence, but the CFO should not rely on the model's week-by-week payroll timing until schedule detection properly handles biweekly patterns.
+
+---
+
+## Analyst 17 — Amazon Concentration Risk
+
+**Date:** 2026-03-03
+
+### Methodology
+
+Ran `build_cashflow_forecast(start_date=today-4w, weeks=56, scenario='base')` against Railway PostgreSQL. Analyzed 52 projected weeks (weeks 5-56) for Amazon concentration metrics, performed a 4-week freeze simulation and a full 52-week freeze simulation, and checked disbursement gap timing.
+
+### 1. Amazon Dependency %
+
+| Channel | 52-Week Total | % of Total Inflows |
+|---------|--------------|-------------------|
+| DTC | $2,603,799 | 56.5% |
+| Amazon | $1,286,395 | 27.9% |
+| Other (TikTok, Wholesale, Interest, Other) | $718,363 | 15.6% |
+| **Grand Total** | **$4,608,558** | **100%** |
+
+**Quarterly breakdown:**
+
+| Quarter | DTC % | Amazon % | Other % | Total |
+|---------|-------|----------|---------|-------|
+| Q1 2026 (partial) | 51.6% | 26.7% | 21.7% | $301,563 |
+| Q2 2026 | 51.1% | 32.8% | 16.1% | $1,123,573 |
+| Q3 2026 | 57.2% | 29.7% | 13.1% | $1,379,303 |
+| Q4 2026 | 58.7% | 26.9% | 14.5% | $1,246,616 |
+| Q1 2027 (partial) | 63.4% | 16.7% | 19.9% | $557,504 |
+
+**Verdict: PASS — Amazon is 27.9% of total inflows, well below the 60% HIGH concentration threshold.**
+
+**However**, this number is artificially deflated by the Jameson loan misclassification (Analyst 3): ~$55K/month ($13.9K/week) appears as `interest_income` in the "Other" revenue bucket, inflating Other from a true ~$2K/week (TikTok + wholesale) to ~$14K/week. Without the Jameson phantom revenue, the corrected breakdown would be approximately:
+
+| Channel | Corrected Total | Corrected % |
+|---------|----------------|-------------|
+| DTC | $2,603,799 | 66.9% |
+| Amazon | $1,286,395 | 33.1% |
+| Other (actual) | ~$0 | ~0% |
+
+Amazon's true concentration is ~33%, still below 60%. **DTC is the dominant channel at ~67%.**
+
+### 2. Amazon Freeze Simulation — 4 Consecutive Weeks
+
+Zeroed out all Amazon revenue for the first 4 projected weeks (W5-W8, Mar 2 - Mar 29).
+
+| Week | Start | Orig Amazon | Orig Close | Freeze Close | Diff |
+|------|-------|-------------|------------|--------------|------|
+| W5 | 2026-03-02 | $33,540 | $202,758 | $169,218 | -$33,540 |
+| W6 | 2026-03-09 | $0 | $216,046 | $182,507 | -$33,540 |
+| W7 | 2026-03-16 | $0 | $234,431 | $200,891 | -$33,540 |
+| W8 | 2026-03-23 | $46,956 | $275,507 | $195,012 | -$80,495 |
+
+**Result:** Cash never hits $0. Lowest balance during freeze: $169,218 (W5). Total Amazon revenue removed: $80,495.
+
+### 3. Amazon Freeze Simulation — Full 52 Weeks (Extended Stress Test)
+
+Zeroed out ALL Amazon revenue for all 52 projected weeks to determine absolute survivability.
+
+**Model as-is (with known inflation):**
+- Cash never hits $0
+- Total Amazon revenue removed: $1,286,395
+- Lowest balance: $169,218 (W5, Mar 2)
+- Final balance without Amazon: $1,115,510 (vs $2,401,905 with Amazon)
+- Balance trajectory remains positive and growing throughout, due to DTC alone covering expenses
+
+**Balance trajectory without Amazon (every 4 weeks):**
+
+| Week | Date | Closing Balance |
+|------|------|-----------------|
+| W5 | 2026-03-02 | $169,218 |
+| W13 | 2026-04-27 | $245,114 |
+| W21 | 2026-06-22 | $341,703 |
+| W29 | 2026-08-17 | $526,795 |
+| W37 | 2026-10-12 | $720,057 |
+| W45 | 2026-12-07 | $893,347 |
+| W53 | 2027-02-01 | $1,063,016 |
+
+**Corrected estimate (removing known inflation):**
+When adjusting for opening balance double-counting (-$110K) and Jameson misclassification (-$27.5K/week phantom revenue), the corrected full-freeze simulation shows **cash hits $0 at week 8 (Mar 23), just 4 weeks after freeze starts**.
+
+| Scenario | Weeks to $0 | Severity |
+|----------|-------------|----------|
+| Model as-is (inflated) | Never | N/A |
+| Corrected model (estimated) | ~4 weeks | **CRITICAL** |
+
+**Verdict: CONDITIONAL PASS (model) / FAIL (corrected estimate)**
+
+The model says Hydrant survives indefinitely without Amazon, but this is driven by known inflation issues. The corrected estimate suggests cash would hit $0 within ~4 weeks of a full Amazon freeze — **CRITICAL** exposure that the model currently obscures.
+
+**Important caveat:** The corrected estimate is rough. The $27.5K/week Jameson correction may overstate the impact (Jameson payments are declining over time per the PRD). The true answer lies between "never hits $0" and "4 weeks" — likely in the 8-15 week range, which would be **HIGH** severity.
+
+### 4. Disbursement Gap Stress
+
+Examined all 22 Amazon disbursement weeks across the 56-week forecast.
+
+**Disbursement schedule (all 22 events):**
+
+| Week | Date | Amount |
+|------|------|--------|
+| W5 | 2026-03-02 | $33,540 |
+| W8 | 2026-03-23 | $46,956 |
+| W10 | 2026-04-06 | $54,250 |
+| W12 | 2026-04-20 | $54,250 |
+| W14 | 2026-05-04 | $62,000 |
+| W16 | 2026-05-18 | $62,000 |
+| W19 | 2026-06-08 | $68,200 |
+| W21 | 2026-06-22 | $68,200 |
+| W23 | 2026-07-06 | $68,200 |
+| W25 | 2026-07-20 | $68,200 |
+| W27 | 2026-08-03 | $68,200 |
+| W30 | 2026-08-24 | $68,200 |
+| W32 | 2026-09-07 | $68,200 |
+| W34 | 2026-09-21 | $68,200 |
+| W36 | 2026-10-05 | $58,900 |
+| W38 | 2026-10-19 | $58,900 |
+| W40 | 2026-11-02 | $55,800 |
+| W43 | 2026-11-23 | $55,800 |
+| W45 | 2026-12-07 | $52,700 |
+| W47 | 2026-12-21 | $52,700 |
+| W49 | 2027-01-04 | $46,500 |
+| W51 | 2027-01-18 | $46,500 |
+
+**Gap analysis:**
+
+| Metric | Value |
+|--------|-------|
+| Total disbursement events | 22 (across 13 months) |
+| Events per month | Exactly 2 (consistent with Task 1 fix) |
+| Min gap | 14 days |
+| Max gap | 21 days |
+| Average gap | 15.3 days |
+| Gaps > 21 days | **0** |
+
+**Verdict: PASS — No disbursement gap exceeds 21 days.**
+
+The maximum gap of 21 days occurs 4 times (at month boundaries where the early disbursement of the next month falls 3 weeks after the late disbursement of the previous month). This matches the expected biweekly cadence with day-8/day-24 midpoint assignment from the Task 1 fix. No timing bugs detected.
+
+### Summary
+
+| Check | Result | Severity | Confidence |
+|-------|--------|----------|------------|
+| Amazon dependency % | **PASS** — 27.9% (threshold: 60%) | N/A | MEDIUM — deflated by Jameson phantom revenue |
+| 4-week freeze (model as-is) | **PASS** — Cash stays at $169K+ | N/A | LOW — model inflated |
+| Full freeze (model as-is) | **PASS** — Cash never hits $0 | N/A | LOW — model inflated |
+| Full freeze (corrected estimate) | **FAIL** — Cash hits $0 in ~4 weeks | CRITICAL | LOW — rough correction |
+| Disbursement gap timing | **PASS** — Max gap 21 days, no gaps >21 | N/A | HIGH |
+
+**Overall: 4 PASS, 1 FAIL (CRITICAL on corrected freeze estimate). Confidence in freeze simulation is LOW due to model inflation from previously documented bugs.**
+
+### Key Takeaways for CFO
+
+1. **Amazon is ~28-33% of cash inflows** — not the dominant channel. DTC (Shopify) drives ~57-67% of revenue. This is a healthy diversification ratio.
+2. **However, Amazon timing matters more than volume.** Amazon disbursements are biweekly lumps of $34-68K. In weeks without a disbursement, inflows drop 40-50%. The model correctly captures this lumpiness.
+3. **The freeze simulation is unreliable** until the opening balance double-counting and Jameson misclassification are fixed. The model shows Hydrant surviving indefinitely without Amazon, which is almost certainly wrong. The corrected estimate (4 weeks to $0) is the opposite extreme. The true answer requires clean data.
+4. **Amazon disbursement timing is mechanically correct** — exactly 2 per month, no overcounting, no gaps >21 days. The Task 1 fix is working as designed.
+5. **Recommendation:** After fixing the data issues (Phase 3), re-run this analysis. The CFO needs an accurate answer to "how long can we survive without Amazon?" for contingency planning.

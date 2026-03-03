@@ -373,7 +373,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - **Minimum cash week**: Identify the single week with the lowest closing balance across all 52 weeks. Report it. If it's negative, FAIL. If it's below $50K, WARN.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20h. Analyst 17 — Amazon Concentration Risk**
+- [x] **20h. Analyst 17 — Amazon Concentration Risk**
   - Read ALL prior findings.
   - Run `build_cashflow_forecast()` for 52 weeks.
   - **Amazon dependency %**: Calculate what % of total weekly inflows come from Amazon vs DTC vs other. If Amazon is >60% of total cash inflows, flag as HIGH concentration risk.
