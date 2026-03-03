@@ -97,7 +97,7 @@ def render(ctx):
                         SUM(amount) as total_amount,
                         MIN(tx_date) as first_seen,
                         MAX(tx_date) as last_seen,
-                        category as current_category
+                        MAX(category) as current_category
                     FROM cashflow_transactions
                     WHERE (category = 'unmapped' OR category IS NULL)
                     GROUP BY LOWER(COALESCE(summary, '')), direction
@@ -113,7 +113,7 @@ def render(ctx):
                         SUM(amount) as total_amount,
                         MIN(tx_date) as first_seen,
                         MAX(tx_date) as last_seen,
-                        category as current_category
+                        MAX(category) as current_category
                     FROM cashflow_transactions
                     GROUP BY LOWER(COALESCE(summary, '')), direction
                     ORDER BY tx_count DESC
