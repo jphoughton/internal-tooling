@@ -954,7 +954,7 @@ def build_cashflow_forecast(
         total_inflows = 0
         for cat in revenue_cats:
             override_key = (cat, ws_str)
-            if override_key in overrides:
+            if not is_past and override_key in overrides:
                 val = overrides[override_key]
             elif is_past:
                 val = actuals_cache.get(cat, {}).get(ws_str, 0)
@@ -992,7 +992,7 @@ def build_cashflow_forecast(
         total_outflows = 0
         for cat in expense_cats:
             override_key = (cat, ws_str)
-            if override_key in overrides:
+            if not is_past and override_key in overrides:
                 val = overrides[override_key]
             elif is_past:
                 val = actuals_cache.get(cat, {}).get(ws_str, 0)

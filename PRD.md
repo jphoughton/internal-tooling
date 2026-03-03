@@ -545,7 +545,7 @@ Acceptance criteria: All dynamically-generated tasks complete. Code committed an
   - Verify: As DTC revenue grows month-over-month, fulfillment should grow proportionally. If DTC doubles, fulfillment should approximately double.
   - Flagged by: Analyst 11
 
-- [ ] **22g. HIGH: Fix past-week overrides being honored over actuals**
+- [x] **22g. HIGH: Fix past-week overrides being honored over actuals**
   - File: `analytics/cashflow.py`, `build_cashflow_forecast()` (override lookup in weekly row loop, ~lines 876-920)
   - Bug: The engine checks for overrides BEFORE checking if a week is in the past (is_actual=True). A manually inserted override for a past week overrides actual bank data. The UI correctly prevents editing past weeks (disabled columns), but the engine has no guard — any direct DB insert can override actuals.
   - Fix: In the weekly row loop, skip override lookup for past weeks. Only apply overrides when `is_past` is False:
