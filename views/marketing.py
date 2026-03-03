@@ -228,8 +228,8 @@ def render(ctx):
             _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
             _cm_ret_orders = int(mkt_df.loc[_cm_mask, "_ret_orders"].sum()) if _cm_mask.any() else 0
 
-            # Amazon MTD from amazon_daily_rollup (New Customers, NC Rev, Spend)
-            # Revenue still from daily_sku_sales (more complete)
+            # Amazon MTD: Revenue from daily_sku_sales, Spend from amazon_daily_rollup,
+            # NC + NC Rev from orders/order_items (populated by fulfillment report)
             _cm_amz_rev = 0
             _cm_amz_spend = 0
             _cm_amz_nc = 0
@@ -238,21 +238,47 @@ def render(ctx):
                 with get_db() as _amz_conn:
                     # Revenue from daily_sku_sales
                     _amz_mtd = _amz_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
+                        "SELECT SUM(revenue) FROM daily_sku_sales "
+                        "WHERE source = 'amazon' AND sale_date >= %s AND sale_date <= %s",
                         (f"{_cur_month}-01", _yesterday_str),
                     ).fetchone()
                     _cm_amz_rev = float(_amz_mtd[0] or 0)
 
-                    # Spend, NC, NC Rev from amazon_daily_rollup
+                    # Spend from amazon_daily_rollup
                     _amz_rollup = _amz_conn.execute(
-                        "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
-                        "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
+                        "SELECT SUM(spend) AS total_spend "
+                        "FROM amazon_daily_rollup WHERE date >= %s AND date <= %s",
                         (f"{_cur_month}-01", _yesterday_str),
                     ).fetchone()
                     if _amz_rollup and _amz_rollup["total_spend"] is not None:
                         _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
-                        _cm_amz_nc = int(float(_amz_rollup["total_nc"] or 0))
-                        _cm_amz_nc_rev = float(_amz_rollup["total_nc_rev"] or 0)
+
+                    # Amazon NC + NC Rev from orders/order_items (DB ground truth)
+                    _amz_nc_row = _amz_conn.execute(
+                        "WITH cust_first AS ("
+                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                        "  FROM orders WHERE source = 'amazon'"
+                        "  GROUP BY customer_id"
+                        ") "
+                        "SELECT"
+                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= %s"
+                        "       AND cf.first_order_date <= %s"
+                        "       THEN o.customer_id END) AS new_customers,"
+                        "  SUM(CASE WHEN cf.first_order_date >= %s"
+                        "       AND cf.first_order_date <= %s"
+                        "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                        " FROM orders o"
+                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                        " JOIN order_items oi ON o.order_id = oi.order_id"
+                        " WHERE o.order_date BETWEEN %s AND %s"
+                        " AND o.source = 'amazon'",
+                        (f"{_cur_month}-01", _yesterday_str,
+                         f"{_cur_month}-01", _yesterday_str,
+                         f"{_cur_month}-01", _yesterday_str),
+                    ).fetchone()
+                    if _amz_nc_row:
+                        _cm_amz_nc = int(_amz_nc_row[0] or 0)
+                        _cm_amz_nc_rev = float(_amz_nc_row[1] or 0)
             except Exception:
                 pass
 
@@ -294,7 +320,8 @@ def render(ctx):
             _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
             _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-            # Amazon L7D from daily_sku_sales (revenue) + amazon_daily_rollup (spend/NC)
+            # Amazon L7D: Revenue from daily_sku_sales, Spend from amazon_daily_rollup,
+            # NC + NC Rev from orders/order_items (DB ground truth)
             _l7d_amz_rev = 0
             _l7d_amz_spend = 0
             _l7d_amz_nc = 0
@@ -303,20 +330,47 @@ def render(ctx):
                 _l7d_start_str = str(_l7d_start)
                 with get_db() as _l7_conn:
                     _l7_amz = _l7_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
+                        "SELECT SUM(revenue) FROM daily_sku_sales "
+                        "WHERE source = 'amazon' AND sale_date >= %s AND sale_date <= %s",
                         (_l7d_start_str, _yesterday_str),
                     ).fetchone()
                     _l7d_amz_rev = float(_l7_amz[0] or 0) / 7
-                    # Rollup L7D
+
+                    # Spend from amazon_daily_rollup
                     _l7_rollup = _l7_conn.execute(
-                        "SELECT SUM(spend) AS total_spend, SUM(new_customers) AS total_nc, SUM(new_customer_rev) AS total_nc_rev "
-                        "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
+                        "SELECT SUM(spend) AS total_spend "
+                        "FROM amazon_daily_rollup WHERE date >= %s AND date <= %s",
                         (_l7d_start_str, _yesterday_str),
                     ).fetchone()
                     if _l7_rollup and _l7_rollup["total_spend"] is not None:
                         _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
-                        _l7d_amz_nc = float(_l7_rollup["total_nc"] or 0) / 7
-                        _l7d_amz_nc_rev = float(_l7_rollup["total_nc_rev"] or 0) / 7
+
+                    # Amazon NC + NC Rev from orders/order_items (DB ground truth)
+                    _l7_nc_row = _l7_conn.execute(
+                        "WITH cust_first AS ("
+                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                        "  FROM orders WHERE source = 'amazon'"
+                        "  GROUP BY customer_id"
+                        ") "
+                        "SELECT"
+                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= %s"
+                        "       AND cf.first_order_date <= %s"
+                        "       THEN o.customer_id END) AS new_customers,"
+                        "  SUM(CASE WHEN cf.first_order_date >= %s"
+                        "       AND cf.first_order_date <= %s"
+                        "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                        " FROM orders o"
+                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                        " JOIN order_items oi ON o.order_id = oi.order_id"
+                        " WHERE o.order_date BETWEEN %s AND %s"
+                        " AND o.source = 'amazon'",
+                        (_l7d_start_str, _yesterday_str,
+                         _l7d_start_str, _yesterday_str,
+                         _l7d_start_str, _yesterday_str),
+                    ).fetchone()
+                    if _l7_nc_row:
+                        _l7d_amz_nc = float(_l7_nc_row[0] or 0) / 7
+                        _l7d_amz_nc_rev = float(_l7_nc_row[1] or 0) / 7
             except Exception:
                 pass
 
@@ -328,7 +382,8 @@ def render(ctx):
             _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
             _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-            # Amazon yesterday from daily_sku_sales + amazon_daily_rollup
+            # Amazon yesterday: Revenue from daily_sku_sales, Spend from amazon_daily_rollup,
+            # NC + NC Rev from orders/order_items (DB ground truth)
             _yd_amz_rev = 0
             _yd_amz_spend = 0
             _yd_amz_nc = 0
@@ -336,19 +391,42 @@ def render(ctx):
             try:
                 with get_db() as _yd_conn:
                     _yd_amz = _yd_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date = ?",
+                        "SELECT SUM(revenue) FROM daily_sku_sales "
+                        "WHERE source = 'amazon' AND sale_date = %s",
                         (_yesterday_str,),
                     ).fetchone()
                     _yd_amz_rev = float(_yd_amz[0] or 0)
+
+                    # Spend from amazon_daily_rollup
                     _yd_rollup = _yd_conn.execute(
-                        "SELECT spend, new_customers, new_customer_rev "
-                        "FROM amazon_daily_rollup WHERE date = ?",
+                        "SELECT spend FROM amazon_daily_rollup WHERE date = %s",
                         (_yesterday_str,),
                     ).fetchone()
                     if _yd_rollup:
                         _yd_amz_spend = float(_yd_rollup[0] or 0)
-                        _yd_amz_nc = int(float(_yd_rollup[1] or 0))
-                        _yd_amz_nc_rev = float(_yd_rollup[2] or 0)
+
+                    # Amazon NC + NC Rev from orders/order_items (DB ground truth)
+                    _yd_nc_row = _yd_conn.execute(
+                        "WITH cust_first AS ("
+                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
+                        "  FROM orders WHERE source = 'amazon'"
+                        "  GROUP BY customer_id"
+                        ") "
+                        "SELECT"
+                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date = %s"
+                        "       THEN o.customer_id END) AS new_customers,"
+                        "  SUM(CASE WHEN cf.first_order_date = %s"
+                        "       THEN oi.total_price ELSE 0 END) AS new_rev"
+                        " FROM orders o"
+                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
+                        " JOIN order_items oi ON o.order_id = oi.order_id"
+                        " WHERE o.order_date = %s"
+                        " AND o.source = 'amazon'",
+                        (_yesterday_str, _yesterday_str, _yesterday_str),
+                    ).fetchone()
+                    if _yd_nc_row:
+                        _yd_amz_nc = int(_yd_nc_row[0] or 0)
+                        _yd_amz_nc_rev = float(_yd_nc_row[1] or 0)
             except Exception:
                 pass
 
@@ -520,10 +598,10 @@ def render(ctx):
                 _l7d_dtc_spend = _l7d_spend
                 _yd_dtc_spend = _yd_spend
 
-                # -- Amazon data from amazon_daily_rollup (spend, NC, NC rev already loaded above) --
-                # _cm_amz_spend, _cm_amz_nc, _cm_amz_nc_rev set above from DB
-                # _l7d_amz_spend, _l7d_amz_nc, _l7d_amz_nc_rev set above from DB
-                # _yd_amz_spend, _yd_amz_nc, _yd_amz_nc_rev set above from DB
+                # -- Amazon data (spend from amazon_daily_rollup, NC from orders/order_items) --
+                # _cm_amz_spend from rollup; _cm_amz_nc, _cm_amz_nc_rev from orders DB
+                # _l7d_amz_spend from rollup; _l7d_amz_nc, _l7d_amz_nc_rev from orders DB
+                # _yd_amz_spend from rollup; _yd_amz_nc, _yd_amz_nc_rev from orders DB
 
                 # -- Combined Roll Up totals (DTC + Amazon) --
                 _cm_total_spend = _cm_dtc_spend + _cm_amz_spend
@@ -568,7 +646,7 @@ def render(ctx):
                     eff2.metric("Total NC ROAS", f"{_total_nc_roas:.2f}x",
                                 help="Total NC Revenue / Total Spend")
                     eff3.metric("New Customers", f"{_cm_total_nc:,}",
-                                help="DTC new customer orders")
+                                help="DTC + Amazon new customers MTD")
                     eff4.metric("Blended CPA", f"${_blended_cpa:,.0f}",
                                 help="Total Spend / Total New Customers")
 
@@ -618,13 +696,13 @@ def render(ctx):
                     _render_white_table(_style_pace_df(_dtc_df))
 
                 # ============================================================
-                # AMAZON — from amazon_daily_rollup
+                # AMAZON — revenue from daily_sku_sales, spend from rollup, NC from orders DB
                 # ============================================================
                 if _nav_channel in ('Rollup', 'Amazon'):
                     if _nav_channel == 'Rollup':
                         st.markdown("---")
                     st.subheader("Amazon")
-                    st.caption('Amazon-only pacing from daily_sku_sales + amazon_daily_rollup.')
+                    st.caption('Amazon pacing: revenue from daily_sku_sales, spend from rollup, NC from orders DB.')
 
                     # Amazon KPIs (above table)
                     _amz_cpa = _cm_amz_spend / _cm_amz_nc if _cm_amz_nc > 0 else 0
