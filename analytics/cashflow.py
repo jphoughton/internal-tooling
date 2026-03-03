@@ -207,27 +207,32 @@ def reclassify_all_transactions(conn: ConnectionWrapper) -> int:
     if not mappings:
         return 0
 
+    # Load all transactions once and build normalized-pattern → tx_ids lookup
+    txs = read_sql(
+        "SELECT tx_id, summary FROM cashflow_transactions",
+        conn,
+    )
+    if txs.empty:
+        return 0
+
+    pattern_to_txids = {}
+    for _, tx in txs.iterrows():
+        norm = normalize_summary(tx['summary'] or '')
+        pattern_to_txids.setdefault(norm, []).append(tx['tx_id'])
+
     updated = 0
     for mapping in mappings:
-        pattern = mapping['match_pattern']
-        # Find transactions whose normalized summary matches this pattern
-        txs = read_sql(
-            "SELECT tx_id, summary FROM cashflow_transactions",
-            conn,
-        )
-        if txs.empty:
-            continue
-
-        for _, tx in txs.iterrows():
-            norm = normalize_summary(tx['summary'] or '')
-            if norm == pattern:
-                conn.execute(
-                    "UPDATE cashflow_transactions SET category = %s, subcategory = %s, "
-                    "is_transfer = %s, is_duplicate = %s WHERE tx_id = %s",
-                    (mapping['category'], mapping['subcategory'],
-                     mapping['is_transfer'], mapping['is_duplicate'], tx['tx_id']),
-                )
-                updated += 1
+        tx_ids = pattern_to_txids.get(mapping['match_pattern'], [])
+        if tx_ids:
+            placeholders = ','.join(['%s'] * len(tx_ids))
+            conn.execute(
+                f"UPDATE cashflow_transactions SET category = %s, subcategory = %s, "
+                f"is_transfer = %s, is_duplicate = %s "
+                f"WHERE tx_id IN ({placeholders})",
+                (mapping['category'], mapping['subcategory'],
+                 mapping['is_transfer'], mapping['is_duplicate'], *tx_ids),
+            )
+            updated += len(tx_ids)
 
     return updated
 
