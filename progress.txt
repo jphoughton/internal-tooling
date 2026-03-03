@@ -1,0 +1,17 @@
+# Cash Flow Model Fix Progress
+
+## Completed
+- Task 1: Replaced _is_amazon_disbursement_week() with _build_amazon_disbursement_schedule() that pre-computes all disbursement events across all weeks ONCE, assigning each to exactly one week via midpoint dates (day 8 early, day 24 late). Updated _project_revenue_week() to look up from ctx. Added pre-computation in build_cashflow_forecast().
+- Task 2: Fixed get_cashflow_kpis() — current_cash now reads from the current-week row (not row 0 which is 4 weeks ago). projected_13w indexed from current week.
+- Task 7: Monthly burn now uses min 2 actual weeks (not projected fallback).
+- Task 8: Added balance_freshness_date to KPIs dict from MAX(tx_date).
+
+## Current
+Next unchecked task: Task 3 (Fix missing DTC seasonality in waterfall call)
+
+## Notes
+- analytics/cashflow.py is the main file being modified
+- build_waterfall() DOES accept seasonal_indices parameter (confirmed from waterfall.py line 349-350)
+- 4 bank accounts: Highbeam Checking ($38,667), Highbeam Savings ($15,473), BofA Checking ($62,867), Amex (-$30,258)
+- No local DB — must use Railway DATABASE_URL for any data queries
+- pytest tests/ -x for regression testing

@@ -389,32 +389,54 @@ def _get_actual_weekly_totals(conn: ConnectionWrapper, category: str, weeks: lis
     return result
 
 
-def _is_amazon_disbursement_week(week_start: date, week_end: date) -> dict:
-    """Detect Amazon disbursement events within a week.
+def _build_amazon_disbursement_schedule(week_list: list) -> dict:
+    """Pre-compute Amazon disbursement events across ALL weeks at once.
 
-    Amazon disburses biweekly, typically landing around the 7th-10th and
-    23rd-25th of each month.  A single week can span two calendar months,
-    so we check every day in the range and return a dict of
-    {month_key: count_of_disbursement_events} (0, 1, or rarely 2).
+    Amazon disburses biweekly, typically around day 8 (early) and day 24
+    (late) of each month.  Each disbursement is assigned to exactly one
+    week — the week that contains the midpoint date — eliminating the
+    double-counting bug where a disbursement window spanning two weeks
+    was detected by both.
+
+    Returns dict keyed by week_start string: {ws_str: {month_key: count}}.
     """
-    EARLY_WINDOW = range(7, 11)   # days 7, 8, 9, 10
-    LATE_WINDOW = range(23, 26)   # days 23, 24, 25
+    if not week_list:
+        return {}
 
-    disbursements = {}  # {YYYY-MM: number of disbursement events}
-    # Track which (month, window) pairs we have already counted so a
-    # multi-day window landing entirely inside one week only counts once.
-    seen = set()
+    first_ws = week_list[0][0]
+    last_we = week_list[-1][1]
 
-    d = week_start
-    while d <= week_end:
-        month_key = d.strftime('%Y-%m')
-        for label, window in (('early', EARLY_WINDOW), ('late', LATE_WINDOW)):
-            if d.day in window and (month_key, label) not in seen:
-                seen.add((month_key, label))
-                disbursements[month_key] = disbursements.get(month_key, 0) + 1
-        d += timedelta(days=1)
+    # Generate all disbursement midpoint dates in the date range.
+    # Early window midpoint = 8th, late window midpoint = 24th.
+    disbursement_dates = []  # list of (date, month_key)
+    y, m = first_ws.year, first_ws.month
+    last_y, last_m = last_we.year, last_we.month
+    while (y, m) <= (last_y, last_m):
+        month_key = f'{y:04d}-{m:02d}'
+        for mid_day in (8, 24):
+            try:
+                d = date(y, m, mid_day)
+            except ValueError:
+                continue  # shouldn't happen for day 8 or 24
+            if first_ws <= d <= last_we:
+                disbursement_dates.append((d, month_key))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
 
-    return disbursements
+    # Assign each disbursement to the week that contains its midpoint date.
+    schedule = {}  # {ws_str: {month_key: count}}
+    for disb_date, month_key in disbursement_dates:
+        for ws, we in week_list:
+            if ws <= disb_date <= we:
+                ws_str = str(ws)
+                if ws_str not in schedule:
+                    schedule[ws_str] = {}
+                schedule[ws_str][month_key] = schedule[ws_str].get(month_key, 0) + 1
+                break  # assigned — move to next disbursement
+
+    return schedule
 
 
 def _project_revenue_week(
@@ -453,19 +475,21 @@ def _project_revenue_week(
         return total * ratio
 
     elif category == 'amazon_revenue':
-        # Amazon disburses biweekly (~7th-10th and ~23rd-25th of each
-        # month).  Non-disbursement weeks should show $0 so the cash
-        # flow table reflects actual deposit timing.
+        # Amazon disburses biweekly (~8th and ~24th of each month).
+        # Non-disbursement weeks show $0 so the table reflects actual
+        # deposit timing.  Uses pre-computed schedule from ctx to avoid
+        # the per-week double-counting bug.
         monthly_rev = ctx.get('amazon_monthly_revenue', {})
         ratio = ctx.get('amazon_payout_ratio', 0.62)
 
-        disbursements = _is_amazon_disbursement_week(week_start, week_end)
-        if not disbursements:
+        schedule = ctx.get('_amazon_disbursements', {})
+        week_disb = schedule.get(str(week_start), {})
+        if not week_disb:
             return 0.0
 
         # Each disbursement event = half the month's payout
         total = 0.0
-        for month_key, count in disbursements.items():
+        for month_key, count in week_disb.items():
             monthly = monthly_rev.get(month_key, 0)
             total += (monthly * ratio / 2) * count
         return total
@@ -785,6 +809,9 @@ def build_cashflow_forecast(
     except Exception:
         ctx['last_payroll_amount'] = 8000
 
+    # --- Pre-compute Amazon disbursement schedule (once, not per-week) ---
+    ctx['_amazon_disbursements'] = _build_amazon_disbursement_schedule(week_list)
+
     # --- Pre-detect expense schedules (once, not per-week) ---
     expense_cats_list = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
     for cat in expense_cats_list:
@@ -949,22 +976,39 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
 
     min_threshold = float(get_cashflow_setting(conn, 'min_cash_threshold', '100000'))
 
-    current_cash = forecast_df.iloc[0]['opening_balance'] if not forecast_df.empty else 0
+    today = date.today()
+    today_str = str(today)
 
-    # 13-week projected
-    if len(forecast_df) >= 13:
-        projected_13w = forecast_df.iloc[12]['closing_balance']
+    # Find the current week's row (not row 0, which is 4 weeks ago)
+    current_idx = 0
+    for idx, row in forecast_df.iterrows():
+        if row['week_start'] <= today_str and row['week_end'] >= today_str:
+            current_idx = idx
+            break
+    else:
+        # Fallback: last actual row
+        actuals = forecast_df[forecast_df['is_actual'] == True]  # noqa: E712
+        if not actuals.empty:
+            current_idx = actuals.index[-1]
+
+    current_cash = forecast_df.loc[current_idx, 'opening_balance'] if not forecast_df.empty else 0
+
+    # 13-week projected (relative to current week)
+    target_13w = current_idx + 13
+    if target_13w < len(forecast_df):
+        projected_13w = forecast_df.iloc[target_13w]['closing_balance']
     else:
         projected_13w = forecast_df.iloc[-1]['closing_balance'] if not forecast_df.empty else 0
 
     # 52-week projected
     projected_52w = forecast_df.iloc[-1]['closing_balance'] if not forecast_df.empty else 0
 
-    # Monthly burn (trailing 4 weeks average net outflow)
+    # Monthly burn (trailing actuals only — minimum 2 weeks)
     recent = forecast_df[forecast_df['is_actual'] == True]  # noqa: E712
-    if len(recent) >= 4:
-        monthly_burn = -recent.tail(4)['net_cashflow'].mean() * 4.33
+    if len(recent) >= 2:
+        monthly_burn = -recent.tail(min(4, len(recent)))['net_cashflow'].mean() * 4.33
     else:
+        # Not enough actuals — use projected as fallback
         monthly_burn = -forecast_df.head(4)['net_cashflow'].mean() * 4.33
 
     # Runway
@@ -982,6 +1026,17 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
             alert_week = row['week_num']
             break
 
+    # Data freshness
+    balance_freshness = None
+    try:
+        latest_tx = conn.execute(
+            "SELECT MAX(tx_date) as latest FROM cashflow_transactions"
+        ).fetchone()
+        if latest_tx and latest_tx['latest']:
+            balance_freshness = str(latest_tx['latest'])
+    except Exception:
+        pass
+
     return {
         'current_cash': current_cash,
         'projected_13w': projected_13w,
@@ -990,4 +1045,5 @@ def get_cashflow_kpis(conn: ConnectionWrapper, forecast_df: pd.DataFrame) -> dic
         'runway_weeks': runway_weeks,
         'min_cash_threshold': min_threshold,
         'alert_week': alert_week,
+        'balance_freshness_date': balance_freshness,
     }
