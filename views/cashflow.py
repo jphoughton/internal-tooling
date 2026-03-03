@@ -180,12 +180,93 @@ def _build_inflow_outflow_chart(df: pd.DataFrame, horizon_weeks: int) -> go.Figu
 
 
 
+def _render_kpi_row(kpis):
+    """Render the KPI row as the most prominent visual element.
+
+    Current Cash is largest. Color indicator: green above threshold,
+    yellow within 20%, red below.
+    """
+    current = kpis['current_cash']
+    threshold = kpis['min_cash_threshold']
+    freshness = kpis.get('balance_freshness_date', '')
+
+    # Color indicator for Current Cash
+    if current >= threshold * 1.2:
+        cash_color = '#16a34a'  # green — healthy
+    elif current >= threshold:
+        cash_color = '#d97706'  # amber — watch
+    else:
+        cash_color = '#dc2626'  # red — below threshold
+
+    freshness_html = (
+        f'<span style="font-size:0.7rem;color:#94a3b8;font-weight:400;">'
+        f'as of {freshness}</span>'
+        if freshness else ''
+    )
+
+    burn = kpis['monthly_burn']
+    burn_label = 'outflow' if burn > 0 else 'inflow'
+    burn_color = '#dc2626' if burn > 0 else '#16a34a'
+
+    runway = kpis['runway_weeks']
+    runway_text = f'{runway}+ wks' if runway >= 52 else f'{runway} wks'
+    runway_color = '#16a34a' if runway >= 26 else '#d97706' if runway >= 13 else '#dc2626'
+
+    st.markdown(f'''
+    <div style="display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap;margin:8px 0 20px;">
+      <div style="flex:1.4;min-width:160px;">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">Current Cash</div>
+        <div style="font-size:2.2rem;font-weight:800;color:{cash_color};
+                    letter-spacing:-0.03em;line-height:1.1;">
+          ${current:,.0f}
+        </div>
+        {freshness_html}
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">13-Week Projected</div>
+        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;">
+          ${kpis['projected_13w']:,.0f}
+        </div>
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">52-Week Projected</div>
+        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;">
+          ${kpis['projected_52w']:,.0f}
+        </div>
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">Monthly Burn</div>
+        <div style="font-size:1.5rem;font-weight:700;color:#0F3557;
+                    letter-spacing:-0.02em;line-height:1.2;">
+          ${abs(burn):,.0f}
+        </div>
+        <span style="font-size:0.7rem;color:{burn_color};font-weight:600;">{burn_label}</span>
+      </div>
+      <div style="flex:0.7;min-width:80px;">
+        <div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;
+                    color:#94a3b8;font-weight:600;margin-bottom:2px;">Runway</div>
+        <div style="font-size:1.5rem;font-weight:700;color:{runway_color};
+                    letter-spacing:-0.02em;line-height:1.2;">
+          {runway_text}
+        </div>
+      </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+
 def render(ctx):
     """Render the Cash Flow Forecasting page."""
     st.markdown('## Cash Flow Forecast')
 
-    # Controls row
-    ctrl_cols = st.columns([1, 1, 2])
+    # Build forecast first (need KPIs before rendering anything)
+    # Controls row — secondary, filter-style
+    ctrl_cols = st.columns([1, 1, 4])
     with ctrl_cols[0]:
         scenario = st.segmented_control(
             'Scenario',
@@ -228,59 +309,53 @@ def render(ctx):
         _render_upload_section()
         return
 
-    # Alert banner
+    # 1. KPI row — most prominent, CFO looks here first
+    _render_kpi_row(kpis)
+
+    # 2. Alert banner — only when something needs attention
     if kpis.get('alert_week'):
         week_num = kpis['alert_week']
         alert_rows = forecast_df[forecast_df['week_num'] == week_num]
         if not alert_rows.empty:
             alert_balance = alert_rows.iloc[0]['closing_balance']
-            st.error(
-                'Cash below \\$%s projected in **Week %d** (est. \\$%s)'
+            st.warning(
+                'Cash projected below \\$%s in **Week %d** (est. \\$%s)'
                 % (f"{kpis['min_cash_threshold']:,.0f}", week_num, f"{alert_balance:,.0f}"),
+                icon='\u26a0\ufe0f',
             )
 
-    # KPI row
-    kpi_cols = st.columns(5)
-    kpi_cols[0].metric('Current Cash', f"${kpis['current_cash']:,.0f}")
-    freshness = kpis.get('balance_freshness_date')
-    if freshness:
-        kpi_cols[0].caption(f'as of {freshness}')
-    kpi_cols[1].metric('13-Week Projected', f"${kpis['projected_13w']:,.0f}")
-    kpi_cols[2].metric('52-Week Projected', f"${kpis['projected_52w']:,.0f}")
-    kpi_cols[3].metric(
-        'Monthly Burn',
-        f"${abs(kpis['monthly_burn']):,.0f}",
-        delta='outflow' if kpis['monthly_burn'] > 0 else 'inflow',
-        delta_color='inverse',
+    # 3. Chart — tells the story at a glance
+    st.markdown(
+        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:#94a3b8;font-weight:600;margin:24px 0 4px;">Projected Cash Balance</p>',
+        unsafe_allow_html=True,
     )
-    runway_text = f"{kpis['runway_weeks']}+ wks" if kpis['runway_weeks'] >= 52 else f"{kpis['runway_weeks']} wks"
-    kpi_cols[4].metric('Runway', runway_text)
-
-    st.markdown('---')
-
-    # Cash balance chart
-    st.markdown('#### Projected Cash Balance')
     fig = _build_balance_chart(forecast_df, kpis['min_cash_threshold'], horizon_weeks + 4)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Weekly cash flow table (editable)
-    st.markdown('#### Weekly Detail')
+    # Breathing room
+    st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
+
+    # 4. Table — detail layer, reference material
+    st.markdown(
+        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:#94a3b8;font-weight:600;margin:0 0 4px;">Weekly Detail</p>',
+        unsafe_allow_html=True,
+    )
     _render_editable_table(forecast_df, horizon_weeks + 4)
 
-    # Inflow/Outflow chart in expander
+    # Secondary sections — collapsed by default
+    st.markdown('<div style="margin-top:24px;"></div>', unsafe_allow_html=True)
     with st.expander('Inflows vs Outflows', expanded=False):
         fig2 = _build_inflow_outflow_chart(forecast_df, horizon_weeks + 4)
         st.plotly_chart(fig2, use_container_width=True)
 
-    # Model settings expander
     with st.expander('Model Settings', expanded=False):
         _render_settings_section()
 
-    # Upload section
     with st.expander('Upload Transactions', expanded=False):
         _render_upload_section()
 
-    # Mapping link
     with st.expander('Transaction Mappings', expanded=False):
         _render_mapping_link()
 

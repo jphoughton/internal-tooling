@@ -647,7 +647,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Make sure buttons render in a clean grid (up to 4 per row), not stacked vertically.
   - If NO categories have overrides, the entire "Manual overrides active" section should be hidden.
 
-- [ ] **30. Information hierarchy & visual scanability**
+- [x] **30. Information hierarchy & visual scanability**
   - File: `views/cashflow.py`
   - The page should follow a clear information hierarchy — most important thing first, details on demand:
     1. **KPI row**: These are the "glanceable" numbers. The CFO looks here first. Make sure they're large, bold, and the most prominent element on the page. Current Cash should be the biggest number. Add a subtle color indicator: green if above threshold, yellow if within 20% of threshold, red if below.

@@ -141,6 +141,8 @@
 5. **Planned inbound POs not consumed**: PO data in planned_inbound table is not used by cash flow engine for expense spikes.
 6. **DTC payout seed**: Seed 0.94 is slightly below actual ~0.98; auto-calibration compensates but seed could be updated.
 
+- Task 30: Information hierarchy & visual scanability. Restructured views/cashflow.py page layout for clear information hierarchy: (1) Replaced st.metric KPI row with custom HTML _render_kpi_row() — Current Cash is now 2.2rem/800-weight (largest on page), other KPIs at 1.5rem/700-weight, with color indicators: green if >120% of threshold, amber if between 100-120%, red if below. Runway also color-coded (green 26+, amber 13-25, red <13 weeks). (2) Reordered page: KPIs now render FIRST (before alert banner), establishing them as the glanceable headline. (3) Changed alert banner from st.error (always alarming) to st.warning with icon — feels urgent but not "page is broken" for every load. (4) Section headers (Projected Cash Balance, Weekly Detail) changed from bold #### markdown headers to small uppercase label text (0.72rem, #94a3b8) so they don't compete with KPIs for visual attention. (5) Widened empty column in controls row from [1,1,2] to [1,1,4] to push scenario/horizon controls left and make them feel like secondary filters. (6) Added breathing room: 20px margin between chart and table, 24px before secondary expanders. (7) Removed the heavy `---` divider between KPIs and chart that created a visual wall. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
+
 ## Notes
 - analytics/cashflow.py is the main file being modified
 - build_waterfall() DOES accept seasonal_indices parameter (confirmed from waterfall.py line 349-350)
