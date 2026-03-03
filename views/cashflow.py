@@ -93,7 +93,7 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
     fig.add_vline(
         x=str(today),
         line_dash='dash',
-        line_color='rgba(255,255,255,0.3)',
+        line_color='rgba(15,53,87,0.2)',
     )
     fig.add_annotation(
         x=str(today),
@@ -101,7 +101,7 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         yref='paper',
         text='Today',
         showarrow=False,
-        font=dict(color='rgba(255,255,255,0.5)', size=10),
+        font=dict(color='#6b7c93', size=10),
         yanchor='bottom',
     )
 
@@ -110,13 +110,13 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         margin=dict(l=0, r=0, t=20, b=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='rgba(255,255,255,0.8)', size=11),
+        font=dict(color='#2c3e50', size=11),
         xaxis=dict(
-            gridcolor='rgba(255,255,255,0.05)',
+            gridcolor='#E8EDF3',
             showgrid=True,
         ),
         yaxis=dict(
-            gridcolor='rgba(255,255,255,0.05)',
+            gridcolor='#E8EDF3',
             showgrid=True,
             tickformat='$,.0f',
         ),
@@ -166,11 +166,11 @@ def _build_inflow_outflow_chart(df: pd.DataFrame, horizon_weeks: int) -> go.Figu
         margin=dict(l=0, r=0, t=20, b=0),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='rgba(255,255,255,0.8)', size=11),
+        font=dict(color='#2c3e50', size=11),
         barmode='relative',
-        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        xaxis=dict(gridcolor='#E8EDF3'),
         yaxis=dict(
-            gridcolor='rgba(255,255,255,0.05)',
+            gridcolor='#E8EDF3',
             tickformat='$,.0f',
         ),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
@@ -178,59 +178,6 @@ def _build_inflow_outflow_chart(df: pd.DataFrame, horizon_weeks: int) -> go.Figu
     )
     return fig
 
-
-def _format_cash_table(df: pd.DataFrame, horizon_weeks: int) -> str:
-    """Build an HTML table of the weekly cash flow detail."""
-    display = df.head(horizon_weeks)
-
-    revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
-    expense_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
-
-    # Build HTML
-    html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
-
-    # Header
-    html += '<thead><tr style="border-bottom:2px solid rgba(255,255,255,0.2);">'
-    html += '<th style="text-align:left;padding:6px 8px;position:sticky;left:0;background:#0e1117;z-index:1;">Week</th>'
-    for _, row in display.iterrows():
-        ws = row['week_start'][:10]
-        style = 'font-weight:600;' if row.get('is_actual') else 'font-style:italic;opacity:0.8;'
-        html += f'<th style="text-align:right;padding:6px 8px;white-space:nowrap;{style}">{ws}</th>'
-    html += '</tr></thead><tbody>'
-
-    def _row_html(label, key, color='inherit', bold=False):
-        fw = 'font-weight:700;' if bold else ''
-        html_r = f'<tr><td style="padding:4px 8px;white-space:nowrap;position:sticky;left:0;background:#0e1117;{fw}color:{color};">{label}</td>'
-        for _, r in display.iterrows():
-            val = r.get(key, 0)
-            if val is None or pd.isna(val):
-                val = 0
-            cell_style = f'{fw}color:{color};' if val != 0 else 'opacity:0.3;'
-            html_r += f'<td style="text-align:right;padding:4px 8px;{cell_style}">${val:,.0f}</td>'
-        html_r += '</tr>'
-        return html_r
-
-    # Revenue section
-    html += '<tr><td colspan="100" style="padding:8px 8px 2px;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.4);font-weight:700;">Revenue</td></tr>'
-    for cat in revenue_cats:
-        label = CASHFLOW_CATEGORIES[cat]['label']
-        html += _row_html(label, cat, color='#22c55e')
-    html += _row_html('Total Inflows', 'total_inflows', color='#22c55e', bold=True)
-
-    # Expense section
-    html += '<tr><td colspan="100" style="padding:8px 8px 2px;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.4);font-weight:700;">Expenses</td></tr>'
-    for cat in expense_cats:
-        label = CASHFLOW_CATEGORIES[cat]['label']
-        html += _row_html(label, cat, color='#ef4444')
-    html += _row_html('Total Outflows', 'total_outflows', color='#ef4444', bold=True)
-
-    # Summary section
-    html += '<tr style="border-top:2px solid rgba(255,255,255,0.2);"><td colspan="100"></td></tr>'
-    html += _row_html('Net Cash Flow', 'net_cashflow', color='#fbbf24', bold=True)
-    html += _row_html('Closing Balance', 'closing_balance', color='#ffffff', bold=True)
-
-    html += '</tbody></table></div>'
-    return html
 
 
 def render(ctx):
@@ -295,6 +242,9 @@ def render(ctx):
     # KPI row
     kpi_cols = st.columns(5)
     kpi_cols[0].metric('Current Cash', f"${kpis['current_cash']:,.0f}")
+    freshness = kpis.get('balance_freshness_date')
+    if freshness:
+        kpi_cols[0].caption(f'as of {freshness}')
     kpi_cols[1].metric('13-Week Projected', f"${kpis['projected_13w']:,.0f}")
     kpi_cols[2].metric('52-Week Projected', f"${kpis['projected_52w']:,.0f}")
     kpi_cols[3].metric(
@@ -386,8 +336,9 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     # Render revenue section
     st.markdown(
-        '<p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;'
-        'color:rgba(255,255,255,0.4);font-weight:700;margin:12px 0 4px;">Revenue</p>',
+        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
+        '<span style="color:#22c55e;">&#9650;</span> Revenue</p>',
         unsafe_allow_html=True,
     )
     rev_df = pivot_df.loc[pivot_df.index.isin(rev_labels)].copy()
@@ -395,12 +346,13 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                              is_actual_map, existing_overrides, '#22c55e', 'rev')
 
     # Total inflows row
-    _render_total_row(display, 'total_inflows', 'Total Inflows', '#22c55e')
+    _render_total_row(display, 'total_inflows', 'Total Inflows', '#16a34a')
 
     # Render expense section
     st.markdown(
-        '<p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;'
-        'color:rgba(255,255,255,0.4);font-weight:700;margin:12px 0 4px;">Expenses</p>',
+        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
+        '<span style="color:#ef4444;">&#9660;</span> Expenses</p>',
         unsafe_allow_html=True,
     )
     exp_df = pivot_df.loc[pivot_df.index.isin(exp_labels)].copy()
@@ -408,12 +360,12 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                              is_actual_map, existing_overrides, '#ef4444', 'exp')
 
     # Total outflows row
-    _render_total_row(display, 'total_outflows', 'Total Outflows', '#ef4444')
+    _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626')
 
     # Summary rows
     st.markdown('---')
-    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#fbbf24')
-    _render_total_row(display, 'closing_balance', 'Closing Balance', '#ffffff')
+    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#d97706')
+    _render_total_row(display, 'closing_balance', 'Closing Balance', '#0F3557')
 
 
 def _render_category_section(section_df, cats, cat_labels, week_starts,
@@ -427,9 +379,10 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
     for ws in week_starts:
         col_key = ws[:10]
         is_actual = is_actual_map.get(ws, False)
+        label = f'{col_key} ✓' if is_actual else col_key
         col_config[col_key] = st.column_config.NumberColumn(
-            col_key,
-            format='$%d',
+            label,
+            format='$,.0f',
             disabled=is_actual,
             width='small',
         )
@@ -459,7 +412,8 @@ def _render_total_row(display, col_key, label, color):
         val = r.get(col_key, 0)
         if val is None or (isinstance(val, float) and np.isnan(val)):
             val = 0
-        cells += f'<td style="text-align:right;padding:4px 8px;font-weight:700;color:{color};">${val:,.0f}</td>'
+        formatted = f'-${abs(val):,.0f}' if val < 0 else f'${val:,.0f}'
+        cells += f'<td style="text-align:right;padding:4px 8px;font-weight:700;color:{color};">{formatted}</td>'
 
     html = (
         f'<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.75rem;">'
