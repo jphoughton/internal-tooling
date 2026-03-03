@@ -1521,3 +1521,169 @@ The cash flow engine has good security posture — no SQL injection vectors and 
 1. **(MEDIUM)** Add `log.warning()` to all 10 silent exception handlers in `analytics/cashflow.py` and `views/cashflow.py`. For the 3 bare `except: pass` blocks, add both logging and a sensible fallback message.
 2. **(MEDIUM)** For critical data loads (opening balance line 851, Amazon forecast line 799, media plan line 805), upgrade to `log.error()` since wrong values here cascade through the entire forecast.
 3. **(LOW)** Fix the 4 dead uppercase strip patterns on lines 37-40: `ID:` → `id:`, `REF:` → `ref:`, `TRACE:` → `trace:`, `SEQ:` → `seq:`.
+
+---
+
+## Analyst 11 — Business Sanity Check (Does This Look Like a Real Business?)
+
+**Date:** 2026-03-02
+
+**Methodology:** Ran `build_cashflow_forecast(conn, start_date=today-4w, weeks=56, scenario='base')` and examined the 52-week output holistically. This is NOT a code review — this is a CFO looking at the numbers and asking "does this make sense?"
+
+### 1. 52-Week Ending Cash
+
+| Metric | Value | Expected Range | Verdict |
+|--------|-------|---------------|---------|
+| Opening cash (week 0) | $117,007 | ~$117K (actual bank) | Correct |
+| Week 4 (current week) opening | $227,258 | ~$117K | **WRONG** (+$110K) |
+| 13-week closing | $658,300 | $250-400K | **FAIL** (1.6-2.6x high) |
+| 52-week closing | $2,495,445 | $700K-$1.3M | **FAIL** (1.9-3.6x high) |
+| FAIL gate ($400K-$2M) | $2,495K > $2M | Must be <$2M | **FAIL** |
+
+**Analysis:** The model projects $2.5M ending cash after 52 weeks starting from $117K. This implies ~$2.4M of net cash generation = $46K/week net positive. For a company with ~$300K/month gross revenue and $150-250K/month expenses, this is unrealistically optimistic. The expected range of $700K-$1.3M would imply $50-100K/month net positive, which is reasonable. At $2.5M, the model is ~2x too optimistic.
+
+**Root causes (traced):**
+
+| Root Cause | Impact on 52-Week Cash | Source |
+|------------|----------------------|--------|
+| Phantom interest_income (Jameson misclassification) | +$720K | Analyst 3 |
+| Opening balance double-counting | +$110K | Analyst 4 |
+| Optimistic DTC revenue (aggressive media inputs) | +$200-400K | Analyst 1 |
+| Missing loan expense ($0 instead of $25-75K/month) | +$300-900K | Analyst 3 |
+| Missing unmapped expenses (~$35-52K/month) | +$420-624K | Analyst 3 |
+
+If all root causes were corrected: phantom revenue removed (~$720K), loan payments restored (~$300-900K in expenses), and optimistic inputs adjusted, the 52-week ending cash would likely be in the $400K-$900K range — still positive but much more realistic.
+
+**Verdict: FAIL (CRITICAL)** — 52-week ending cash of $2.5M is outside the $400K-$2M sanity gate by 25%.
+
+### 2. Weekly Revenue Range
+
+| Metric | Model Range | Expected Range | Verdict |
+|--------|------------|---------------|---------|
+| DTC weekly (cash) | $32,317 - $64,247 | $10,000 - $15,000 | **FAIL** |
+| Amazon weekly (disbursement) | $40,248 - $68,200 | $40,000 - $60,000 | **CONDITIONAL PASS** |
+| Amazon weekly (non-disbursement) | $0 | $0 | PASS |
+| Max single DTC week | $64,247 (Sep 7) | <$100K threshold | PASS (below cap) |
+| Max single Amazon week | $68,200 (Jun/Jul/Aug) | <$150K threshold | PASS (below cap) |
+
+**DTC analysis:** The model projects $32-64K/week in DTC cash revenue. The PRD reference says ~$10-15K/week, but this appears to reference net/cash after processing fees on a much earlier revenue base. Actual recent Shopify bank deposits are ~$116K/month = ~$27K/week. The model projects $32-64K/week, which is 1.2-2.4x above recent actual deposits. The gap widens over time because the waterfall model compounds aggressive media spend inputs into ever-higher revenue projections.
+
+**Amazon analysis:** Disbursement weeks show $40-68K, which starts within the $40-60K expected range but grows to $68K by summer (driven by the aggressive Amazon revenue forecast table ramping to $220K/month). Per-event amounts are calculated as `monthly_forecast * 0.62 / 2`, so the issue is the input, not the formula.
+
+**DTC weekly revenue is too high.** The $32K/week starting point (March) is 20% above recent actuals ($27K/week). By September, it reaches $64K/week — 2.4x above actuals. This is driven by the waterfall model converting optimistic media spend inputs into new customer projections.
+
+**Verdict: FAIL (MEDIUM)** — DTC revenue 20-140% above recent actuals.
+
+### 3. Weekly Expense Range
+
+| Metric | Value | Expected | Verdict |
+|--------|-------|----------|---------|
+| Average weekly outflows (projected) | $37,000 - $66,000 | $35,000 - $60,000 | **CONDITIONAL PASS** |
+| Max single week outflows | $98,768 (Mar 2-8) | <$150K threshold | **PASS** |
+| Min weekly outflows | $28,554 (Feb 8 2027) | — | PASS |
+
+**Analysis:** The March 2-8 week shows $98.8K outflows, driven by a $58K media hit (schedule detection placed a large payment here). This is below the $150K threshold. No other week exceeds $70K. Average outflows run ~$40-50K/week which is in the expected ballpark.
+
+However, expenses are structurally understated because:
+- Loan expenses are $0 (should be $25-75K/month = $6-17K/week)
+- ~$103K/month in unmapped expenses are not projected
+- The true weekly outflow should be ~$55-85K/week, not $37-66K
+
+**Verdict: CONDITIONAL PASS** — Under the $150K cap but structurally understated by ~$30-40K/week due to missing categories.
+
+### 4. Expense-Revenue Correlations
+
+| Correlation | Expected | Actual | Verdict |
+|-------------|----------|--------|---------|
+| Fulfillment rises with revenue | Yes (more orders = more 3PL) | **NO** — flat $5,070/week regardless | **FAIL** |
+| COGS scales with revenue | Yes (25% of gross) | **Partially** — production column scales but at ~45% not 25% | **FAIL** |
+| Shipping correlates with volume | Yes | Flat at ~$0-$125/week | **FAIL** |
+
+**Fulfillment analysis:** Fulfillment (3PL fees) stays completely flat at $5,070/week in all projected weeks. This is because it uses the `trailing_avg` method, which returns the average of recent actual fulfillment payments. The trailing average doesn't scale with projected revenue growth. In reality, if DTC revenue doubles from $32K/week to $64K/week, fulfillment costs should roughly double too (more orders shipped). The model shows fulfillment at 17% of DTC revenue in March falling to 8% by August — an impossible divergence.
+
+**Production/COGS analysis:** The `production` column uses the `revenue_pct` method and scales with revenue, which is correct directionally. However, the amounts are ~45% of DTC revenue, far above the 25% COGS seed rate. This appears to be because the revenue_pct method uses gross-up calculations that amplify the base rate. Actual production spend from bank data is only ~$5K/week average (PO-driven and spiky), while the model projects $8-43K/week.
+
+**COGS column is $0 everywhere.** The `cogs` column appears unused despite being in the schema. All COGS-like expenses flow through `production` instead.
+
+**Verdict: FAIL (HIGH)** — Fulfillment is flat when it should scale with revenue. Production/COGS is 2-9x above actual levels.
+
+### 5. No Negative Revenue Weeks
+
+| Check | Result | Verdict |
+|-------|--------|---------|
+| Weeks with negative DTC revenue | 0 | **PASS** |
+| Weeks with negative Amazon revenue | 0 | **PASS** |
+
+**Verdict: PASS** — No refunds or sign errors leaking into revenue.
+
+### 6. Cash Never Goes Massively Negative
+
+| Metric | Value | Threshold | Verdict |
+|--------|-------|-----------|---------|
+| Minimum closing balance (any week) | $138,258 (week 0, Feb 2) | >-$100K | **PASS** |
+| Cash goes negative at any point? | No | — | **PASS** |
+
+**Analysis:** Cash starts at $117K (actual bank balance) and only grows. The model never shows a drawdown. This is because revenue is systematically overstated and expenses are understated — a realistic model would show some tight weeks, especially around production POs and quarterly tax payments.
+
+**Verdict: PASS** — But misleading. A model that never shows cash stress is likely too optimistic, not actually safe.
+
+### 7. Month-over-Month Consistency
+
+| Month Pair | Inflow Change | Within 30%? | Verdict |
+|------------|--------------|-------------|---------|
+| Mar → Apr | -1.8% | Yes | PASS |
+| Apr → May | +11.4% | Yes | PASS |
+| May → Jun | **+30.8%** | **No (barely)** | **FAIL** |
+| Jun → Jul | -9.7% | Yes | PASS |
+| Jul → Aug | +25.2% | Yes | PASS |
+| Aug → Sep | -13.8% | Yes | PASS |
+| Sep → Oct | -9.1% | Yes | PASS |
+| Oct → Nov | +14.4% | Yes | PASS |
+| Nov → Dec | -19.1% | Yes | PASS |
+| Dec → Jan | -4.9% | Yes | PASS |
+| Jan → Feb | **-44.0%** | **No** | **FAIL** (partial month) |
+
+**Analysis:** The May→Jun jump of +30.8% slightly exceeds the 30% threshold. This is driven by the media spend plan ramping from $95K (May) to $130K (Jun), which the waterfall converts into higher DTC revenue. The Jan→Feb drop of -44% is a windowing artifact (February is a partial month at the end of the forecast).
+
+Excluding the partial-month Feb, month-over-month variations range from -19% to +30.8%. The model doesn't show wild 3x jumps — inflows are relatively stable. However, the underlying growth trend (March $321K → August $519K = +62% over 5 months) is driven by compounding media spend assumptions that may not materialize.
+
+**Verdict: CONDITIONAL PASS** — No catastrophic jumps, but the May→Jun boundary slightly exceeds the 30% threshold due to aggressive media ramp inputs. The overall upward trend is plausible if media spend plans are accurate.
+
+---
+
+### Summary
+
+| Sanity Gate | Verdict | Severity |
+|-------------|---------|----------|
+| 52-week ending cash ($400K-$2M range) | **FAIL** ($2.5M, 25% over cap) | CRITICAL |
+| Weekly DTC revenue range ($10-15K) | **FAIL** ($32-64K, 2-4x over) | MEDIUM |
+| Weekly Amazon revenue range ($40-60K) | **CONDITIONAL PASS** ($40-68K) | LOW |
+| Weekly expense range (<$150K) | **PASS** (max $99K) | — |
+| Expense-revenue correlations | **FAIL** (fulfillment flat, COGS inflated) | HIGH |
+| No negative revenue weeks | **PASS** | — |
+| Cash never massively negative (<-$100K) | **PASS** (min $138K) | — |
+| Month-over-month consistency (<30%) | **CONDITIONAL PASS** (one 30.8% jump) | LOW |
+
+**Overall: 3 FAIL (1 CRITICAL, 1 HIGH, 1 MEDIUM), 2 CONDITIONAL PASS, 3 PASS**
+
+### Root Cause Tracing
+
+The $2.5M ending cash (vs expected $700K-$1.3M) is an ~$1.2-1.8M overstatement. The major contributors:
+
+1. **Phantom revenue from Jameson misclassification (+$720K/52wk):** The `interest_income` category contains $13,891/week of trailing-average projected "revenue" that is actually loan payments. This is 15.6% of total projected inflows. *Trace: `_project_revenue_week()` → `compute_trailing_avg(conn, 'interest_income')` → returns $13,891/week from actual Jameson debit transactions miscategorized as revenue.*
+
+2. **Missing loan expenses (+$300-900K/52wk):** With loan expenses at $0/week (Jameson misclassified elsewhere), the model ignores $25-75K/month in real cash outflows. *Trace: `_project_expense_week()` → `compute_trailing_avg(conn, 'loan')` → returns $0.125/week (only $1 in actual mapped data) → `val * 4.33` → ~$0.54/qualifying week.*
+
+3. **Optimistic DTC revenue (+$200-400K/52wk):** Waterfall model inflates DTC by 20-140% because media spend plan inputs ($75-190K/month) exceed actual spend ($24-65K/month). *Trace: `build_waterfall(media_plan)` → media_plan from Settings page → `new_customers = media_spend * ROAS / AOV`.*
+
+4. **Flat fulfillment costs (understated ~$100K/52wk):** Fulfillment stays at $5,070/week even as revenue doubles, when it should roughly track order volume. *Trace: `_project_expense_week()` → `compute_trailing_avg(conn, 'fulfillment')` → static trailing average, no revenue linkage.*
+
+5. **Opening balance double-counting (+$110K):** Current week shows $227K instead of $117K. *Trace: `build_cashflow_forecast()` → opening balance uses latest bank sum ($117K) as week 0 start, then replays 4 weeks of actual transactions already reflected in that balance.*
+
+### Recommendations for Phase 3
+
+1. **(CRITICAL)** Fix Jameson misclassification in `category_mappings` — reclassify from `interest_income` to `loan`. This alone would remove ~$720K of phantom revenue and add ~$720K of expenses over 52 weeks = ~$1.4M swing in ending cash.
+2. **(CRITICAL)** Fix opening balance double-counting in `build_cashflow_forecast()` — when using latest bank balance as opening, the actual-week transactions are already reflected. Either (a) set opening balance to what it was at `start_date` (subtract interim transactions), or (b) start from today instead of 4 weeks ago.
+3. **(HIGH)** Link fulfillment costs to revenue volume so they scale with projected growth instead of staying flat.
+4. **(HIGH)** Add direction filter to `_get_actual_weekly_totals()` — revenue categories should only sum credits, expense categories should only sum debits.
+5. **(MEDIUM)** Validate media spend plan inputs against trailing actuals — warn when plan exceeds recent actual by >50%.
