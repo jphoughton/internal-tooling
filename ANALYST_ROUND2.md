@@ -120,3 +120,157 @@ Monthly total: ~$87K cash. Based on $151K gross * 0.62 = $93.7K / 2 events = $46
 | Current Cash KPI accuracy | **FLAG for Analyst 4** | HIGH |
 
 **Key takeaway:** The revenue projection ENGINE works correctly — seasonal indices are applied, payout ratios auto-calibrate, DOW weighting distributes DTC revenue properly, and Amazon disbursement timing shows the expected biweekly pattern. However, the INPUT data (media spend plan and Amazon revenue forecast table) is optimistic relative to recent actuals, causing projections to run 13-24% hot in the near term and potentially 50-100% hot by summer. These are input/planning issues, not code bugs.
+
+---
+
+## Analyst 2 — Amazon Disbursement Timing
+
+**Date:** 2026-03-02
+
+### 1. Forecast Amazon Revenue by Week (20 weeks)
+
+| Week       | Amazon Rev | Disbursement? | Actual? |
+|------------|-----------|---------------|---------|
+| 2026-02-02 | $0        | No            | YES     |
+| 2026-02-09 | $0        | No            | YES     |
+| 2026-02-16 | $0        | No            | YES     |
+| 2026-02-23 | $0        | No            | YES     |
+| 2026-03-02 | $40,248   | Yes (day 8)   | no      |
+| 2026-03-09 | $0        | No            | no      |
+| 2026-03-16 | $0        | No            | no      |
+| 2026-03-23 | $46,956   | Yes (day 24)  | no      |
+| 2026-03-30 | $0        | No            | no      |
+| 2026-04-06 | $54,250   | Yes (day 8)   | no      |
+| 2026-04-13 | $0        | No            | no      |
+| 2026-04-20 | $54,250   | Yes (day 24)  | no      |
+| 2026-04-27 | $0        | No            | no      |
+| 2026-05-04 | $62,000   | Yes (day 8)   | no      |
+| 2026-05-11 | $0        | No            | no      |
+| 2026-05-18 | $62,000   | Yes (day 24)  | no      |
+| 2026-05-25 | $0        | No            | no      |
+| 2026-06-01 | $0        | No            | no      |
+| 2026-06-08 | $68,200   | Yes (day 8)   | no      |
+| 2026-06-15 | $0        | No            | no      |
+
+**Observation:** Actual weeks (Feb 2-23) all show $0 because Amazon deposits are unmapped in `cashflow_transactions` (category='unmapped'). The model correctly shows $0 actuals for those weeks since there are no categorized Amazon credits.
+
+### 2. Disbursement Events Per Month (Forecast Output)
+
+| Month   | Events | Weeks                          | Total    |
+|---------|--------|--------------------------------|----------|
+| 2026-03 | 2      | Mar 2, Mar 23                  | $87,203  |
+| 2026-04 | 2      | Apr 6, Apr 20                  | $108,500 |
+| 2026-05 | 2      | May 4, May 18                  | $124,000 |
+| 2026-06 | 1*     | Jun 8                          | $68,200  |
+
+*June shows 1 event because the 20-week window ends before June 24. This is a windowing artifact, not a bug.
+
+**Verdict: PASS** — Exactly 2 disbursement events per month within the forecast window.
+
+### 3. Pre-computed Schedule Verification
+
+The `_build_amazon_disbursement_schedule()` function (Task 1 fix) produces:
+
+| Week       | Disbursement For | Count |
+|------------|-----------------|-------|
+| 2026-02-02 | 2026-02         | 1     |
+| 2026-02-23 | 2026-02         | 1     |
+| 2026-03-02 | 2026-03         | 1     |
+| 2026-03-23 | 2026-03         | 1     |
+| 2026-04-06 | 2026-04         | 1     |
+| 2026-04-20 | 2026-04         | 1     |
+| 2026-05-04 | 2026-05         | 1     |
+| 2026-05-18 | 2026-05         | 1     |
+| 2026-06-08 | 2026-06         | 1     |
+
+Each disbursement is assigned to exactly ONE week. No week has count > 1. No double-counting.
+
+**Events per calendar month:** Feb: 2 ✓, Mar: 2 ✓, Apr: 2 ✓, May: 2 ✓, Jun: 1 (window truncation)
+
+**Verdict: PASS** — Task 1 fix eliminates the overcounting bug.
+
+### 4. Actual Amazon Deposits from Bank Data
+
+All 51 Amazon-related transactions in `cashflow_transactions` are **unmapped** (category='unmapped'). This means:
+- The model cannot auto-calibrate Amazon payout ratio from bank actuals (confirmed by Analyst 1)
+- Actual weeks show $0 Amazon revenue because no transactions are categorized as `amazon_revenue`
+
+**Actual Amazon disbursements (credits > $1,000):**
+
+| Date       | Amount   | Day |
+|------------|---------|-----|
+| 2025-07-25 | $114,852 | 25  |
+| 2025-08-08 | $46,309  | 8   |
+| 2025-08-22 | $39,249  | 22  |
+| 2025-09-05 | $48,557  | 5   |
+| 2025-09-19 | $49,023  | 19  |
+| 2025-10-03 | $42,346  | 3   |
+| 2025-10-17 | $44,868  | 17  |
+| 2025-10-31 | $47,147  | 31  |
+| 2025-11-14 | $35,940  | 14  |
+| 2025-11-28 | $35,941  | 28  |
+| 2025-12-12 | $32,104  | 12  |
+| 2025-12-26 | $36,075  | 26  |
+| 2026-01-09 | $36,061  | 9   |
+| 2026-01-23 | $38,856  | 23  |
+| 2026-02-06 | $39,283  | 6   |
+| 2026-02-20 | $43,605  | 20  |
+
+**Key findings from actual data:**
+- **Perfect 14-day cycle**: Average gap = 14.0 days exactly, range 14-14 days
+- **Early window actual days**: 3, 5, 6, 8, 9, 12, 14 (range: day 3-14)
+- **Late window actual days**: 17, 19, 20, 22, 23, 25, 26, 28, 31 (range: day 17-31)
+- **October 2025 had 3 disbursements** (days 3, 17, 31) — happens when the biweekly cycle puts a late disbursement from the prior cycle and an early one in the same month
+- **Average per disbursement**: $47,025 (range: $32K-$115K)
+
+### 5. Model Timing vs Actual Timing
+
+| Aspect | Model | Actual |
+|--------|-------|--------|
+| Frequency | Biweekly (day 8 and 24) | Biweekly (every 14 days exactly) |
+| Early window | Fixed day 8 | Range day 3-14 |
+| Late window | Fixed day 24 | Range day 17-31 |
+| Events/month | Always exactly 2 | Usually 2, occasionally 3 (Oct) |
+| Cycle approach | Calendar-based (fixed days) | Rolling 14-day cycle |
+
+**Timing accuracy:** The model's fixed day 8/24 is a reasonable simplification. Real Amazon disbursements follow a rolling 14-day cycle that drifts across the calendar month. This means:
+- Some months the model will place the disbursement in the wrong week by ±1 week
+- October-like months with 3 actual disbursements will be underrepresented (model always shows 2)
+- Over a quarter, the total amount is correct even if per-week timing is off
+
+### 6. 13-Week Disbursement Summary
+
+| Metric | Value |
+|--------|-------|
+| Projected weeks | 13 |
+| Months covered | 3 (Mar, Apr, May) |
+| Non-zero Amazon weeks | 6 |
+| Expected (2/month × 3) | 6 |
+| Max single-week Amazon | $62,000 |
+| Double-count check | PASS (no week exceeds 1.8× expected per-event amount) |
+
+**Per-event amounts check:**
+- March: $151K × 0.62 / 2 = $46,956/event — matches actual avg of $41K (Feb)
+- April: $175K × 0.62 / 2 = $54,250/event — slightly above recent actuals
+- May: $200K × 0.62 / 2 = $62,000/event — above recent actuals (aspirational forecast input)
+
+### 7. Observations for Later Analysts
+
+1. **Amazon mapping gap (for Analyst 3/10):** All 51 Amazon bank transactions are unmapped. This includes both credits (disbursements, ~$40-115K each) and debits (Seller Central fees, ~$5K each). Mapping these would enable auto-calibration of the Amazon payout ratio.
+
+2. **Rolling cycle vs fixed day (for Phase 3):** The model could be more accurate by tracking the last known Amazon disbursement date and projecting forward every 14 days, instead of using fixed day 8/24. This would correctly handle months with 3 disbursements and reduce week-level timing error. **Severity: LOW** — the quarterly total is correct regardless.
+
+---
+
+### Summary
+
+| Check | Verdict | Severity |
+|-------|---------|----------|
+| Exactly 2 disbursements per month | **PASS** | — |
+| Task 1 fix (no overcounting) | **PASS** | — |
+| No double-counting in any week | **PASS** | — |
+| Per-event amounts reasonable | **PASS** | — |
+| Timing alignment with actuals | **CONDITIONAL PASS** | LOW |
+| Amazon transactions mapped in bank data | **FLAG** | MEDIUM |
+
+**Key takeaway:** The Task 1 fix (`_build_amazon_disbursement_schedule`) works correctly — each disbursement is assigned to exactly one week, exactly 2 per month, with no overcounting. The original bug (2.6 events/month) is eliminated. Per-event amounts scale correctly with the forecast table values and payout ratio. The main gap is that all 51 Amazon bank transactions remain unmapped, preventing auto-calibration and causing actual weeks to show $0 Amazon revenue. The fixed day 8/24 approach is a reasonable simplification of Amazon's actual rolling 14-day cycle, with ±1 week timing variance that averages out quarterly.

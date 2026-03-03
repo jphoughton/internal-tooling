@@ -231,7 +231,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Calculate the projected weekly DTC and Amazon cash inflows for the next 4 weeks. Do they pass the smell test against the reference data?
   - Write findings (PASS/FAIL with specifics) and append to `ANALYST_ROUND2.md`.
 
-- [ ] **12. Analyst 2 — Amazon Disbursement Timing**
+- [x] **12. Analyst 2 — Amazon Disbursement Timing**
   - Read prior analyst findings in `ANALYST_ROUND2.md`.
   - Run `build_cashflow_forecast()` and extract all `amazon_revenue` column values for 13 weeks.
   - Count disbursement events per month. Must be exactly 2 per month.
