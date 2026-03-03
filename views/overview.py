@@ -159,9 +159,25 @@ def render(ctx):
     st.markdown('')  # spacing
 
     # -- New vs Repeat Customer Breakdown (with projections) --
-    nr_all = get_projected_new_repeat_summary(str(ov_start), str(ov_end))
     nr_dtc = get_projected_new_repeat_summary(str(ov_start), str(ov_end), 'shopify')
     nr_amz = get_projected_new_repeat_summary(str(ov_start), str(ov_end), 'amazon')
+
+    # Build combined rollup from both channels (source_filter=None defaults to
+    # Shopify-only internally, so we sum the per-channel results instead).
+    nr_all = {}
+    for _k in ['new_customers', 'repeat_customers', 'new_revenue', 'repeat_revenue',
+               'new_orders', 'repeat_orders',
+               'projected_new_customers', 'projected_new_revenue',
+               'projected_repeat_customers', 'projected_repeat_revenue',
+               'total_new_customers', 'total_new_revenue',
+               'total_repeat_customers', 'total_repeat_revenue']:
+        nr_all[_k] = nr_dtc.get(_k, 0) + nr_amz.get(_k, 0)
+    # Recalculate AOVs for the combined totals
+    nr_all['new_aov'] = round(nr_all['new_revenue'] / nr_all['new_orders'], 2) if nr_all.get('new_orders', 0) > 0 else 0
+    nr_all['repeat_aov'] = round(nr_all['repeat_revenue'] / nr_all['repeat_orders'], 2) if nr_all.get('repeat_orders', 0) > 0 else 0
+    nr_all['gap_days'] = max(nr_dtc.get('gap_days', 0), nr_amz.get('gap_days', 0))
+    nr_all['last_data_date'] = nr_dtc.get('last_data_date') or nr_amz.get('last_data_date')
+    nr_all['projection_method'] = nr_dtc.get('projection_method', 'none')
 
     # Show data-freshness warning if projecting
     _any_gap = max(nr_all.get('gap_days', 0), nr_dtc.get('gap_days', 0), nr_amz.get('gap_days', 0))
