@@ -280,7 +280,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Flag any metric that's >30% off from the Google Sheet model's range.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **18. Analyst 8 — Override & Edit Persistence**
+- [x] **18. Analyst 8 — Override & Edit Persistence**
   - Read prior findings.
   - Test the override flow: insert a manual override into `cashflow_overrides` table for a future week, re-run `build_cashflow_forecast()`, verify the override value appears in the output DataFrame instead of the projected value.
   - Test that past-week overrides are NOT honored (actuals should always win for past weeks). Actually check the code logic for this.

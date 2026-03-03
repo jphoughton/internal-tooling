@@ -1107,3 +1107,110 @@ Expense timing is reasonable — media shows lumpy monthly billing, payroll show
 4. **Root causes are all previously identified:** Jameson misclassification (Analyst 3), opening balance double-counting (Analyst 4), DTC waterfall overstatement from media plan inputs (Analyst 1), and unmapped transactions (VALIDATION_BASELINE). No new bugs discovered — the Google Sheet comparison confirms and quantifies the cumulative impact of known issues.
 
 5. **The Google Sheet's own reference ranges may need updating.** The PRD states DTC cash revenue of $42-52K/month, but actual Shopify bank deposits average $117K/month. The PRD's $300K+/month combined gross is closer to reality, suggesting the per-channel breakdowns in the PRD use different definitions (net vs gross, pre vs post-fees) than the bank data.
+
+---
+
+## Analyst 8 — Override & Edit Persistence
+
+**Date:** 2026-03-02
+
+### 1. Override Insertion & Forecast Pickup
+
+Tested the full override flow by inserting a manual override into `cashflow_overrides` for a future week (2026-03-16), re-running `build_cashflow_forecast()`, and verifying the override value appears in the output.
+
+| Step | Action | Result |
+|------|--------|--------|
+| Baseline | No overrides in DB | media for 2026-03-16 = $6,803 |
+| Insert override | `INSERT INTO cashflow_overrides (line_item, week_start, override_amount) VALUES ('media', '2026-03-16', 15000)` | OK |
+| Re-run forecast | `build_cashflow_forecast()` | media for 2026-03-16 = **$15,000** |
+| Downstream impact | total_outflows changed $28,622 → $36,818 | closing_balance shifted $247,777 → $239,580 |
+
+**Verdict: PASS** — Override is correctly picked up by the forecast engine. The override value replaces the projected value for that specific week and category. Downstream totals (total_outflows, net_cashflow, closing_balance) correctly reflect the override for that week AND propagate to all subsequent weeks' opening balances.
+
+### 2. Override Key Format Consistency
+
+Verified that the override key format is consistent across all three layers:
+
+| Layer | Key Format | Example | Match? |
+|-------|-----------|---------|--------|
+| Engine (`build_cashflow_forecast`) | `str(date_object)` | `"2026-03-16"` (10 chars) | -- |
+| View (`_save_edits`) | `ws[:10]` | `"2026-03-16"` (10 chars) | Yes |
+| DB (`cashflow_overrides.week_start`) | TEXT column | `"2026-03-16"` (10 chars) | Yes |
+
+**Verdict: PASS** — All three layers use identical 10-character ISO date strings. No key mismatch risk.
+
+### 3. Past-Week Override Handling (Actuals Should Win)
+
+**CRITICAL TEST:** Inserted an override for a past week (2026-02-16, `is_actual=True`) with a deliberately absurd value ($99,999). Re-ran the forecast.
+
+| Condition | media value for 2026-02-16 |
+|-----------|---------------------------|
+| No override | $0.00 (actual from bank) |
+| With override ($99,999) | **$99,999.00** |
+
+**Verdict: FAIL (MEDIUM severity)** — Overrides are honored for past weeks. The engine checks overrides BEFORE checking `is_past`:
+
+```python
+# analytics/cashflow.py, lines 897-901 (revenue) and 935-939 (expenses):
+override_key = (cat, ws_str)
+if override_key in overrides:       # <-- checked FIRST
+    val = overrides[override_key]
+elif is_past:                       # <-- actuals only used if no override
+    val = actuals_cache.get(cat, {}).get(ws_str, 0)
+```
+
+**Mitigating factor:** The UI layer (`_save_edits()`, line 514) skips actuals: `if is_actual_map.get(ws, False): continue`. And `st.data_editor` disables past-week columns with `disabled=is_actual`. So users CANNOT create past-week overrides through the normal UI. However:
+- A direct DB insert (admin, migration, or API) would be honored incorrectly
+- Stale overrides from when a week was "future" could linger and override actuals once that week becomes "past"
+
+**Fix:** In `build_cashflow_forecast()`, check `is_past` before checking overrides for both revenue (line 897) and expense (line 935) loops. Only honor overrides for future/current weeks.
+
+### 4. Reset to Smart Projection Flow
+
+Tested the full reset cycle:
+
+| Step | Action | Result |
+|------|--------|--------|
+| Insert override | media=2026-03-16 → $15,000 | media shows $15,000 in forecast |
+| Delete override | `DELETE FROM cashflow_overrides WHERE line_item='media' AND week_start='2026-03-16'` | OK |
+| Re-run forecast | `build_cashflow_forecast()` | media reverted to $6,803 (original projected value) |
+
+**Verdict: PASS** — Deleting an override correctly restores the projected value. The `_render_smart_buttons()` code in `views/cashflow.py` uses `DELETE FROM cashflow_overrides WHERE line_item = %s` (deletes ALL overrides for a category), which is correct for a "Reset [Category]" action.
+
+### 5. Scenario + Override Interaction
+
+Overrides bypass scenario adjustments. An override of $15,000 for media produces $15,000 in both Base and Conservative scenarios (Conservative would normally apply +10% to expenses).
+
+| Scenario | Without Override | With Override ($15,000) |
+|----------|-----------------|----------------------|
+| Base | $6,803 | $15,000 |
+| Conservative | $7,483 (+10%) | $15,000 (no adjustment) |
+
+**Verdict: CONDITIONAL PASS (LOW severity)** — This is arguably correct behavior. If the CFO manually enters $15,000, they mean $15,000, not "$15,000 * scenario_multiplier". However, it could be surprising to users who expect scenario adjustments to apply to all values. Consider documenting this behavior or adding an option.
+
+### 6. View-Level Code Review
+
+| Component | File | Status |
+|-----------|------|--------|
+| `_save_edits()` — detects changes between original and edited DataFrames | `views/cashflow.py:505-537` | PASS — correctly compares original vs edited, skips actuals |
+| `_save_edits()` — upsert SQL with ON CONFLICT | `views/cashflow.py:528-533` | PASS — proper upsert with parameterized queries |
+| `_save_edits()` — st.toast confirmation | `views/cashflow.py:535` | PASS — user gets feedback |
+| `_render_smart_buttons()` — finds overridden categories | `views/cashflow.py:472-502` | PASS — checks both `(cat, ws[:10])` and `(cat, ws)` formats |
+| `_render_smart_buttons()` — delete action | `views/cashflow.py:495-496` | PASS — parameterized DELETE |
+| `_render_smart_buttons()` — hides when no overrides | `views/cashflow.py:481-482` | PASS — early return if `not overridden_cats` |
+| `st.data_editor` — past weeks disabled | `views/cashflow.py:430-433` | PASS — `disabled=is_actual` |
+
+### Summary
+
+| Check | Verdict | Severity |
+|-------|---------|----------|
+| Override insertion → forecast pickup | **PASS** | — |
+| Override key format consistency | **PASS** | — |
+| Past-week overrides rejected | **FAIL** | MEDIUM |
+| Reset to Smart Projection | **PASS** | — |
+| Scenario + override interaction | **CONDITIONAL PASS** | LOW |
+| View-level code (save, reset, disable) | **PASS** | — |
+
+**Overall: 1 FAIL (MEDIUM), 1 CONDITIONAL PASS (LOW), 4 PASS**
+
+The override system works correctly for the normal UI flow (insert, verify, reset). The one bug — engine honoring overrides for past weeks — is mitigated by the UI preventing past-week edits, but should be fixed at the engine level to prevent stale overrides or direct DB inserts from corrupting historical data.
