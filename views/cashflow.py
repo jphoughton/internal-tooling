@@ -23,13 +23,45 @@ log = logging.getLogger(__name__)
 
 
 def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: int) -> go.Figure:
-    """Build the main cash balance area chart with confidence bands."""
+    """Build the main cash balance area chart with confidence bands.
+
+    Answers "are we going to be okay?" in one glance:
+    - Actuals: thick solid line with filled markers (trustworthy)
+    - Projections: thin dashed line with open markers (estimates)
+    - Threshold: prominent dashed red line (danger zone)
+    - Zone shading: green/yellow/red background bands
+    - Hover: week date + closing balance + net cash flow
+    """
     display = df.head(horizon_weeks)
     today = date.today()
 
     fig = go.Figure()
 
-    # Confidence band (only future weeks)
+    # ── Zone shading (green / yellow / red background bands) ──
+    # Compute y-axis range for zone rectangles
+    y_vals = display['closing_balance'].tolist()
+    if 'confidence_upper' in display.columns:
+        y_vals += display['confidence_upper'].dropna().tolist()
+    y_max = max(y_vals) if y_vals else min_threshold * 3
+    y_max = max(y_max, min_threshold * 1.5) * 1.15  # pad top 15%
+    yellow_floor = min_threshold * 0.8  # 20% below threshold
+
+    # Red zone: below threshold
+    fig.add_hrect(
+        y0=0, y1=min_threshold,
+        fillcolor='rgba(239, 68, 68, 0.04)',
+        line_width=0,
+        layer='below',
+    )
+    # Yellow zone: within 20% above threshold
+    fig.add_hrect(
+        y0=min_threshold, y1=min_threshold * 1.2,
+        fillcolor='rgba(245, 158, 11, 0.04)',
+        line_width=0,
+        layer='below',
+    )
+
+    # ── Confidence band (projected weeks only) ──
     future = display[display['is_actual'] == False]  # noqa: E712
     if not future.empty:
         fig.add_trace(go.Scatter(
@@ -46,54 +78,118 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
             mode='lines',
             line=dict(width=0),
             fill='tonexty',
-            fillcolor='rgba(99, 110, 250, 0.1)',
-            showlegend=False,
+            fillcolor='rgba(99, 110, 250, 0.08)',
+            name='Confidence range',
+            showlegend=True,
             hoverinfo='skip',
         ))
 
-    # Actual balance line
+    # ── Actual balance line — thick, solid, filled markers ──
     actuals = display[display['is_actual'] == True]  # noqa: E712
     if not actuals.empty:
+        hover_actual = [
+            f"<b>Week of {ws}</b><br>"
+            f"Closing: <b>${cb:,.0f}</b><br>"
+            f"Net: {'<span style=\"color:#22c55e\">+' if nc >= 0 else '<span style=\"color:#ef4444\">'}"
+            f"${abs(nc):,.0f}</span>"
+            for ws, cb, nc in zip(
+                actuals['week_start'], actuals['closing_balance'], actuals['net_cashflow']
+            )
+        ]
         fig.add_trace(go.Scatter(
             x=pd.to_datetime(actuals['week_start']),
             y=actuals['closing_balance'],
             mode='lines+markers',
             name='Actual',
-            line=dict(color='#22c55e', width=2.5),
-            marker=dict(size=4),
+            line=dict(color='#16a34a', width=3),
+            marker=dict(size=7, symbol='circle', color='#16a34a',
+                        line=dict(width=1.5, color='white')),
+            hovertemplate='%{customdata}<extra></extra>',
+            customdata=hover_actual,
         ))
 
-    # Projected balance line
+    # ── Projected balance line — thin, dashed, open markers ──
     projected = display[display['is_actual'] == False]  # noqa: E712
     if not projected.empty:
-        # Connect to last actual point
+        # Bridge from last actual so lines connect
         if not actuals.empty:
             bridge = pd.concat([actuals.tail(1), projected])
         else:
             bridge = projected
+        hover_proj = [
+            f"<b>Week of {ws}</b><br>"
+            f"Closing: <b>${cb:,.0f}</b><br>"
+            f"Net: {'<span style=\"color:#22c55e\">+' if nc >= 0 else '<span style=\"color:#ef4444\">'}"
+            f"${abs(nc):,.0f}</span>"
+            for ws, cb, nc in zip(
+                bridge['week_start'], bridge['closing_balance'], bridge['net_cashflow']
+            )
+        ]
         fig.add_trace(go.Scatter(
             x=pd.to_datetime(bridge['week_start']),
             y=bridge['closing_balance'],
             mode='lines+markers',
             name='Projected',
-            line=dict(color='#636efa', width=2.5, dash='dash'),
-            marker=dict(size=4),
+            line=dict(color='#818cf8', width=1.5, dash='dash'),
+            marker=dict(size=5, symbol='circle-open', color='#818cf8',
+                        line=dict(width=1.5, color='#818cf8')),
+            hovertemplate='%{customdata}<extra></extra>',
+            customdata=hover_proj,
         ))
 
-    # Min threshold line
+    # ── Min threshold line — prominent dashed red ──
     fig.add_hline(
         y=min_threshold,
-        line_dash='dot',
+        line_dash='dash',
         line_color='#ef4444',
-        annotation_text=f'Min Cash: ${min_threshold:,.0f}',
+        line_width=2,
+        annotation_text=f'Min Cash ${min_threshold:,.0f}',
         annotation_position='top left',
+        annotation_font=dict(color='#ef4444', size=11, family='Arial'),
     )
 
-    # Today line
+    # ── Threshold crossing annotation ──
+    # Find first projected week that dips below threshold
+    if not projected.empty:
+        below = projected[projected['closing_balance'] < min_threshold]
+        if not below.empty:
+            cross_row = below.iloc[0]
+            cross_date = pd.to_datetime(cross_row['week_start'])
+            cross_val = cross_row['closing_balance']
+            # Week number relative to current week
+            current_idx = actuals.index[-1] if not actuals.empty else display.index[0]
+            cross_idx = cross_row.name
+            week_num = cross_idx - current_idx
+            fig.add_trace(go.Scatter(
+                x=[cross_date],
+                y=[cross_val],
+                mode='markers',
+                marker=dict(size=12, symbol='x', color='#ef4444',
+                            line=dict(width=2, color='#ef4444')),
+                showlegend=False,
+                hoverinfo='skip',
+            ))
+            fig.add_annotation(
+                x=cross_date,
+                y=cross_val,
+                text=f'Week {week_num}: ${cross_val:,.0f}',
+                showarrow=True,
+                arrowhead=0,
+                arrowcolor='#ef4444',
+                ax=0, ay=-35,
+                font=dict(color='#ef4444', size=11),
+                bgcolor='rgba(255,255,255,0.9)',
+                bordercolor='#ef4444',
+                borderwidth=1,
+                borderpad=3,
+            )
+
+    # ── Today marker ──
     fig.add_vline(
         x=str(today),
         line_dash='dash',
-        line_color='rgba(15,53,87,0.2)',
+        line_color='rgba(15,53,87,0.15)',
+        line_width=1,
     )
     fig.add_annotation(
         x=str(today),
@@ -101,7 +197,7 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         yref='paper',
         text='Today',
         showarrow=False,
-        font=dict(color='#6b7c93', size=10),
+        font=dict(color='#94a3b8', size=10),
         yanchor='bottom',
     )
 
@@ -113,12 +209,15 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         font=dict(color='#2c3e50', size=11),
         xaxis=dict(
             gridcolor='#E8EDF3',
-            showgrid=True,
+            showgrid=False,
+            tickformat='%b %d',
         ),
         yaxis=dict(
             gridcolor='#E8EDF3',
             showgrid=True,
+            griddash='dot',
             tickformat='$,.0f',
+            rangemode='tozero',
         ),
         legend=dict(
             orientation='h',
@@ -126,10 +225,18 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
             y=1.02,
             xanchor='right',
             x=1,
+            font=dict(size=11),
+            itemsizing='constant',
         ),
         hovermode='x unified',
+        hoverlabel=dict(
+            bgcolor='white',
+            font_size=12,
+            font_color='#2c3e50',
+        ),
     )
 
+    # Remove Plotly logo / modebar clutter — applied at render time via config
     return fig
 
 
@@ -331,7 +438,10 @@ def render(ctx):
         unsafe_allow_html=True,
     )
     fig = _build_balance_chart(forecast_df, kpis['min_cash_threshold'], horizon_weeks + 4)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig, use_container_width=True,
+        config={'displaylogo': False, 'modeBarButtonsToRemove': ['lasso2d', 'select2d']},
+    )
 
     # Breathing room
     st.markdown('<div style="margin-top:20px;"></div>', unsafe_allow_html=True)
