@@ -171,12 +171,14 @@ def render(ctx, embedded=False):
                 starting_inv = inv['total_available'] + inv['inbound']
                 running_inv = starting_inv
 
+                total_ordered = sum(sku_planned.values())
                 row = {
                     'SKU': sku,
                     'Flavor': flavor,
                     '3PL': inv['3pl_available'],
                     'FBA': inv['fba_fulfillable'],
                     'In Transit': inv['inbound'],
+                    'Ordered': total_ordered,
                     'Total Stock': inv['total_available'] + inv['inbound'],
                 }
 
@@ -264,7 +266,7 @@ def render(ctx, embedded=False):
             )
 
             # Reorder: put DoS right after Total Stock
-            _col_order = ['SKU', 'Flavor', '3PL', 'FBA', 'In Transit', 'Total Stock', 'DoS'] + disp_month_labels
+            _col_order = ['SKU', 'Flavor', '3PL', 'FBA', 'In Transit', 'Ordered', 'Total Stock', 'DoS'] + disp_month_labels
             disp_proj = disp_proj[[c for c in _col_order if c in disp_proj.columns]]
 
             # Color function: red for negative, yellow for low stock
@@ -290,7 +292,7 @@ def render(ctx, embedded=False):
                 return ''
 
             # Apply number formatting before coloring
-            _num_cols = ['3PL', 'FBA', 'In Transit', 'Total Stock'] + disp_month_labels
+            _num_cols = ['3PL', 'FBA', 'In Transit', 'Ordered', 'Total Stock'] + disp_month_labels
             for _nc in _num_cols:
                 if _nc in disp_proj.columns:
                     disp_proj[_nc] = disp_proj[_nc].apply(lambda x: f'{x:,.0f}' if isinstance(x, (int, float)) else x)
@@ -317,7 +319,7 @@ def render(ctx, embedded=False):
                 style_cols=_inv_style_cols,
                 column_groups=[
                     ('', ['SKU', 'Flavor']),
-                    ('Current Stock', ['3PL', 'FBA', 'In Transit', 'Total Stock', 'DoS']),
+                    ('Current Stock', ['3PL', 'FBA', 'In Transit', 'Ordered', 'Total Stock', 'DoS']),
                     ('Monthly Projections', disp_month_labels),
                 ],
             )
