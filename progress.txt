@@ -93,8 +93,47 @@
 
 - Task 25: Pushed and verified on Railway. Found Current Cash KPI was showing $197,714 instead of actual bank balance $117,007. Root cause: (1) get_cashflow_kpis() read the model's internal balance chain instead of the real bank balance — the chain diverges due to 35% unmapped transactions and current-week timing; (2) opening balance reconstruction subtracted ALL transactions but the model only replays mapped, direction-filtered ones. Fixed both: KPI now reads latest bank balances directly ($117,007), reconstruction now only subtracts transactions matching _get_actual_weekly_totals filters. Deployed to Railway and verified: Current Cash $117,007 (matches bank), Amazon biweekly lumps visible, realistic expense timing, no error banners. Screenshots taken. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass — no regressions.
 
-## Current
-Next unchecked task: Task 26 (Write final status to progress.txt)
+- Task 26: Wrote final status summary (this section).
+
+## Final Status
+
+### Summary
+- **Total tasks completed**: 43 of 53 (tasks 1-25 + task 26; 10 Phase 5 UX tasks remain)
+- **Phases completed**: Phase 1 (tasks 1-9), Phase 2 Analyst Round (tasks 10-20k, 20 analysts), Phase 3 Fixes (tasks 21-22h), Phase 4 Validation & Deploy (tasks 23-25)
+- **Phase remaining**: Phase 5 Frontend Design & UX Polish (tasks 27-35)
+- **Code changes**: Primarily in `analytics/cashflow.py` and `views/cashflow.py`, plus migration scripts in `scripts/`
+- **Test suite**: 24 pass, 1 pre-existing failure (amazon sync fetched 0 records — not a cashflow regression)
+
+### Analyst Rounds
+- **Round 2**: 20 sequential analysts (tasks 11-20k) evaluated revenue accuracy, Amazon timing, expense completeness, balance arithmetic, payout ratios, seasonality, Google Sheet comparison, override persistence, edge cases, code quality, business sanity, cross-dashboard consistency, stress tests, narrative walkthrough, backtest, LOC triggers, Amazon concentration, ratio drift, CEO decision test, and month-end backtest.
+- **Final validation**: 5 analysts (task 24) — 35 PASS, 3 CONDITIONAL PASS, 0 FAIL.
+
+### Final KPI Values (from Railway production)
+- **Current Cash**: $117,007 (matches actual bank balances — Highbeam Checking $38,667 + Highbeam Savings $15,473 + BofA Checking $62,867)
+- **13-Week Projected**: $295,678
+- **52-Week Projected**: $162,819
+- **Runway**: 52+ weeks
+- **Monthly Revenue**: ~$376K ($130K DTC + $182K Amazon + misc)
+- **Monthly Expenses**: ~$343K
+- **Monthly Net Cash Flow**: ~$33K
+
+### Phase 3 Fixes Implemented
+1. **22a**: Opening balance double-counting fixed (was +$110K / 94% overstatement)
+2. **22b**: Jameson loan misclassification fixed ($110K/month swing — reclassified from interest_income to loan)
+3. **22c**: Schedule detection priority fixed (method-based timing now takes precedence)
+4. **22d**: Amazon bank transactions mapped to amazon_revenue (51 transactions, enables auto-calibration)
+5. **22e**: Logging added to all 10 silent exception handlers (no more bare except:pass)
+6. **22f**: Fulfillment costs linked to DTC revenue volume (scales proportionally)
+7. **22g**: Past-week override guard added (actuals always win for past weeks)
+8. **22h**: COGS scenario interaction fixed (revenue_pct categories use revenue scenario, not expense)
+
+### Known Limitations
+1. **35% unmapped transactions**: ~35% of bank transactions remain unmapped, creating a structural data gap. Affects expense completeness and revenue tracking.
+2. **Media spend plan inputs**: Planned media spend ($75-190K/month) exceeds actual spending ($24-52K), inflating DTC waterfall projections.
+3. **Amazon payout ratio**: Auto-calibrated value (1.29) higher than expected (0.57-0.62) due to EWMA lag alignment — seed value 0.62 still used effectively.
+4. **COGS/production timing**: Production costs are PO-driven and spiky; flat revenue_pct (25%) is a simplification.
+5. **Planned inbound POs not consumed**: PO data in planned_inbound table is not used by cash flow engine for expense spikes.
+6. **DTC payout seed**: Seed 0.94 is slightly below actual ~0.98; auto-calibration compensates but seed could be updated.
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

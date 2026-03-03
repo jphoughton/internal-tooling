@@ -602,7 +602,7 @@ Acceptance criteria: 5 final analysts pass. Railway page renders correctly with 
   - Verify: Current Cash ~$117K, Amazon biweekly lumps, realistic expense timing, no error banners.
   - If broken, fix and re-push. Do NOT mark complete until the page is correct.
 
-- [ ] **26. Write final status to progress.txt**
+- [x] **26. Write final status to progress.txt**
   - Summary: total tasks completed, analyst rounds run, final KPI values, known limitations.
 
 ---
