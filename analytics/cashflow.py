@@ -784,17 +784,13 @@ def build_cashflow_forecast(
     # --- Build context dict with all the data the projectors need ---
     ctx = {}
 
-    # DTC payout ratio (auto-calibrated or seed)
+    # DTC payout ratio — user setting takes precedence over auto-calibration
     from db import get_cashflow_setting
-    dtc_ratio = compute_payout_ratio(conn, 'dtc')
-    if dtc_ratio is None:
-        dtc_ratio = float(get_cashflow_setting(conn, 'dtc_payout_ratio', '0.94'))
+    dtc_ratio = float(get_cashflow_setting(conn, 'dtc_payout_ratio', '0.94'))
     ctx['dtc_payout_ratio'] = dtc_ratio
 
-    # Amazon payout ratio
-    amz_ratio = compute_payout_ratio(conn, 'amazon')
-    if amz_ratio is None:
-        amz_ratio = float(get_cashflow_setting(conn, 'amazon_payout_ratio', '0.62'))
+    # Amazon payout ratio — user setting takes precedence over auto-calibration
+    amz_ratio = float(get_cashflow_setting(conn, 'amazon_payout_ratio', '0.62'))
     ctx['amazon_payout_ratio'] = amz_ratio
 
     # COGS percentage
