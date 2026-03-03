@@ -123,7 +123,6 @@ h3 {
 /* Glide Data Editor (canvas-based): force container backgrounds white */
 [data-testid="stDataFrame"] [data-testid="glideDataEditor"],
 [data-testid="stDataFrame"] canvas,
-[data-testid="stDataFrame"] .dvn-scroller,
 [data-testid="stDataFrame"] [class*="glide"],
 [data-testid="stDataFrame"] [class*="data-grid"],
 [data-testid="stDataFrame"] [role="grid"],
@@ -315,7 +314,10 @@ hr {
     overflow: hidden;
     box-shadow: 0 2px 12px rgba(15,53,87,0.06);
 }
-/* dvn-scroller must be transparent so the canvas content is visible */
+/* dvn-scroller must be transparent so the canvas content is visible.
+   Specificity must beat [data-testid="stDataFrame"] div[style] (0-2-1)
+   so we use div.dvn-scroller.stDataFrameGlideDataEditor (0-3-1). */
+[data-testid="stDataFrame"] div.dvn-scroller.stDataFrameGlideDataEditor,
 [data-testid="stDataFrame"] .dvn-scroller {
     background: transparent !important;
     background-color: transparent !important;
