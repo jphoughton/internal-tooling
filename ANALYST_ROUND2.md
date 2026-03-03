@@ -1687,3 +1687,152 @@ The $2.5M ending cash (vs expected $700K-$1.3M) is an ~$1.2-1.8M overstatement. 
 3. **(HIGH)** Link fulfillment costs to revenue volume so they scale with projected growth instead of staying flat.
 4. **(HIGH)** Add direction filter to `_get_actual_weekly_totals()` — revenue categories should only sum credits, expense categories should only sum debits.
 5. **(MEDIUM)** Validate media spend plan inputs against trailing actuals — warn when plan exceeds recent actual by >50%.
+
+---
+
+## Analyst 12 — Cross-Dashboard Consistency Check
+
+**Date:** 2026-03-02
+
+### 1. Media Spend: Settings Page vs Cash Flow Model
+
+| Data Point | Value |
+|------------|-------|
+| `media_spend` table rows (All Sources) | 13 months (Feb 2026 – Feb 2027) |
+| Plan range | $5K – $190K/month |
+| Near-term plan (Feb-Mar 2026) | $75K/month |
+| Summer ramp (Jun-Aug 2026) | $130K – $190K/month |
+| Actual media bank debits (recent) | $24K – $52K/month |
+
+**Data flow check:** The cash flow model reads `media_spend` table WHERE `source='All Sources'` via `get_media_spend()`. The same table is what the Settings/Business Variables page writes to. **The data flow is consistent** — both the cash flow model and the Settings page read/write the same table.
+
+**However, the media spend PLAN significantly exceeds actual bank debits:**
+- March 2026: Plan $75K vs Actual $52K (+43.6%) — **MISMATCH >20%**
+- Recent months (Nov 2025 – Jan 2026): Actual debits $24K – $26K/month vs plan $75K (3x gap)
+- Summer plan ($130K – $190K/month) has never been achieved historically (peak was $83K in Jul 2025)
+
+**Impact:** The media plan feeds TWO parts of the model:
+1. **Media EXPENSE projection** (method: `media_plan`) — bills the planned amount monthly. Expense is overstated.
+2. **DTC REVENUE via waterfall** — `build_waterfall(media_plan)` converts media spend × ROAS into new customers. Revenue is overstated.
+
+Both effects compound: the model overspends on media AND overestimates the revenue that media generates. This is an **input quality problem**, not a code bug.
+
+**Verdict: FAIL (HIGH)** — Media spend plan is 43-200% above actual spend. The Settings page and cash flow model are data-consistent (same table), but the values in that table are disconnected from reality.
+
+### 2. Amazon Revenue Forecast: Forecast Table vs Cash Flow Usage
+
+| Month | Forecast Table | Actual Gross Revenue | Diff |
+|-------|---------------|---------------------|------|
+| 2026-02 | $150,000 | $133,820 | +12.1% (OK) |
+| 2026-03 | $151,470 | $6,723 (partial) | N/A |
+| 2026-04 | $175,000 | — | Future |
+| 2026-05 | $200,000 | — | Future |
+| 2026-06 – 2026-09 | $220,000/month | — | Future |
+
+**Data flow check:** Cash flow model reads `amazon_revenue_forecast` table via `get_amazon_revenue_forecast()`, stores as `ctx['amazon_monthly_revenue']`, and passes to `_project_revenue_week()` which applies payout ratio (0.62) and distributes across 2 disbursements/month. **The data flow is correct** — the forecast table IS what drives Amazon projections.
+
+**Accuracy check:** February forecast ($150K) vs actual Amazon gross revenue ($134K) = 12% over. Within acceptable range. The forecast table values match what Analyst 1 already examined.
+
+**Summer projections ($200K-$220K/month):** No actuals to compare. Analyst 1 flagged these as likely 30-50% optimistic based on the historical range of $54K-$134K/month.
+
+**Verdict: CONDITIONAL PASS** — Data flow is consistent (same table, same values). Near-term accuracy is acceptable (12%). Summer projections are aspirational but not contradicted by available data.
+
+### 3. Waterfall DTC Revenue: Forecast Page vs Cash Flow
+
+| Month | Waterfall Output | Actual Shopify Gross | Diff |
+|-------|-----------------|---------------------|------|
+| 2026-03 | $144,807 | $121K (6-month avg) | +20% |
+| 2026-06 | $220,841 | — | Future |
+| 2026-08 | $275,135 | — | Future |
+| 2027-02 | $159,855 | — | Future |
+
+**Data flow check:** The cash flow model calls `build_waterfall(media_plan, source_filter='shopify', horizon_months=12, seasonal_indices=seasonal_dict)` — the EXACT same function the Forecast page would call. Both receive the same `media_plan` (from `get_media_spend(conn, source='All Sources')`) and the same `seasonal_indices` (from DB table). **The waterfall output is inherently consistent** — it's the same function with the same inputs.
+
+**The waterfall is NOT called separately for the Forecast page vs the Cash Flow page** — both import from `analytics/waterfall.py` and call `build_waterfall()` with the same parameters. There is no opportunity for divergence.
+
+**Waterfall output columns:** `month, repeat_units, new_customer_units, total_units, new_customers_acquired, repeat_revenue, new_customer_revenue, total_revenue`. Cash flow uses the `total_revenue` column.
+
+**March DTC gross:** $144,807 (20% above 6-month trailing average of $121K). This overshoot is driven by the media spend plan inputs ($75K/month vs actual $24-52K) as documented by Analyst 1.
+
+**Verdict: PASS** — Waterfall output is consistent across dashboard pages (same function, same inputs). The accuracy concern (20% above recent average) is an input problem, not an inconsistency.
+
+### 4. Planned Inbound / Production
+
+| Month | Planned Inbound (units) |
+|-------|------------------------|
+| 2026-02 | 0 |
+| 2026-03 | 0 |
+| 2026-04 | 16,000 |
+| 2026-05 | 22,200 |
+| 2026-06 – 2027-01 | 0 |
+
+**Data flow check:** The `planned_inbound` table has 204 rows across 12 months. April and May 2026 have 38,200 total units planned. At a rough $2-3/unit production cost, this represents $75K-$115K in production expense that should spike in those months.
+
+**GAP IDENTIFIED:** The cash flow model does NOT read `planned_inbound` for production expense timing. The `production` category uses method `revenue_pct` (COGS as % of gross revenue), which spreads production costs smoothly in proportion to revenue. This means:
+- April/May production POs (~$75-115K) will NOT appear as expense spikes
+- The cash flow will show smooth production costs instead of lumpy PO-driven payments
+- This could understate cash needs by $50K+ in PO months and overstate them in non-PO months
+
+**Verdict: FAIL (MEDIUM)** — Planned inbound data exists but is not consumed by the cash flow model. Production expense timing is disconnected from actual PO commitments. This is a feature gap, not a data inconsistency.
+
+### 5. Seasonal Indices: DB vs constants.py
+
+| Month | DB Value | Default (constants.py) | Diff % |
+|-------|----------|----------------------|--------|
+| 1 (Jan) | 0.884 | 0.950 | -6.9% |
+| 2 (Feb) | 0.858 | 0.920 | -6.7% |
+| 3 (Mar) | 0.857 | 0.980 | -12.5% |
+| 4 (Apr) | 0.945 | 1.020 | -7.3% |
+| 5 (May) | 1.049 | 1.050 | -0.1% |
+| 6 (Jun) | 1.095 | 1.100 | -0.5% |
+| 7 (Jul) | 1.126 | 1.120 | +0.6% |
+| 8 (Aug) | 1.098 | 1.080 | +1.6% |
+| 9 (Sep) | 1.108 | 1.020 | +8.6% |
+| 10 (Oct) | 1.038 | 0.980 | +5.9% |
+| 11 (Nov) | 1.037 | 0.920 | +12.7% |
+| 12 (Dec) | 0.905 | 0.880 | +2.8% |
+
+**Data flow check:** The cash flow model reads `seasonal_indices` from DB and passes to `build_waterfall()`. The waterfall applies these to REPEAT revenue only (not first-order), matching the spreadsheet methodology.
+
+**DB values differ from `DEFAULT_SEASONAL_INDICES` in `utils/constants.py`** by -12.5% to +12.7%. No differences exceed the 20% threshold. The DB values appear to have been auto-calibrated or manually updated from actual sales data — this is expected and correct behavior.
+
+**Key observation:** The DB values show a wider range than PRD seeds (range: 0.857-1.126 = 31.4% spread vs PRD 0.88-1.12 = 27.3%). Winter months are lower (Jan 0.884 vs seed 0.95) and fall months are higher (Sep/Nov ~1.04-1.11 vs seed 0.92-1.02). This suggests actual Hydrant seasonality has more extreme summer peaks and deeper winter troughs than the default seeds assumed.
+
+**Verdict: PASS** — DB indices are populated, within 13% of defaults, and correctly consumed by both the waterfall and cash flow models. The differences are calibration improvements, not inconsistencies.
+
+### 6. Amazon Mapping Gap (Cross-cutting Finding)
+
+| Metric | Value |
+|--------|-------|
+| Amazon bank transactions mapped as 'amazon_revenue' | 0 |
+| Amazon bank transactions still 'unmapped' | 51 |
+| Total transaction mapping coverage | 66.0% (1,366/2,069) |
+
+**Impact on cross-dashboard consistency:** Because zero Amazon bank transactions are mapped, the cash flow model cannot auto-calibrate the Amazon payout ratio from actuals. It falls back to the seed value (0.62). The Reorder page and Forecast page use separate Amazon data flows (daily_sku_sales, not bank transactions), so this mapping gap doesn't affect them — but it prevents the cash flow from validating its Amazon assumptions against bank reality.
+
+**Verdict: FAIL (MEDIUM)** — Already flagged by Analysts 2 and 5. The mapping gap prevents payout ratio auto-calibration and obscures $51 transactions (~$40-60K each = potentially $2-3M in unclassified bank deposits).
+
+---
+
+### Summary
+
+| Check | Verdict | Severity | Details |
+|-------|---------|----------|---------|
+| Media spend (Settings ↔ Cash Flow) | **FAIL** | HIGH | Data flow consistent, but plan values 43-200% above actual bank debits |
+| Amazon forecast (Table ↔ Cash Flow) | **CONDITIONAL PASS** | LOW | Data flow consistent, Feb accuracy 12% over, summer unverifiable |
+| Waterfall DTC (Forecast ↔ Cash Flow) | **PASS** | — | Same function, same inputs, inherently consistent |
+| Planned inbound → Production expense | **FAIL** | MEDIUM | PO data exists (38K units in Apr-May) but not consumed by cash flow |
+| Seasonal indices (DB ↔ constants.py) | **PASS** | — | DB values within 13% of defaults, correctly consumed |
+| Amazon transaction mapping | **FAIL** | MEDIUM | 0/51 Amazon deposits mapped, blocking auto-calibration |
+
+**Overall: 3 FAIL (1 HIGH, 2 MEDIUM), 1 CONDITIONAL PASS, 2 PASS**
+
+### Key Findings
+
+1. **No code-level inconsistencies exist between dashboard pages.** The cash flow model, forecast page, and settings page all read from the same database tables through the same functions. The data flow is architecturally sound.
+
+2. **The primary issue is input quality, not data flow.** The media spend plan in the `media_spend` table is significantly more aggressive than actual spending. This inflates both DTC revenue projections (via waterfall) AND media expense projections. Since the CFO controls these inputs on the Settings page, this is a business judgment call, not a bug.
+
+3. **The planned inbound → production expense gap is a real feature gap.** The cash flow model ignores PO data that exists in `planned_inbound`, instead modeling production costs as a smooth % of revenue. For a brand with $50K+ lumpy PO payments, this understates cash needs during PO months.
+
+4. **The 51 unmapped Amazon transactions represent ~$2-3M in unclassified bank deposits.** Mapping these would enable auto-calibration of the Amazon payout ratio and improve the model's self-correction capability.

@@ -306,7 +306,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Verify `_STRIP_PATTERNS` regex (Task 4 fix) now uses lowercase character class.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20b. Analyst 11 — Business Sanity Check (Does This Look Like a Real Business?)**
+- [x] **20b. Analyst 11 — Business Sanity Check (Does This Look Like a Real Business?)**
   - Read ALL prior analyst findings in `ANALYST_ROUND2.md`.
   - Run `build_cashflow_forecast()` for 52 weeks and examine the output holistically. This is NOT a code review — this is a CFO looking at the numbers and asking "does this make sense?"
   - Check these specific sanity gates:
@@ -320,7 +320,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - For any FAIL: identify which line item is causing the unrealistic number and trace it back to the projection function.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20c. Analyst 12 — Cross-Dashboard Consistency Check**
+- [x] **20c. Analyst 12 — Cross-Dashboard Consistency Check**
   - Read ALL prior findings.
   - The cash flow model should be consistent with other parts of the dashboard. Check:
     - **Media spend**: Read the `media_spend` table. The cash flow model's media expense projection should roughly match the media spend values entered in the Settings/Business Variables page. If the Settings page says $50K/month Meta and the cash flow shows $20K/month media, they're disconnected.
