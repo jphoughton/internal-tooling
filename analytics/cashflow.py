@@ -779,14 +779,23 @@ def build_cashflow_forecast(
             except Exception:
                 ctx[sched_key] = {'has_data': False}
 
-    # --- Get opening balance ---
+    # --- Get opening balance (sum latest balance across ALL accounts) ---
     try:
-        latest_balance = conn.execute("""
-            SELECT balance_after FROM cashflow_transactions
+        # Get the most recent balance_after for each distinct account
+        latest_balances = read_sql("""
+            SELECT account, balance_after
+            FROM cashflow_transactions t1
             WHERE balance_after IS NOT NULL
-            ORDER BY tx_date DESC, created_at DESC LIMIT 1
-        """).fetchone()
-        opening_balance = float(latest_balance['balance_after']) if latest_balance else 153000
+              AND tx_date = (
+                  SELECT MAX(tx_date) FROM cashflow_transactions t2
+                  WHERE t2.account = t1.account AND t2.balance_after IS NOT NULL
+              )
+            GROUP BY account
+        """, conn)
+        if not latest_balances.empty:
+            opening_balance = float(latest_balances['balance_after'].sum())
+        else:
+            opening_balance = 153000  # seed from Cash Flow Model
     except Exception:
         opening_balance = 153000  # seed from Cash Flow Model
 
