@@ -331,7 +331,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - For any mismatch >20%: trace the data flow and identify where the disconnection happens.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **20d. Analyst 13 — Stress Test Extreme Scenarios**
+- [x] **20d. Analyst 13 — Stress Test Extreme Scenarios**
   - Read ALL prior findings.
   - Run the forecast in Conservative scenario. Verify:
     - Revenue drops 15%, expenses rise 10% vs Base
