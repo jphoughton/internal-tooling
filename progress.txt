@@ -18,8 +18,10 @@
 
 - Task 10: Built VALIDATION_BASELINE.md by querying Railway PostgreSQL production database. Extracted: revenue by channel by month (6 months Shopify, 2 months Amazon), expense totals by category by month from cashflow_transactions, Amazon revenue forecast table (13 months), media spend table (26 entries), seasonal indices (all 12 populated), current bank balances ($117K total matching PRD), and mapping stats (65% mapped, 35% unmapped). Cross-referenced all data against PRD Google Sheet reference. Key findings: (1) Shopify gross revenue ~$121K/month is 2.5x PRD's $42-52K figure — PRD may reference net/cash revenue; (2) Amazon forecast table may be 12% optimistic vs actuals; (3) 35% of transactions unmapped including Amazon disbursements and software expenses; (4) Interest/loan expense spiked to $55K/month in Jan-Feb; (5) DTC payout ratio validates at ~97% (vs 94% seed); (6) Amazon payout ratio validates at exactly 62%. No code changes — research/documentation task only. pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass.
 
+- Task 11: Analyst 1 — Revenue Projection Accuracy. Ran build_cashflow_forecast() against Railway DB and compared projected revenue against actuals. Key findings: (1) DTC waterfall projects $145K/month March vs actual avg $121K — 20% above, driven by optimistic media spend plan inputs ($75K planned vs $24-65K actual); gap widens to 50-100% by summer as media plan ramps to $130-190K. FAIL (MEDIUM). (2) Amazon forecast $150K Feb vs actual $134K — 12% over; summer forecasts ($200-220K) likely 30-50% optimistic. FAIL (MEDIUM). (3) Seasonal indices confirmed applied — March 0.857, June 1.095. PASS. (4) DTC payout ratio auto-calibrated to 0.984 (tracks actual ~97%). PASS. (5) 4-week inflow total ~$271K vs Feb actual credits $218K — 24% hot due to input optimism. CONDITIONAL PASS. (6) Flagged potential opening balance double-counting bug for Analyst 4 — current_cash KPI shows $227K vs actual bank balance $117K. Wrote all findings to ANALYST_ROUND2.md. No code changes (analysis/documentation task). pytest: 1 pre-existing failure, 24 pass.
+
 ## Current
-Next unchecked task: Task 11 (Analyst 1 — Revenue Projection Accuracy)
+Next unchecked task: Task 12 (Analyst 2 — Amazon Disbursement Timing)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified

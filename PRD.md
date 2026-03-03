@@ -224,7 +224,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Cross-reference against the Google Sheet reference data in this PRD (see "Reference Data" section above).
   - Write `VALIDATION_BASELINE.md` with all findings. This file is the source of truth for all analysts.
 
-- [ ] **11. Analyst 1 — Revenue Projection Accuracy**
+- [x] **11. Analyst 1 — Revenue Projection Accuracy**
   - Read `VALIDATION_BASELINE.md` and `analytics/cashflow.py`.
   - Validate: Does the DTC monthly revenue from `build_waterfall()` roughly match actual Shopify revenue in `daily_sku_sales`? Is it in the $42-52K/month range? Are seasonal indices being applied?
   - Validate: Does the Amazon monthly revenue from `amazon_revenue_forecast` table match reality? The DB shows $54-102K/month actual Amazon revenue — if the forecast table says $150-200K, that's a critical discrepancy.
@@ -306,10 +306,120 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Verify `_STRIP_PATTERNS` regex (Task 4 fix) now uses lowercase character class.
   - Append findings to `ANALYST_ROUND2.md`.
 
+- [ ] **20b. Analyst 11 — Business Sanity Check (Does This Look Like a Real Business?)**
+  - Read ALL prior analyst findings in `ANALYST_ROUND2.md`.
+  - Run `build_cashflow_forecast()` for 52 weeks and examine the output holistically. This is NOT a code review — this is a CFO looking at the numbers and asking "does this make sense?"
+  - Check these specific sanity gates:
+    - **52-week ending cash**: Hydrant does ~$300K/month gross, ~$150-250K/month expenses. Net positive ~$50-100K/month. After 52 weeks starting from ~$117K, ending cash should be roughly $700K-$1.3M. If it shows >$2M or <$0, something is fundamentally wrong. FAIL if outside $400K-$2M range.
+    - **Weekly revenue range**: DTC should be ~$10-15K/week in cash (not gross). Amazon should be $0 most weeks and $40-60K in disbursement weeks. If any week shows >$100K DTC or >$150K Amazon, something is wrong.
+    - **Weekly expense range**: Total outflows should be ~$35-60K/week average. If any single week shows >$150K expenses (excluding spiky production), flag it.
+    - **Expense-revenue correlations**: Fulfillment costs should rise as revenue rises (more orders = more 3PL fees). COGS should scale with revenue (it's a % of gross). Shipping should correlate with order volume. If revenue doubles month-over-month but fulfillment stays flat, the model is wrong. If COGS stays constant while revenue swings, the revenue_pct method isn't working.
+    - **No negative revenue weeks**: Revenue should never be negative. If it is, refunds or sign errors are leaking in.
+    - **Cash never goes massively negative**: If closing balance drops below -$100K at any point, the model is broken (they have a $510K LOC as backstop, but the model shouldn't need it for normal operations).
+    - **Month-over-month consistency**: Compare total inflows for month 1 vs month 6 vs month 12. They should be roughly similar (within 30%) unless seasonality is very strong. A 3x jump between months means something is compounding incorrectly.
+  - For any FAIL: identify which line item is causing the unrealistic number and trace it back to the projection function.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20c. Analyst 12 — Cross-Dashboard Consistency Check**
+  - Read ALL prior findings.
+  - The cash flow model should be consistent with other parts of the dashboard. Check:
+    - **Media spend**: Read the `media_spend` table. The cash flow model's media expense projection should roughly match the media spend values entered in the Settings/Business Variables page. If the Settings page says $50K/month Meta and the cash flow shows $20K/month media, they're disconnected.
+    - **Amazon revenue forecast**: Read `amazon_revenue_forecast` table. Compare those values against what the cash flow model actually uses for Amazon projections. They MUST match — if the forecast table says $80K/month but the model projects $150K, the forecast table needs updating or the model is reading wrong data.
+    - **Waterfall DTC revenue**: The DTC revenue in the cash flow should roughly match what the waterfall model on the Forecast page produces. Read `analytics/waterfall.py` and check if `build_waterfall()` returns similar monthly totals when called from the cash flow engine vs the forecast page.
+    - **Planned inbound / production**: Read the `planned_inbound` table. If there are planned POs, the cash flow should ideally reflect those as production expense spikes in the relevant weeks (this may not be implemented yet — if not, flag it as a gap, not a bug).
+    - **Seasonal indices**: Read `seasonal_indices` table. Verify the values match `DEFAULT_SEASONAL_INDICES` in `utils/constants.py`. If the table is empty, the waterfall is using defaults — note this.
+  - For any mismatch >20%: trace the data flow and identify where the disconnection happens.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20d. Analyst 13 — Stress Test Extreme Scenarios**
+  - Read ALL prior findings.
+  - Run the forecast in Conservative scenario. Verify:
+    - Revenue drops 15%, expenses rise 10% vs Base
+    - Closing balance at week 52 is meaningfully lower than Base
+    - If Conservative shows cash going negative, the alert banner should trigger
+  - Run the forecast in Aggressive scenario. Verify:
+    - Revenue rises 10%, expenses drop 5% vs Base
+    - Closing balance at week 52 is higher than Base
+  - Test what happens if ALL revenue is zero (empty `dtc_monthly_revenue` and `amazon_monthly_revenue` in ctx). The model should still run and show only expenses draining cash — not crash.
+  - Test what happens if ALL expense categories have zero trailing average and zero seed defaults. The model should show only revenue building cash.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20e. Analyst 14 — Week-by-Week Narrative Walkthrough**
+  - Read ALL prior findings.
+  - Run `build_cashflow_forecast()` and print weeks 1-8 in detail (every category value).
+  - Walk through the first 8 weeks as if you're the CFO presenting to a board. For each week, narrate: "We start with $X. DTC brings in $Y (is that reasonable for ~$7K/day * 7 * 0.94?). Amazon brings in $Z this week (is it a disbursement week? does the amount match ~$45K?). Expenses: payroll hits this week ($16K — is it the right biweekly cadence?). Media $0 this week (correct, it bills monthly). Net is $W, closing at $V."
+  - This is a human-readability check. If the narrative doesn't make sense for any week, the model is wrong regardless of what the code says.
+  - Flag any week where the narrative breaks down (e.g., "payroll hits 3 weeks in a row" or "Amazon disbursement is $120K which is the full month not half").
+  - Append the full narrative to `ANALYST_ROUND2.md`.
+
+- [ ] **20f. Analyst 15 — Actuals vs Projection Backtest**
+  - Read ALL prior findings.
+  - This is the most important analyst. Run `build_cashflow_forecast()` starting 8 weeks ago. The first 4 weeks should be marked `is_actual=True` and use real bank data. Weeks 5-8 should be projections.
+  - Now compare weeks 5-8 projections against what ACTUALLY happened in the bank (query `cashflow_transactions` for those weeks).
+  - For each of weeks 5-8, calculate:
+    - Projected total inflows vs actual total credits
+    - Projected total outflows vs actual total debits
+    - Projected closing balance vs actual (sum of latest account balances adjusted for that week)
+  - Calculate the overall forecast error: `abs(projected - actual) / actual * 100` for each metric.
+  - **PASS if average error <20%.** This is the gold standard test — if the model can't predict 4-8 weeks out within 20%, it's not useful for cash management.
+  - **FAIL if average error >30%.** Identify which categories contribute the most error.
+  - Append detailed comparison table to `ANALYST_ROUND2.md`.
+
+- [ ] **20g. Analyst 16 — LOC Trigger & Payroll Coverage**
+  - Read ALL prior findings.
+  - Run `build_cashflow_forecast()` for 52 weeks in Base scenario.
+  - **LOC draw timing**: Find the first week where `closing_balance < 50000`. This is when the CFO would need to draw on the $510K line of credit. Report the week number and projected balance. If no week dips below $50K, report "No LOC draw needed — PASS."
+  - **Payroll stress test**: For every week that has a payroll payment (should be biweekly), check if `opening_balance - payroll_amount > 0`. If cash goes negative AFTER payroll in any week (before other inflows), that's a CRITICAL flag — payroll cannot bounce.
+  - **Minimum cash week**: Identify the single week with the lowest closing balance across all 52 weeks. Report it. If it's negative, FAIL. If it's below $50K, WARN.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20h. Analyst 17 — Amazon Concentration Risk**
+  - Read ALL prior findings.
+  - Run `build_cashflow_forecast()` for 52 weeks.
+  - **Amazon dependency %**: Calculate what % of total weekly inflows come from Amazon vs DTC vs other. If Amazon is >60% of total cash inflows, flag as HIGH concentration risk.
+  - **Amazon freeze simulation**: Manually zero out all `amazon_revenue` values for 4 consecutive future weeks in the forecast DataFrame (don't change the model, just the output). Recalculate closing balances. How many weeks until cash hits zero? If <6 weeks, CRITICAL. If <10 weeks, HIGH.
+  - **Disbursement gap stress**: What's the longest gap between Amazon disbursements in the 52-week forecast? If any gap is >21 days, flag it — that's longer than normal and could indicate a model timing bug.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20i. Analyst 18 — Ratio Drift Detection**
+  - Read ALL prior findings.
+  - The model auto-calibrates payout ratios from actuals using EWMA. Check:
+  - **DTC payout ratio**: Call `compute_payout_ratio(conn, 'dtc')`. Compare result against the seed value (0.94). If the auto-calibrated value is >5% different from seed (i.e., below 0.89 or above 0.99), flag it with the direction of drift and what it means: dropping ratio = rising processing fees or more refunds; rising ratio = improving margins.
+  - **Amazon payout ratio**: Call `compute_payout_ratio(conn, 'amazon')`. Compare against seed (0.62). Same 5% threshold. Amazon ratio dropping could mean higher FBA fees, more returns, or advertising cost changes.
+  - **COGS ratio check**: The model uses `cogs_pct` (default 0.25). Query actual production spend from `cashflow_transactions` (category='production') and compare against 25% of gross revenue. If actual COGS is >30% or <15%, the default is wrong and should be flagged.
+  - **If any ratio has drifted >5%**: recommend updating the seed value in `cashflow_settings` and explain why, so the CFO can investigate the underlying cause.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20j. Analyst 19 — CEO Monday Morning Decision Test**
+  - Read ALL prior findings.
+  - You are the CEO. It's Monday morning. You open the Cash Flow page to answer these 5 questions. For each one, check if the model gives you a clear, trustworthy answer:
+  - **"Can I approve this $80K production run?"** — Look at the closing balance 4 weeks out (when the PO would hit). Is there enough cash to cover it without going below $100K? Does the model make this obvious at a glance, or do you have to do mental math?
+  - **"Should I increase media spend by $10K/month?"** — Can you toggle to Aggressive scenario and see the impact? Does increasing spend show up as higher revenue in later weeks (via waterfall), or does the model treat media and revenue as disconnected?
+  - **"Are we going to make payroll on the 10th?"** — Look at the week containing the 10th. Is there a payroll line item showing ~$16K? Is the opening balance that week clearly above $16K?
+  - **"How much cash do we actually have right now?"** — Is the "Current Cash" KPI obviously the real number? Is it stale? Does it match what you'd see if you logged into Highbeam + BofA right now?
+  - **"When is our next tight cash week?"** — Scan the closing balance column. Is there an obvious low point? Does the alert banner flag it? Can you see it on the chart?
+  - For each question: PASS if the answer is clear within 5 seconds of looking. FAIL if you'd need to open a spreadsheet to double-check.
+  - Append findings to `ANALYST_ROUND2.md`.
+
+- [ ] **20k. Analyst 20 — "Does Last Month's Forecast Match What Actually Happened?"**
+  - Read ALL prior findings. This is the ultimate trust test.
+  - Query `cashflow_transactions` for the most recent COMPLETE month (all weeks fully in the past).
+  - Sum actual credits (inflows) and actual debits (outflows) for that month from bank data.
+  - Now run `build_cashflow_forecast()` starting 8 weeks before that month. Look at the projected values for that same month's weeks.
+  - Compare:
+    - **Projected monthly inflows vs actual monthly inflows**: Error % = ?
+    - **Projected monthly outflows vs actual monthly outflows**: Error % = ?
+    - **Projected month-end cash vs actual month-end cash**: Error $ = ?
+  - If monthly inflow error >25% → FAIL (revenue model is off)
+  - If monthly outflow error >25% → FAIL (expense model is off)
+  - If month-end cash error >$30K → FAIL (cumulative drift too high)
+  - This is the number the CEO will use to calibrate trust. If the model said February would end at $130K and it actually ended at $95K, that's a $35K miss — not trustworthy for $80K PO decisions.
+  - Append findings to `ANALYST_ROUND2.md`.
+
 - [ ] **21. Generate Phase 3 fix tasks**
   - Read `ANALYST_ROUND2.md` from top to bottom.
   - For each FAIL or issue with severity HIGH or CRITICAL, append a new task to this PRD at the bottom of Phase 3 with: file, bug description, fix, verify.
-  - If ALL 10 analysts PASSed, write "ALL PASS — skipping Phase 3" and skip to task 24.
+  - If ALL analysts PASSed, write "ALL PASS — skipping Phase 3" and skip to task 24.
   - Update `progress.txt`.
 
 ---
@@ -393,7 +503,58 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Make sure buttons render in a clean grid (up to 4 per row), not stacked vertically.
   - If NO categories have overrides, the entire "Manual overrides active" section should be hidden.
 
-- [ ] **30. Final visual verification on Railway**
+- [ ] **30. Information hierarchy & visual scanability**
+  - File: `views/cashflow.py`
+  - The page should follow a clear information hierarchy — most important thing first, details on demand:
+    1. **KPI row**: These are the "glanceable" numbers. The CFO looks here first. Make sure they're large, bold, and the most prominent element on the page. Current Cash should be the biggest number. Add a subtle color indicator: green if above threshold, yellow if within 20% of threshold, red if below.
+    2. **Alert banner**: Only shows when something needs attention. Should feel urgent but not alarming for every page load.
+    3. **Chart**: Second thing the eye goes to. Should clearly tell the story — "cash is going up" or "cash is going down" — in under 2 seconds. The today line should be obvious.
+    4. **Table**: The detail layer. Only for people who want to drill in. The table should NOT dominate the page — it's reference material, not the headline.
+  - Check that the page doesn't feel like a wall of numbers. There should be visual breathing room between sections.
+  - The scenario and horizon controls should feel like filters, not primary actions. They should be visually secondary to the data.
+
+- [ ] **31. Table UX — make editing intuitive**
+  - File: `views/cashflow.py`
+  - The editable table is the core interactive element. It needs to feel obvious:
+    - **Future weeks should look editable** — slightly different background, or a subtle border, so the user knows they can click and type. Past weeks should look "locked" — dimmed or greyed out.
+    - **When a cell has been manually overridden**, it should have a visual indicator (e.g., bold text, small dot, or different background color) so the CFO can see at a glance which numbers are their inputs vs the model's projections.
+    - **The "Smart Projection" reset button** should be per-row, clearly labeled, and only visible when that row has overrides. Something like a small "Reset to auto" link or icon next to the row label, not a separate section below.
+    - **Total rows** (Total Inflows, Total Outflows, Net Cash Flow, Closing Balance) should be visually separated from editable rows — heavier border, bold, maybe a different background. They should feel like "results" not "inputs."
+    - **Column headers** (week dates) should be sticky so they stay visible when scrolling down through expense rows.
+    - **The current week column** should have a subtle highlight (vertical stripe) so you can immediately see "this is where we are."
+  - Test the scroll experience: horizontal scrolling through 13+ weeks should feel smooth. The row labels (category names) should be sticky/frozen on the left.
+
+- [ ] **32. Chart polish — make it tell a story**
+  - File: `views/cashflow.py`, function `_build_balance_chart()`
+  - The chart should answer "are we going to be okay?" in one glance:
+    - **Actuals should feel solid and trustworthy** — thicker line, filled markers, solid color.
+    - **Projections should feel like estimates** — thinner dashed line, lighter color, the confidence band reinforces "this is a range, not a promise."
+    - **The min cash threshold line** should be prominent — dashed red, clearly labeled. It's the "danger zone."
+    - **If the projection crosses below the threshold**, that intersection point should be visually emphasized (maybe a red dot or annotation: "Week 9: Below $100K").
+    - **Hover tooltips** should show: week date, closing balance, net cash flow for that week. Not just the raw number.
+    - **Remove chart clutter**: no unnecessary gridlines, no excessive legend entries, no Plotly watermark. Clean and minimal.
+  - Consider adding a subtle background shading: green zone (above threshold), yellow zone (within 20% of threshold), red zone (below threshold). This makes the danger area viscerally obvious without reading numbers.
+
+- [ ] **33. Mobile & narrow viewport check**
+  - File: `views/cashflow.py`
+  - Streamlit is often viewed on laptops with narrow browser windows, or occasionally on tablets/phones.
+  - Open the Cash Flow page and resize the browser to 1024px wide (common laptop). Verify:
+    - KPI cards don't overflow or stack weirdly
+    - Chart is still readable
+    - Table horizontal scroll works without breaking the layout
+    - Controls (scenario, horizon) don't wrap to a third row
+  - Resize to 768px (iPad). The page should still be usable, even if the table requires scrolling.
+  - Fix any overflow, text truncation, or broken layout at narrow widths.
+
+- [ ] **34. Loading states & error handling UX**
+  - File: `views/cashflow.py`
+  - The forecast takes a few seconds to build (multiple DB queries). During that time:
+    - Show a `st.spinner('Building forecast...')` that covers the main content area, not just a tiny loading indicator.
+    - If the forecast fails (DB error, missing data), show a clear error message with actionable advice: "No bank transactions found. Upload a CSV in the section below." — NOT a raw Python traceback.
+    - If data is stale (balance_freshness_date > 14 days), show a warning badge next to "Current Cash": "Data is 18 days old — upload fresh transactions."
+  - Test the empty state: what does the page look like with zero transactions in the DB? It should guide the user to upload, not show a broken chart and empty table.
+
+- [ ] **35. Final visual verification on Railway**
   - Push all Phase 5 changes to main.
   - Open Railway deployment in Playwright.
   - Navigate to Cash Flow page.
@@ -401,4 +562,5 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Verify everything renders correctly with real data — no empty tables, no NaN values, no broken formatting.
   - Test: change scenario from Base to Conservative — numbers should update, chart should shift down.
   - Test: change horizon from 13 weeks to 52 weeks — table should expand, chart should extend.
+  - Test: edit a cell, refresh, confirm persistence. Click a reset button, confirm revert.
   - This is the final task. Mark complete only when the page looks production-ready.
