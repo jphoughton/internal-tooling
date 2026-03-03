@@ -954,3 +954,156 @@ The Mar → Apr dip (-9.1% despite seasonal expectation of +10.3%) is likely a w
 3. **June/March DTC revenue ratio is 1.525x** (not the expected 1.12x from PRD indices or 1.28x from DB indices) because media spend growth ($75K→$130K, a 73% increase) compounds with seasonal uplift. This is correct model behavior — the waterfall correctly applies both drivers.
 
 4. **Seasonal indices apply to repeat revenue only**, not new customer first-order revenue. This is by design (matching the spreadsheet model). As a result, the seasonal effect on total revenue is muted — roughly half the effect you'd expect from the index values alone, since repeat revenue is a fraction of total revenue in months with high media acquisition.
+
+---
+
+## Analyst 7 — Google Sheet Comparison
+
+**Date:** 2026-03-02
+
+### Method
+
+Ran `build_cashflow_forecast(start_date=today-4w, weeks=20, scenario='base')` against Railway PostgreSQL. Extracted 13-week forward totals from the current week (Mar 2-8), monthly aggregations of projected weeks, and per-category breakdowns. Compared all figures against the Google Sheet reference data from the PRD and actual bank data from `VALIDATION_BASELINE.md`.
+
+**Prior analyst findings incorporated:**
+- Analyst 3: Jameson loan payments (~$55K/month) misclassified as `interest_income` (revenue) instead of `loan` (expense)
+- Analyst 4: Opening balance double-counting inflates current cash by $110K ($227K displayed vs $117K actual)
+- Analyst 5: Amazon auto-calibration non-functional (all Amazon transactions unmapped)
+- Analyst 1: DTC waterfall projects 20% above recent actuals due to optimistic media spend plan inputs
+
+### 1. Total Monthly Revenue
+
+| Source | Model (avg/mo) | Google Sheet Reference | Actual Bank Credits (6-mo avg) |
+|--------|---------------|----------------------|-------------------------------|
+| DTC (Shopify) | $172,629 | $42-52K (cash) | $116,502 (deposits) |
+| Amazon | $104,976 | $54-102K (cash) | $83K (disbursements, Feb) |
+| Interest/Other | $59,611 | Not specified | ~$35/mo (true interest) |
+| **Total** | **$337,217** | **$250-350K** | **$270,589** |
+
+**Verdict: CONDITIONAL PASS (with caveats)**
+
+The model's total monthly revenue of $337K falls within the Google Sheet's $250-350K range. However, this pass is misleading due to two offsetting errors:
+
+1. **Interest_income inflation (+$59K/mo):** The Jameson loan payments ($55K/mo in debits) are classified under `interest_income`, a revenue category. The `_get_actual_weekly_totals()` function doesn't filter by direction, so these debit amounts are summed alongside actual interest income credits ($35/mo). The trailing average then projects ~$60K/month of phantom revenue. **True model revenue (excl Jameson): ~$278K/month.**
+
+2. **DTC overstatement (+$56K/mo):** The waterfall model projects DTC cash inflows of $173K/month, but actual Shopify bank deposits average $117K/month — a 48% overstatement driven by optimistic media spend plan inputs ($75K planned vs $24-65K actual historical spend).
+
+**Adjusted total revenue: ~$278K/month** (removing phantom interest_income). This is at the low end of the $250-350K reference range but within 30%. If the DTC overstatement is also corrected, revenue drops to ~$222K/month — 11% below the $250K floor. **FAIL after double adjustment.**
+
+### 2. Total Monthly Expenses
+
+| Category | Model (avg/mo) | Google Sheet Reference | Actual Bank Debits (6-mo avg) |
+|----------|---------------|----------------------|-------------------------------|
+| Media | $39,649 | $40-55K | $254,751 (total) |
+| Payroll | $30,379 | $32K | |
+| Loan (Jameson) | $1 | $25-75K (principal + interest) | |
+| Fulfillment | $22,745 | $20K | |
+| Production | $85,897 | $0-108K | |
+| Software | $72 | $42K | |
+| Other (agency, accounting, insurance, tax, shipping) | $15,055 | ~$31K combined | |
+| **Total** | **$193,796** | **$150-250K** | **$254,751** |
+
+**Verdict: FAIL (MEDIUM severity)**
+
+The model's total monthly expense of $194K is within the Google Sheet range ($150-250K), but this is artificially low:
+
+1. **Missing Jameson loan (~$55K/mo):** Loan payments are classified as revenue, not expense. Adding them back: $194K + $55K = **$249K/month** — at the top of the reference range.
+
+2. **Missing software (~$42K/mo):** Only $72/month is mapped to `software` vs the PRD's $42K/month. Most SaaS payments are on the Amex card or unmapped. This represents a **$42K/month understatement**.
+
+3. **Unmapped expenses (~$103K/mo):** Per VALIDATION_BASELINE, 35% of bank debits ($103K/month average) are unmapped. These include Amex payments, contractor invoices, Amazon FBA fees, and other operational costs.
+
+**Adjusted expenses: ~$249K/month** (adding Jameson only) or potentially **~$291K+/month** (adding Jameson + software gap). The Google Sheet ceiling of $250K is reasonable but the model significantly understates true cash outflows.
+
+**Comparison to actual bank debits:** Model projects $194K/month vs actual average debits of $255K/month — the model understates expenses by **24%**, just under the 30% flag threshold. After adding Jameson, the gap narrows to ~2%.
+
+### 3. Net Monthly Cash Flow
+
+| Metric | Model | Google Sheet Reference | Actual Bank Net (6-mo avg) |
+|--------|-------|----------------------|---------------------------|
+| Monthly net | +$143,421 | +$50-150K | +$15,838 |
+
+**Verdict: FAIL (HIGH severity)**
+
+The model shows net positive $143K/month, which appears to be within the Google Sheet's +$50-150K range. However:
+
+1. **The $143K figure is grossly inflated** by the Jameson misclassification. Revenue is overstated by ~$60K and expenses are understated by ~$55K, creating a ~$115K/month swing.
+
+2. **Adjusted net: ~$28K/month** ($143K - $115K Jameson swing). This is **44% below** the Google Sheet's $50K floor.
+
+3. **Actual bank data shows +$16K/month average net** (6-month average from VALIDATION_BASELINE). The adjusted model net of $28K is closer to reality than the raw $143K, but still 75% above actuals.
+
+4. **The Google Sheet's $50-150K reference may itself be optimistic.** Actual bank data consistently shows much lower net cash flow (+$16K/month average), with 2 of 6 months negative (Dec -$14K, Sep -$102K).
+
+**Model net exceeds actual bank net by 9x ($143K vs $16K).** Even after Jameson adjustment, model net ($28K) exceeds actual by 77%. The model is not yet trustworthy for cash management decisions.
+
+### 4. 13-Week Closing Balance
+
+| Metric | Value |
+|--------|-------|
+| Current week opening (model) | $227,258 |
+| Current week opening (actual bank) | $117,007 |
+| Opening inflation | +$110,251 (94%) |
+| 13-week closing (model) | $626,968 |
+| 13-week total inflows (model) | $986,275 |
+| 13-week total outflows (model) | $586,565 |
+| 13-week net (model) | +$399,710 |
+
+**Verdict: FAIL (CRITICAL severity)**
+
+The model projects cash growing from $227K to $627K over 13 weeks (+$400K). This implies the business generates ~$133K/month in free cash flow. Actual bank data shows ~$16K/month average net.
+
+**Adjusted 13-week estimate:**
+- True opening: $117K (actual bank balance)
+- Jameson net impact over 13 weeks: ~$115K/mo × 3 = ~$345K phantom net
+- Adjusted 13w net: $400K - $345K = ~$55K
+- Adjusted 13w closing: $117K + $55K = **~$172K**
+- Direction correct? $172K > $117K (closing higher than opening). **CONDITIONAL PASS for direction.**
+
+But the model DISPLAYS $627K, which is **3.6x** the adjusted estimate of $172K. A CFO seeing $627K in 13 weeks would make very different decisions than one seeing $172K.
+
+### 5. Weekly Revenue Ranges (Sanity Check)
+
+| Revenue Source | Model Weekly Range | Expected Range | Verdict |
+|---------------|-------------------|----------------|---------|
+| DTC | $33-50K/week | $25-30K/week (bank actuals) | HIGH by 30-67% |
+| Amazon | $0 or $44-65K | $0 or $37-45K (PRD) | HIGH by 19-44% |
+| Interest_income | $12-14K/week | ~$1/week (true interest) | BROKEN (Jameson) |
+
+DTC weekly revenue is consistently above actual bank deposit rates due to the waterfall overstatement. Amazon disbursement amounts increase each month because the `amazon_revenue_forecast` table ramps aggressively ($151K→$175K→$200K→$220K), and the model faithfully applies `forecast × 0.62 / 2`.
+
+### 6. Weekly Expense Ranges (Sanity Check)
+
+| Expense | Model Weekly Range | Expected Range | Verdict |
+|---------|-------------------|----------------|---------|
+| Production (COGS) | $7-21K/week | Varies (25% of gross) | Reasonable given method |
+| Media | $0 or $39-52K | $0 or $24-65K | Within range |
+| Payroll | $0 or $12K | $0 or $16K biweekly | 25% below PRD |
+| Fulfillment | $5K/week | $5K/week | Match |
+
+Expense timing is reasonable — media shows lumpy monthly billing, payroll shows biweekly pattern. Production (COGS) fluctuates with revenue because it uses `revenue_pct` method (25% of gross-up).
+
+### 7. Comparison Summary
+
+| Metric | Model | Google Sheet Range | Status | Severity |
+|--------|-------|--------------------|--------|----------|
+| Monthly revenue | $337K | $250-350K | **PASS** (raw) / **CONDITIONAL** (adjusted) | — |
+| Monthly expenses | $194K | $150-250K | **FAIL** (missing $55K loan) | MEDIUM |
+| Monthly net | $143K | $50-150K | **FAIL** (inflated by $115K/mo) | HIGH |
+| 13w closing direction | Up | Up (if net positive) | **CONDITIONAL PASS** | — |
+| 13w closing magnitude | $627K | ~$172K (adjusted est.) | **FAIL** (3.6x overstated) | CRITICAL |
+| DTC weekly revenue | $33-50K | $25-30K (actuals) | **FAIL** (30-67% over) | MEDIUM |
+| Amazon weekly revenue | $44-65K | $37-45K (PRD) | **FAIL** (>30% at high end) | MEDIUM |
+| Expense timing | Lumpy, correct cadence | Lumpy | **PASS** | — |
+
+### 8. Key Findings
+
+1. **The model's raw output APPEARS to pass the Google Sheet comparison** — total revenue $337K falls in the $250-350K range and total expenses $194K falls in the $150-250K range. This is coincidental: two major bugs (Jameson misclassification inflating revenue + deflating expenses) happen to keep the totals within bounds.
+
+2. **After adjusting for known bugs, the model understates expenses and overstates revenue.** Adjusted monthly revenue ~$278K (low end of range), adjusted expenses ~$249K (top of range), adjusted net ~$28K (below the $50K floor). The model gives a more optimistic picture than reality.
+
+3. **The opening balance double-counting (Analyst 4) compounds with the net cash flow inflation to produce a 13-week closing balance of $627K** — roughly 3.6x the adjusted estimate of $172K. This is the most dangerous number in the model because it directly drives cash management decisions.
+
+4. **Root causes are all previously identified:** Jameson misclassification (Analyst 3), opening balance double-counting (Analyst 4), DTC waterfall overstatement from media plan inputs (Analyst 1), and unmapped transactions (VALIDATION_BASELINE). No new bugs discovered — the Google Sheet comparison confirms and quantifies the cumulative impact of known issues.
+
+5. **The Google Sheet's own reference ranges may need updating.** The PRD states DTC cash revenue of $42-52K/month, but actual Shopify bank deposits average $117K/month. The PRD's $300K+/month combined gross is closer to reality, suggesting the per-channel breakdowns in the PRD use different definitions (net vs gross, pre vs post-fees) than the bank data.

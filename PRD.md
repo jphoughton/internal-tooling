@@ -270,7 +270,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - If seasonality appears flat across all months, the fix from Task 3 didn't work.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **17. Analyst 7 — Google Sheet Comparison**
+- [x] **17. Analyst 7 — Google Sheet Comparison**
   - Read all prior analyst findings and `VALIDATION_BASELINE.md`.
   - Compare our model's 13-week output against the Google Sheet reference data:
     - Total monthly revenue: should be $250-350K/month (DTC $42-52K + Amazon $54-102K + other)

@@ -30,8 +30,10 @@
 
 - Task 16: Analyst 6 — Seasonality Impact. Verified seasonal_indices table is fully populated (12 rows, range 0.857-1.126, 31.4% range — NOT flat). Confirmed Task 3 fix is working: seasonal_dict is passed to build_waterfall() and produces measurably different revenue output vs no seasonality (March -10.3%, June +5.9%). June/March DTC revenue ratio is 1.525x (higher than pure seasonal expectation of 1.277x because media spend also ramps $75K→$130K). DB indices differ from PRD seeds (Mar 0.857 vs PRD 0.98) — appears auto-calibrated from actuals. Seasonal indices apply to repeat revenue only (by design). All checks PASS or CONDITIONAL PASS. No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended findings to ANALYST_ROUND2.md.
 
+- Task 17: Analyst 7 — Google Sheet Comparison. Ran build_cashflow_forecast() for 20 weeks against Railway DB and compared model output against Google Sheet reference ranges from the PRD. Key findings: (1) Total monthly revenue $337K falls within the $250-350K reference range, but only because the Jameson misclassification adds ~$60K phantom revenue — adjusted revenue is ~$278K (low end of range). CONDITIONAL PASS. (2) Total monthly expenses $194K falls in the $150-250K range, but is artificially low — missing $55K/month Jameson loan + $42K/month unmapped software. FAIL (MEDIUM). (3) Net monthly cash flow $143K appears within the $50-150K reference, but is inflated by ~$115K/month from the Jameson misclassification. Adjusted net ~$28K is 44% below the $50K floor. FAIL (HIGH). (4) 13-week closing balance $627K is 3.6x the adjusted estimate of ~$172K due to compounding of opening balance double-counting + Jameson net inflation. FAIL (CRITICAL). (5) DTC weekly revenue 30-67% above actual bank deposits. FAIL (MEDIUM). (6) Expense timing (lumpy billing cadence) is correct. PASS. No new bugs discovered — all issues trace back to previously identified root causes (Analysts 1, 3, 4). No code changes (analysis/documentation task). pytest: 1 pre-existing failure (amazon sync 0 records), 24 pass. Appended findings to ANALYST_ROUND2.md.
+
 ## Current
-Next unchecked task: Task 17 (Analyst 7 — Google Sheet Comparison)
+Next unchecked task: Task 18 (Analyst 8 — Override & Edit Persistence)
 
 ## Notes
 - analytics/cashflow.py is the main file being modified
