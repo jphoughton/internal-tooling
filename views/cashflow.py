@@ -93,8 +93,15 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
         x=str(today),
         line_dash='dash',
         line_color='rgba(255,255,255,0.3)',
-        annotation_text='Today',
-        annotation_position='top',
+    )
+    fig.add_annotation(
+        x=str(today),
+        y=1,
+        yref='paper',
+        text='Today',
+        showarrow=False,
+        font=dict(color='rgba(255,255,255,0.5)', size=10),
+        yanchor='bottom',
     )
 
     fig.update_layout(
