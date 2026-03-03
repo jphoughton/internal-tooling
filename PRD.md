@@ -239,7 +239,7 @@ Each analyst runs SEQUENTIALLY so it can build on the previous analyst's finding
   - Verify the fix from Task 1 eliminated the overcounting bug.
   - Append findings to `ANALYST_ROUND2.md`.
 
-- [ ] **13. Analyst 3 — Expense Completeness & Timing**
+- [x] **13. Analyst 3 — Expense Completeness & Timing**
   - Read prior analyst findings.
   - For each of the 12 expense categories: compare projected 13-week total against actual 13-week total from `cashflow_transactions`.
   - Flag any category where projected vs actual differs by >25%.
