@@ -80,12 +80,10 @@ CASHFLOW_CATEGORIES = {
     'wholesale_revenue': {'label': 'Wholesale Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
     'interest_income': {'label': 'Interest Income', 'group': 'revenue', 'method': 'trailing_avg'},
     'other_revenue': {'label': 'Other Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
-    # Expenses
+    # Expenses (operating)
     'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_plan'},
     'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_schedule'},
-    'loan': {'label': 'Loan Payments', 'group': 'expense', 'method': 'schedule'},
-    'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'trailing_avg'},
-    'production': {'label': 'Production / COGS', 'group': 'expense', 'method': 'revenue_pct'},
+    'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'dtc_revenue_pct'},
     'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'quarterly_detect'},
     'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'trailing_avg'},
     'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
@@ -93,6 +91,9 @@ CASHFLOW_CATEGORIES = {
     'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'trailing_avg'},
     'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'trailing_avg'},
     'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'trailing_avg'},
+    # COGS & Debt — outflows tracked separately from operating expenses
+    'production': {'label': 'Production / COGS', 'group': 'cogs_debt', 'method': 'revenue_pct'},
+    'loan': {'label': 'Loan Payments', 'group': 'cogs_debt', 'method': 'schedule'},
     # Special
     'internal_transfer': {'label': 'Internal Transfer', 'group': 'transfer', 'method': None},
     'duplicate': {'label': 'Duplicate', 'group': 'duplicate', 'method': None},

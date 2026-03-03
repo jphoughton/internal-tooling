@@ -324,9 +324,9 @@ def compute_trailing_avg(
     end_date = date.today()
     start_date = end_date - timedelta(weeks=lookback_weeks)
 
-    # Determine direction from category group (expenses are debits, revenue is credits)
+    # Determine direction from category group (expenses/cogs_debt are debits, revenue is credits)
     cat_group = CASHFLOW_CATEGORIES.get(category, {}).get('group', '')
-    if cat_group == 'expense':
+    if cat_group in ('expense', 'cogs_debt'):
         result = conn.execute("""
             SELECT COALESCE(SUM(amount), 0) as total
             FROM cashflow_transactions
@@ -683,18 +683,13 @@ def _project_expense_week(
             return avg * 13  # full quarter in one week
         return 0.0
 
-    # --- Fulfillment: scale with DTC revenue volume ---
-    # Fulfillment costs (3PL fees) scale with order volume. Instead of using
-    # a flat trailing average, calculate the historical fulfillment-to-DTC ratio
-    # and apply it to projected DTC revenue.
-    if category == 'fulfillment':
-        trailing_fulfillment = compute_trailing_avg(conn, 'fulfillment', lookback_weeks=8)
-        trailing_dtc = compute_trailing_avg(conn, 'dtc_revenue', lookback_weeks=8)
-        if trailing_dtc > 0:
-            fulfill_ratio = trailing_fulfillment / trailing_dtc
-            projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
-            return projected_dtc * fulfill_ratio
-        return trailing_fulfillment if trailing_fulfillment > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+    # --- Fulfillment / 3PL: percentage of DTC revenue ---
+    # Uses the user-configurable fulfillment_pct setting from model parameters.
+    if method == 'dtc_revenue_pct':
+        fulfill_pct = ctx.get('fulfillment_pct', 0.18)
+        projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
+        val = projected_dtc * fulfill_pct
+        return val if val > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
     # --- Schedule detection for trailing_avg and schedule methods ---
     # Only use pre-detected schedule from bank actuals for categories that
@@ -796,6 +791,9 @@ def build_cashflow_forecast(
     # COGS percentage
     ctx['cogs_pct'] = float(get_cashflow_setting(conn, 'cogs_pct', '0.25'))
 
+    # Fulfillment % of DTC revenue
+    ctx['fulfillment_pct'] = float(get_cashflow_setting(conn, 'fulfillment_pct', '0.18'))
+
     # DTC monthly revenue from waterfall
     try:
         from db import get_media_spend, get_amazon_revenue_forecast
@@ -853,7 +851,7 @@ def build_cashflow_forecast(
     ctx['_amazon_disbursements'] = _build_amazon_disbursement_schedule(week_list)
 
     # --- Pre-detect expense schedules (once, not per-week) ---
-    expense_cats_list = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
+    expense_cats_list = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] in ('expense', 'cogs_debt')]
     for cat in expense_cats_list:
         sched_key = f'_schedule_{cat}'
         if sched_key not in ctx:
@@ -899,7 +897,7 @@ def build_cashflow_forecast(
         rev_cats = tuple(k for k, v in CASHFLOW_CATEGORIES.items()
                          if v['group'] == 'revenue')
         exp_cats = tuple(k for k, v in CASHFLOW_CATEGORIES.items()
-                         if v['group'] == 'expense')
+                         if v['group'] in ('expense', 'cogs_debt'))
         net_since_start = read_sql("""
             SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount
                                      ELSE -amount END), 0) as net
@@ -916,13 +914,14 @@ def build_cashflow_forecast(
     except Exception as e:
         log.warning('Could not reconstruct historical opening balance: %s', e)
 
-    # --- Revenue and expense categories ---
+    # --- Revenue, expense, and COGS/debt categories ---
     revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
     expense_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
+    cogs_debt_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'cogs_debt']
 
     # --- Pre-fetch actuals for all categories ---
     actuals_cache = {}
-    for cat in revenue_cats + expense_cats:
+    for cat in revenue_cats + expense_cats + cogs_debt_cats:
         actuals_cache[cat] = _get_actual_weekly_totals(conn, cat, week_list)
 
     # --- Fetch overrides ---
@@ -994,8 +993,8 @@ def build_cashflow_forecast(
 
         row['total_inflows'] = round(total_inflows, 2)
 
-        # Expenses
-        total_outflows = 0
+        # Expenses (operating)
+        total_expenses = 0
         for cat in expense_cats:
             override_key = (cat, ws_str)
             if not is_past and override_key in overrides:
@@ -1008,8 +1007,41 @@ def build_cashflow_forecast(
                 days_total = 7
                 if days_elapsed < days_total:
                     projected_full = _project_expense_week(conn, cat, ws, we, ctx)
-                    # COGS (revenue_pct) tracks revenue, not expenses — apply
-                    # revenue scenario so COGS scales with revenue changes.
+                    cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
+                    if cat_method in ('revenue_pct', 'dtc_revenue_pct'):
+                        projected_full = _apply_scenario(projected_full, 'revenue', scenario)
+                    else:
+                        projected_full = _apply_scenario(projected_full, 'expense', scenario)
+                    val = actual + projected_full * (days_total - days_elapsed) / days_total
+                else:
+                    val = actual
+            else:
+                val = _project_expense_week(conn, cat, ws, we, ctx)
+                cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
+                if cat_method in ('revenue_pct', 'dtc_revenue_pct'):
+                    val = _apply_scenario(val, 'revenue', scenario)
+                else:
+                    val = _apply_scenario(val, 'expense', scenario)
+
+            row[cat] = round(val, 2)
+            total_expenses += val
+
+        row['total_expenses'] = round(total_expenses, 2)
+
+        # COGS & Debt
+        total_cogs_debt = 0
+        for cat in cogs_debt_cats:
+            override_key = (cat, ws_str)
+            if not is_past and override_key in overrides:
+                val = overrides[override_key]
+            elif is_past:
+                val = actuals_cache.get(cat, {}).get(ws_str, 0)
+            elif is_current:
+                actual = actuals_cache.get(cat, {}).get(ws_str, 0)
+                days_elapsed = (today - ws).days + 1
+                days_total = 7
+                if days_elapsed < days_total:
+                    projected_full = _project_expense_week(conn, cat, ws, we, ctx)
                     cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
                     if cat_method == 'revenue_pct':
                         projected_full = _apply_scenario(projected_full, 'revenue', scenario)
@@ -1020,7 +1052,6 @@ def build_cashflow_forecast(
                     val = actual
             else:
                 val = _project_expense_week(conn, cat, ws, we, ctx)
-                # COGS (revenue_pct) tracks revenue, not expenses
                 cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
                 if cat_method == 'revenue_pct':
                     val = _apply_scenario(val, 'revenue', scenario)
@@ -1028,8 +1059,11 @@ def build_cashflow_forecast(
                     val = _apply_scenario(val, 'expense', scenario)
 
             row[cat] = round(val, 2)
-            total_outflows += val
+            total_cogs_debt += val
 
+        row['total_cogs_debt'] = round(total_cogs_debt, 2)
+
+        total_outflows = total_expenses + total_cogs_debt
         row['total_outflows'] = round(total_outflows, 2)
 
         # Net and balance

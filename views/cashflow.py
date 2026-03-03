@@ -515,7 +515,8 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     revenue_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'revenue']
     expense_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'expense']
-    all_cats = revenue_cats + expense_cats
+    cogs_debt_cats = [k for k, v in CASHFLOW_CATEGORIES.items() if v['group'] == 'cogs_debt']
+    all_cats = revenue_cats + expense_cats + cogs_debt_cats
     cat_labels = {k: v['label'] for k, v in CASHFLOW_CATEGORIES.items() if k in all_cats}
 
     week_starts = display['week_start'].tolist()
@@ -568,6 +569,7 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     # Section headers
     rev_labels = [cat_labels[c] for c in revenue_cats]
     exp_labels = [cat_labels[c] for c in expense_cats]
+    cd_labels = [cat_labels[c] for c in cogs_debt_cats]
 
     # Render revenue section
     st.markdown(
@@ -597,7 +599,27 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                              is_actual_map, existing_overrides, overridden_cat_keys,
                              current_week_col, '#ef4444', 'exp')
 
-    # Total outflows row
+    # Total expenses subtotal
+    _render_total_row(display, 'total_expenses', 'Total Expenses', '#dc2626',
+                      current_week_col)
+
+    # Render COGS & Debt section
+    st.markdown(
+        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
+        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
+        '<span style="color:#f59e0b;">&#9670;</span> COGS & Debt</p>',
+        unsafe_allow_html=True,
+    )
+    cd_df = pivot_df.loc[pivot_df.index.isin(cd_labels)].copy()
+    _render_category_section(cd_df, cogs_debt_cats, cat_labels, week_starts,
+                             is_actual_map, existing_overrides, overridden_cat_keys,
+                             current_week_col, '#f59e0b', 'cd')
+
+    # Total COGS & Debt subtotal
+    _render_total_row(display, 'total_cogs_debt', 'Total COGS & Debt', '#d97706',
+                      current_week_col)
+
+    # Total outflows (all outflows combined)
     _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626',
                       current_week_col)
 
@@ -823,15 +845,16 @@ def _render_settings_section():
             dtc_ratio = get_cashflow_setting(conn, 'dtc_payout_ratio', '0.94')
             amz_ratio = get_cashflow_setting(conn, 'amazon_payout_ratio', '0.62')
             cogs_pct = get_cashflow_setting(conn, 'cogs_pct', '0.25')
+            fulfill_pct = get_cashflow_setting(conn, 'fulfillment_pct', '0.18')
             min_cash = get_cashflow_setting(conn, 'min_cash_threshold', '100000')
             loc_balance = get_cashflow_setting(conn, 'loc_balance', '510000')
     except Exception as e:
         log.warning('Failed to load cashflow settings, using defaults: %s', e)
-        dtc_ratio, amz_ratio, cogs_pct = '0.94', '0.62', '0.25'
+        dtc_ratio, amz_ratio, cogs_pct, fulfill_pct = '0.94', '0.62', '0.25', '0.18'
         min_cash, loc_balance = '100000', '510000'
 
     with st.form('cf_settings_form'):
-        cols = st.columns(3)
+        cols = st.columns(4)
         new_dtc = cols[0].number_input(
             'DTC Payout Ratio', value=float(dtc_ratio),
             min_value=0.5, max_value=1.0, step=0.01, format='%.2f',
@@ -843,6 +866,10 @@ def _render_settings_section():
         new_cogs = cols[2].number_input(
             'COGS %', value=float(cogs_pct) * 100,
             min_value=5.0, max_value=60.0, step=1.0, format='%.0f',
+        )
+        new_fulfill = cols[3].number_input(
+            'Fulfillment % of DTC', value=float(fulfill_pct) * 100,
+            min_value=5.0, max_value=50.0, step=1.0, format='%.0f',
         )
 
         cols2 = st.columns(2)
@@ -860,6 +887,7 @@ def _render_settings_section():
                 set_cashflow_setting(conn, 'dtc_payout_ratio', str(new_dtc))
                 set_cashflow_setting(conn, 'amazon_payout_ratio', str(new_amz))
                 set_cashflow_setting(conn, 'cogs_pct', str(new_cogs / 100))
+                set_cashflow_setting(conn, 'fulfillment_pct', str(new_fulfill / 100))
                 set_cashflow_setting(conn, 'min_cash_threshold', str(new_min))
                 set_cashflow_setting(conn, 'loc_balance', str(new_loc))
             st.success('Settings saved!')
