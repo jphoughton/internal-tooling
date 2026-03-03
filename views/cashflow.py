@@ -308,11 +308,27 @@ def _render_kpi_row(kpis):
     else:
         cash_color = '#dc2626'  # red — below threshold
 
-    freshness_html = (
-        f'<span style="font-size:0.7rem;color:#94a3b8;font-weight:400;">'
-        f'as of {freshness}</span>'
-        if freshness else ''
-    )
+    # Compute data staleness
+    stale_days = None
+    if freshness:
+        try:
+            freshness_date = date.fromisoformat(str(freshness)[:10])
+            stale_days = (date.today() - freshness_date).days
+        except (ValueError, TypeError):
+            pass
+
+    if stale_days is not None and stale_days > 14:
+        freshness_html = (
+            f'<span style="font-size:0.7rem;color:#d97706;font-weight:600;">'
+            f'Data is {stale_days} days old — upload fresh transactions</span>'
+        )
+    elif freshness:
+        freshness_html = (
+            f'<span style="font-size:0.7rem;color:#94a3b8;font-weight:400;">'
+            f'as of {freshness}</span>'
+        )
+    else:
+        freshness_html = ''
 
     burn = kpis['monthly_burn']
     burn_label = 'outflow' if burn > 0 else 'inflow'
@@ -398,25 +414,33 @@ def render(ctx):
 
     # Build forecast
     try:
-        with get_db() as conn:
-            from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
+        with st.spinner('Building forecast...'):
+            with get_db() as conn:
+                from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
 
-            forecast_df = build_cashflow_forecast(
-                conn,
-                start_date=date.today() - timedelta(weeks=4),  # include 4 weeks of actuals
-                weeks=horizon_weeks + 4,
-                scenario=scenario_key,
-            )
+                forecast_df = build_cashflow_forecast(
+                    conn,
+                    start_date=date.today() - timedelta(weeks=4),  # include 4 weeks of actuals
+                    weeks=horizon_weeks + 4,
+                    scenario=scenario_key,
+                )
 
-            if forecast_df.empty:
-                st.info('No data available. Upload bank transactions to get started.')
-                _render_upload_section()
-                return
+                if forecast_df.empty:
+                    st.info(
+                        'No bank transactions found. Upload a CSV in the section '
+                        'below to get started.'
+                    )
+                    _render_upload_section()
+                    return
 
-            kpis = get_cashflow_kpis(conn, forecast_df)
+                kpis = get_cashflow_kpis(conn, forecast_df)
     except Exception as e:
-        st.error(f'Error building forecast: {e}')
         log.exception('Cash flow forecast error')
+        st.error(
+            'Unable to build the cash flow forecast. This usually means bank '
+            'transaction data is missing or the database is unreachable. '
+            'Upload a Highbeam CSV below to get started.'
+        )
         _render_upload_section()
         return
 
