@@ -68,3 +68,64 @@ STARTUP_OPTIONAL_INTEGRATIONS = {
     'Packiyo': 'PACKIYO_API_TOKEN',
     'Klaviyo': 'KLAVIYO_API_KEY',
 }
+
+# ---------------------------------------------------------------------------
+# Cash Flow categories and projection defaults
+# ---------------------------------------------------------------------------
+CASHFLOW_CATEGORIES = {
+    # Revenue
+    'dtc_revenue': {'label': 'DTC Revenue', 'group': 'revenue', 'method': 'waterfall'},
+    'amazon_revenue': {'label': 'Amazon Revenue', 'group': 'revenue', 'method': 'forecast_table'},
+    'tiktok_revenue': {'label': 'TikTok Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
+    'wholesale_revenue': {'label': 'Wholesale Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
+    'interest_income': {'label': 'Interest Income', 'group': 'revenue', 'method': 'trailing_avg'},
+    'other_revenue': {'label': 'Other Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
+    # Expenses
+    'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_plan'},
+    'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_schedule'},
+    'loan': {'label': 'Loan Payments', 'group': 'expense', 'method': 'schedule'},
+    'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'trailing_avg'},
+    'production': {'label': 'Production / COGS', 'group': 'expense', 'method': 'revenue_pct'},
+    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'quarterly_detect'},
+    'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'trailing_avg'},
+    'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
+    'agency': {'label': 'Agency Fees', 'group': 'expense', 'method': 'trailing_avg'},
+    'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'trailing_avg'},
+    'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'trailing_avg'},
+    'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'trailing_avg'},
+    # Special
+    'internal_transfer': {'label': 'Internal Transfer', 'group': 'transfer', 'method': None},
+    'duplicate': {'label': 'Duplicate', 'group': 'duplicate', 'method': None},
+    'unmapped': {'label': 'Unmapped', 'group': 'unmapped', 'method': None},
+}
+
+# Seed defaults for expense projections (weekly amounts) when no actuals exist
+CASHFLOW_SEED_DEFAULTS = {
+    'media': 12500,        # ~$50K/mo
+    'payroll': 8000,       # $16K biweekly = $8K/wk avg
+    'loan': 7500,          # ~$30K/mo
+    'fulfillment': 5000,   # $5K/wk
+    'production': 0,       # spiky, use COGS % instead
+    'sales_tax': 1500,     # ~$18K/qtr = ~$1.5K/wk
+    'software': 2600,      # ~$10.5K/mo
+    'shipping': 2000,      # varies
+    'agency': 2600,        # ~$10.5K/mo
+    'accounting': 1250,    # ~$5K/mo
+    'insurance': 1000,     # ~$4K/mo
+    'other_expense': 500,
+}
+
+# DTC payout day-of-week weights (0=Mon, 6=Sun)
+DTC_DOW_WEIGHTS = {
+    0: 0.157,  # Monday
+    1: 0.309,  # Tuesday (weekend batch)
+    2: 0.252,  # Wednesday
+    3: 0.144,  # Thursday
+    4: 0.137,  # Friday
+    5: 0.0,    # Saturday (no payouts)
+    6: 0.0,    # Sunday (no payouts)
+}
+
+# Confidence interval growth per week (simple fan-out)
+CASHFLOW_CONFIDENCE_WEEKLY_GROWTH = 0.02  # 2% per week
+CASHFLOW_CONFIDENCE_MAX = 0.30            # cap at 30%

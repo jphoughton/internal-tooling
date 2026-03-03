@@ -398,6 +398,49 @@ _SCHEMA_SQL = [
         triggered_by TEXT DEFAULT 'manual'
     )""",
 
+    """CREATE TABLE IF NOT EXISTS cashflow_transactions (
+        tx_id TEXT PRIMARY KEY,
+        tx_date TEXT NOT NULL,
+        account TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_after REAL,
+        summary TEXT,
+        category TEXT,
+        subcategory TEXT,
+        is_transfer INTEGER DEFAULT 0,
+        is_duplicate INTEGER DEFAULT 0,
+        raw_source TEXT DEFAULT 'highbeam',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS cashflow_overrides (
+        id SERIAL PRIMARY KEY,
+        line_item TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        override_amount REAL NOT NULL,
+        note TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
+        UNIQUE(line_item, week_start)
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS cashflow_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS category_mappings (
+        id SERIAL PRIMARY KEY,
+        match_pattern TEXT NOT NULL UNIQUE,
+        raw_example TEXT,
+        category TEXT NOT NULL,
+        subcategory TEXT,
+        is_transfer INTEGER DEFAULT 0,
+        is_duplicate INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -408,6 +451,10 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_daily_sales_sku_date ON daily_sku_sales(sku, sale_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer_date ON orders(customer_id, order_date)",
     "CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_cashflow_tx_date ON cashflow_transactions(tx_date)",
+    "CREATE INDEX IF NOT EXISTS idx_cashflow_tx_category ON cashflow_transactions(category)",
+    "CREATE INDEX IF NOT EXISTS idx_cashflow_tx_account ON cashflow_transactions(account)",
+    "CREATE INDEX IF NOT EXISTS idx_cashflow_overrides_week ON cashflow_overrides(week_start)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
@@ -474,6 +521,25 @@ def init_db() -> None:
                     conn.execute(
                         "INSERT INTO seasonal_indices (month_num, index_value) VALUES (%s, %s)",
                         (m, v),
+                    )
+
+            # Seed cashflow_settings if table is empty
+            print("  init_db: seeding cashflow settings...", flush=True)
+            existing_cf = conn.execute("SELECT COUNT(*) as cnt FROM cashflow_settings").fetchone()
+            if existing_cf is not None and existing_cf['cnt'] == 0:
+                cf_defaults = {
+                    'dtc_payout_ratio': '0.94',
+                    'amazon_payout_ratio': '0.62',
+                    'cogs_pct': '0.25',
+                    'min_cash_threshold': '100000',
+                    'loc_balance': '510000',
+                    'calibration_lookback_weeks': '12',
+                    'calibration_method': 'ewma',
+                }
+                for k, v in cf_defaults.items():
+                    conn.execute(
+                        "INSERT INTO cashflow_settings (key, value) VALUES (%s, %s)",
+                        (k, v),
                     )
 
             # Migrate legacy media_spend source='all' to 'All Sources'
@@ -592,6 +658,102 @@ def upsert_sku(
     except Exception as exc:
         logger.error('upsert_sku failed for sku=%s: %s', sku, exc)
         raise DatabaseError(f'upsert_sku failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Cash flow helpers
+# ---------------------------------------------------------------------------
+def upsert_cashflow_tx(
+    conn: ConnectionWrapper,
+    tx_id: str,
+    tx_date: str,
+    account: str,
+    direction: str,
+    amount: float,
+    balance_after: Optional[float] = None,
+    summary: Optional[str] = None,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    is_transfer: int = 0,
+    is_duplicate: int = 0,
+    raw_source: str = 'highbeam',
+) -> bool:
+    """Insert a cashflow transaction, skip if tx_id already exists. Returns True if inserted."""
+    try:
+        conn.execute("""
+            INSERT INTO cashflow_transactions
+                (tx_id, tx_date, account, direction, amount, balance_after,
+                 summary, category, subcategory, is_transfer, is_duplicate, raw_source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(tx_id) DO NOTHING
+        """, (tx_id, tx_date, account, direction, amount, balance_after,
+              summary, category, subcategory, is_transfer, is_duplicate, raw_source))
+        return True
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_cashflow_tx failed for tx_id=%s: %s', tx_id, exc)
+        raise DatabaseError(f'upsert_cashflow_tx failed: {exc}') from exc
+
+
+def upsert_category_mapping(
+    conn: ConnectionWrapper,
+    match_pattern: str,
+    category: str,
+    subcategory: Optional[str] = None,
+    raw_example: Optional[str] = None,
+    is_transfer: int = 0,
+    is_duplicate: int = 0,
+) -> None:
+    """Insert or update a category mapping."""
+    try:
+        conn.execute("""
+            INSERT INTO category_mappings
+                (match_pattern, raw_example, category, subcategory, is_transfer, is_duplicate)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(match_pattern) DO UPDATE SET
+                category = excluded.category,
+                subcategory = excluded.subcategory,
+                is_transfer = excluded.is_transfer,
+                is_duplicate = excluded.is_duplicate,
+                raw_example = COALESCE(excluded.raw_example, category_mappings.raw_example)
+        """, (match_pattern, raw_example, category, subcategory, is_transfer, is_duplicate))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_category_mapping failed for pattern=%s: %s', match_pattern, exc)
+        raise DatabaseError(f'upsert_category_mapping failed: {exc}') from exc
+
+
+def get_cashflow_setting(conn: ConnectionWrapper, key: str, default: Optional[str] = None) -> Optional[str]:
+    """Get a cashflow setting value."""
+    try:
+        row = conn.execute(
+            "SELECT value FROM cashflow_settings WHERE key = %s", (key,)
+        ).fetchone()
+        return row['value'] if row else default
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_cashflow_setting failed for key=%s: %s', key, exc)
+        raise DatabaseError(f'get_cashflow_setting failed: {exc}') from exc
+
+
+def set_cashflow_setting(conn: ConnectionWrapper, key: str, value: str) -> None:
+    """Set a cashflow setting value."""
+    try:
+        conn.execute("""
+            INSERT INTO cashflow_settings (key, value, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP::text
+        """, (key, value))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('set_cashflow_setting failed for key=%s: %s', key, exc)
+        raise DatabaseError(f'set_cashflow_setting failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------
