@@ -425,35 +425,38 @@ def _render_total_row(display, col_key, label, color):
 
 def _render_smart_buttons(cats, cat_labels, existing_overrides, week_starts, key_prefix):
     """Render 'Use Smart Projection' buttons for categories with manual overrides."""
-    overridden_cats = set()
+    # Preserve category order from cats list (use list, not set)
+    overridden_cats = []
     for cat in cats:
         for ws in week_starts:
             if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
-                overridden_cats.add(cat)
+                overridden_cats.append(cat)
                 break
 
     if not overridden_cats:
         return
 
     st.caption('Manual overrides active:')
-    cols = st.columns(min(len(overridden_cats), 4))
-    for i, cat in enumerate(overridden_cats):
-        col_idx = i % min(len(overridden_cats), 4)
-        if cols[col_idx].button(
-            f'Reset {cat_labels[cat]}',
-            key=f'cf_reset_{key_prefix}_{cat}',
-            type='secondary',
-        ):
-            try:
-                with get_db() as conn:
-                    conn.execute(
-                        'DELETE FROM cashflow_overrides WHERE line_item = %s',
-                        (cat,),
-                    )
-                st.success(f'Cleared overrides for {cat_labels[cat]}')
-                st.rerun()
-            except Exception as e:
-                st.error(f'Failed to clear overrides: {e}')
+    # Render buttons in rows of up to 4
+    for row_start in range(0, len(overridden_cats), 4):
+        row_cats = overridden_cats[row_start:row_start + 4]
+        cols = st.columns(min(len(row_cats), 4))
+        for i, cat in enumerate(row_cats):
+            if cols[i].button(
+                f'Reset {cat_labels[cat]}',
+                key=f'cf_reset_{key_prefix}_{cat}',
+                type='secondary',
+            ):
+                try:
+                    with get_db() as conn:
+                        conn.execute(
+                            'DELETE FROM cashflow_overrides WHERE line_item = %s',
+                            (cat,),
+                        )
+                    st.success(f'Cleared overrides for {cat_labels[cat]}')
+                    st.rerun()
+                except Exception as e:
+                    st.error(f'Failed to clear overrides: {e}')
 
 
 def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map):

@@ -635,7 +635,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Past week cells MUST be read-only (disabled=True in column_config). Verify you cannot edit an actual week.
   - Test with multiple edits in the same session — all should persist independently.
 
-- [ ] **29. Verify and fix Smart Projection reset buttons**
+- [x] **29. Verify and fix Smart Projection reset buttons**
   - File: `views/cashflow.py` (functions `_render_smart_buttons`)
   - For every category row that has a manual override, a "Reset [Category Name]" button should appear.
   - Test the flow:
