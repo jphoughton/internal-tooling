@@ -560,15 +560,6 @@ def render(ctx):
     else:
         st.caption("Enter your API key above to enable Klaviyo integration.")
 
-    # --- Postscript ---
-    st.divider()
-    st.subheader("Postscript (SMS)")
-    st.warning(
-        "**Postscript's API does not expose campaign analytics or revenue attribution.** "
-        "It only supports subscriber management. For SMS campaign performance data, "
-        "export directly from the Postscript dashboard or track via Google Analytics UTM parameters."
-    )
-
     # --- Bank / Ramp Transactions ---
     st.divider()
     st.subheader("Bank & Card Transactions")

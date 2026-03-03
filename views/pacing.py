@@ -1,4 +1,5 @@
 """Pacing dashboard — reusable across Overview & Marketing pages."""
+import logging
 import streamlit as st
 import pandas as pd
 from db import (
@@ -9,6 +10,8 @@ from analytics.dtc_demand import build_master_dtc_forecast
 from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday
 from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
+
+log = logging.getLogger(__name__)
 
 
 def render_pacing(ctx):
@@ -66,8 +69,8 @@ def render_pacing(ctx):
                 amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
             )
             _mkt_summary = _dtc_fc["summary"]
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load revenue goals from demand forecast: %s", e)
 
     # Pre-compute current-month pacing vars (data through yesterday only)
     _today = business_today()
@@ -140,8 +143,8 @@ def render_pacing(ctx):
                 _oi_new = float(_amz_nc_row["oi_new_rev"] or 0)
                 _new_frac = _oi_new / _oi_total if _oi_total > 0 else 0
                 _cm_amz_nc_rev = _cm_amz_rev * _new_frac
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load Amazon MTD metrics: %s", e)
 
     # Revenue GOALS from the forecast engine
     _goal_nc_rev = 0
@@ -252,8 +255,8 @@ def render_pacing(ctx):
                 _l7_oi_new = float(_l7_nc_row["oi_new_rev"] or 0)
                 _l7_new_frac = _l7_oi_new / _l7_oi_total if _l7_oi_total > 0 else 0
                 _l7d_amz_nc_rev = (_l7d_amz_rev * 7) * _l7_new_frac / 7
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load Amazon L7D metrics: %s", e)
 
     # Yesterday actuals
     _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday_str
@@ -309,8 +312,8 @@ def render_pacing(ctx):
                 _yd_oi_new = float(_yd_nc_row["oi_new_rev"] or 0)
                 _yd_new_frac = _yd_oi_new / _yd_oi_total if _yd_oi_total > 0 else 0
                 _yd_amz_nc_rev = _yd_amz_rev * _yd_new_frac
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load Amazon yesterday metrics: %s", e)
 
     # Repeat customer counts (DTC + Amazon)
     _cm_dtc_total_cust = 0
@@ -329,8 +332,8 @@ def render_pacing(ctx):
                 (f"{_cur_month}-01", _yesterday_str),
             ).fetchone()
             _cm_amz_total_cust = int(_amz_cust[0] or 0)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to load repeat customer counts: %s", e)
     _cm_dtc_repeat_cust = max(_cm_dtc_total_cust - _cm_nc, 0)
     _cm_amz_repeat_cust = max(_cm_amz_total_cust - _cm_amz_nc, 0)
 
