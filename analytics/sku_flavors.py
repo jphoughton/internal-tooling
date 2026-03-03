@@ -19,12 +19,12 @@ _CORE_FLAVORS = {
     "HYPO-ST0030-FRPUB0": "Fruit Punch",
     "HYPO-ST0030-LELMB0": "Lemon Lime",
     "HYPO-ST0030-VPBFLB0": "Variety Pack",
-    "IMPO-ST0030-ELB0": "Elderberry",
+    "IMPO-ST0030-ELB0": "Elderberry Immunity",
     "NSPO-ST0030-BEB0": "Berry Burst",
     "NSPO-ST0030-LEB0": "Lemonade",
     "NSPO-ST0030-VPWLBB0": "Zero Sugar Variety Pack",
     "NSPO-ST0030-WALEB0": "Watermelonade",
-    "SLPO-ST0030-ELB0": "Elderberry Chamomile",
+    "SLPO-ST0030-ELB0": "Elderberry Sleep",
 }
 
 # SKU suffix → flavor hints (used as fallback when no product name available)
