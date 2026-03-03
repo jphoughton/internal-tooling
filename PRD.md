@@ -668,7 +668,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
     - **The current week column** should have a subtle highlight (vertical stripe) so you can immediately see "this is where we are."
   - Test the scroll experience: horizontal scrolling through 13+ weeks should feel smooth. The row labels (category names) should be sticky/frozen on the left.
 
-- [ ] **32. Chart polish — make it tell a story**
+- [x] **32. Chart polish — make it tell a story**
   - File: `views/cashflow.py`, function `_build_balance_chart()`
   - The chart should answer "are we going to be okay?" in one glance:
     - **Actuals should feel solid and trustworthy** — thicker line, filled markers, solid color.
@@ -679,7 +679,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
     - **Remove chart clutter**: no unnecessary gridlines, no excessive legend entries, no Plotly watermark. Clean and minimal.
   - Consider adding a subtle background shading: green zone (above threshold), yellow zone (within 20% of threshold), red zone (below threshold). This makes the danger area viscerally obvious without reading numbers.
 
-- [ ] **33. Mobile & narrow viewport check**
+- [x] **33. Mobile & narrow viewport check**
   - File: `views/cashflow.py`
   - Streamlit is often viewed on laptops with narrow browser windows, or occasionally on tablets/phones.
   - Open the Cash Flow page and resize the browser to 1024px wide (common laptop). Verify:
@@ -690,7 +690,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
   - Resize to 768px (iPad). The page should still be usable, even if the table requires scrolling.
   - Fix any overflow, text truncation, or broken layout at narrow widths.
 
-- [ ] **34. Loading states & error handling UX**
+- [x] **34. Loading states & error handling UX**
   - File: `views/cashflow.py`
   - The forecast takes a few seconds to build (multiple DB queries). During that time:
     - Show a `st.spinner('Building forecast...')` that covers the main content area, not just a tiny loading indicator.
@@ -698,7 +698,7 @@ Acceptance criteria: Cash Flow page renders cleanly on Railway, all interactive 
     - If data is stale (balance_freshness_date > 14 days), show a warning badge next to "Current Cash": "Data is 18 days old — upload fresh transactions."
   - Test the empty state: what does the page look like with zero transactions in the DB? It should guide the user to upload, not show a broken chart and empty table.
 
-- [ ] **35. Final visual verification on Railway**
+- [x] **35. Final visual verification on Railway**
   - Push all Phase 5 changes to main.
   - Open Railway deployment in Playwright.
   - Navigate to Cash Flow page.
