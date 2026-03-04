@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from db import (
-    get_db, read_sql, get_media_spend,
+    get_db, read_sql, get_media_spend, get_cashflow_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor
@@ -168,14 +168,42 @@ def render(ctx):
         h1.metric('Total Rev MTD', f"${d['total_actual_rev']:,.0f}",
                    delta=f"Goal: ${d['goal_total_rev']:,.0f}" if d['has_goals'] else None,
                    delta_color='off')
-        h2.metric('New Customers MTD', f"{d['cm_total_nc']:,}")
+        h2.metric('New Customers MTD', f"{d['cm_total_nc']:,}",
+                   delta=f"Goal: {d['goal_nc_count']:,.0f}" if d.get('goal_nc_count', 0) > 0 else None,
+                   delta_color='off')
 
-        # CAC Payback
-        _90d_spend = d['cm_total_spend']  # Using MTD spend as proxy
-        _cac_payback = compute_cac_payback(_90d_spend, d['cm_total_nc'],
-                                            d['cm_total_nc_rev'])
-        h3.metric('CAC Payback', f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
-                   help='CAC / monthly NC revenue per new customer')
+        # CAC Payback — contribution-margin model with COGS, fulfillment, retention
+        biz = ctx.get('biz_vars', {})
+        _cogs_pct = float(biz.get('cogs_pct', 25)) / 100
+        try:
+            with get_db() as _cf_conn:
+                _fulfill_pct = float(get_cashflow_setting(_cf_conn, 'fulfillment_pct', '0.18'))
+        except Exception:
+            _fulfill_pct = 0.18
+
+        _ret_curve = None
+        try:
+            _ret_curve = ctx['cached_retention_curve']('shopify')
+        except Exception:
+            pass
+
+        _cac_payback = compute_cac_payback(
+            d['cm_total_spend'], d['cm_total_nc'], d['cm_total_nc_rev'],
+            cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
+            retention_curve=_ret_curve,
+        )
+        _goal_cac_payback = None
+        if d.get('goal_nc_count', 0) > 0 and d.get('goal_total_spend', 0) > 0:
+            _goal_cac_payback = compute_cac_payback(
+                d['goal_total_spend'], d['goal_nc_count'], d['goal_nc_rev'],
+                cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
+                retention_curve=_ret_curve,
+            )
+        h3.metric('CAC Payback',
+                   f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
+                   delta=f"Goal: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
+                   delta_color='off',
+                   help='Months until contribution margin (rev \u2212 COGS \u2212 fulfillment) covers CAC, including repeat revenue')
 
     # ================================================================
     # Section 3: Pacing Detail (expander)

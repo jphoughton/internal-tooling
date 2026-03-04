@@ -35,13 +35,63 @@ def compute_aov(revenue, order_count):
     return revenue / order_count if order_count > 0 else 0
 
 
-def compute_cac_payback(spend, new_customers, monthly_nc_revenue):
-    """CAC Payback in months. CAC / monthly contribution per new customer."""
-    if new_customers <= 0 or monthly_nc_revenue <= 0:
+def compute_cac_payback(spend, new_customers, nc_revenue,
+                        cogs_pct=0.25, fulfillment_pct=0.18,
+                        retention_curve=None, max_months=24):
+    """CAC Payback in months using contribution-margin model.
+
+    CFO formula: each month a customer generates revenue with costs deducted
+    (COGS + fulfillment). Payback = month when cumulative contribution covers CAC.
+
+    Args:
+        spend: Total media spend in period.
+        new_customers: New customers acquired in period.
+        nc_revenue: New-customer revenue in period (first-order total).
+        cogs_pct: Cost of goods as fraction of revenue (e.g. 0.25).
+        fulfillment_pct: Fulfillment cost as fraction of revenue (e.g. 0.18).
+        retention_curve: Dict {month_offset: revenue_fraction} from retention
+            model. If None, falls back to simple CAC / monthly_contribution.
+        max_months: Cap on payback search (default 24).
+
+    Returns:
+        Float months to payback, or 0 if inputs invalid / payback > max_months.
+    """
+    if new_customers <= 0 or nc_revenue <= 0 or spend <= 0:
         return 0
+
     cac = spend / new_customers
-    monthly_contribution = monthly_nc_revenue / new_customers
-    return cac / monthly_contribution if monthly_contribution > 0 else 0
+    aov = nc_revenue / new_customers  # first-order AOV per NC
+    margin_rate = 1 - cogs_pct - fulfillment_pct
+
+    if margin_rate <= 0:
+        return 0
+
+    # Month 0: first purchase contribution
+    cumulative = aov * margin_rate
+
+    if cumulative >= cac:
+        # Pays back within first purchase — return fraction of month
+        return cac / cumulative if cumulative > 0 else 0
+
+    if not retention_curve:
+        # Fallback: simple monthly contribution = annualised NC rev / 12
+        monthly_contrib = (nc_revenue / new_customers) * margin_rate
+        return cac / monthly_contrib if monthly_contrib > 0 else 0
+
+    # Walk the retention curve month-by-month
+    for month in range(1, max_months + 1):
+        repeat_frac = retention_curve.get(month, 0)
+        if repeat_frac <= 0:
+            continue
+        month_rev = aov * repeat_frac
+        month_contrib = month_rev * margin_rate
+        cumulative += month_contrib
+        if cumulative >= cac:
+            # Interpolate within this month
+            overshoot = cumulative - cac
+            frac_of_month = 1 - (overshoot / month_contrib) if month_contrib > 0 else 0
+            return month - 1 + frac_of_month
+    return 0  # didn't pay back within max_months
 
 
 def nc_revenue_fraction(oi_total_rev, oi_new_rev, channel_revenue):
