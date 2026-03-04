@@ -7,6 +7,7 @@ analytics/dashboard code (strftime, date('now'), julianday, ? placeholders).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -1125,6 +1126,32 @@ def set_setting(conn: ConnectionWrapper, key: str, value: Any) -> None:
     except Exception as exc:
         logger.error('set_setting failed for key=%s: %s', key, exc)
         raise DatabaseError(f'set_setting failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Revenue Model
+# ---------------------------------------------------------------------------
+def get_revenue_model(conn: ConnectionWrapper) -> dict:
+    """Load revenue model inputs from app_settings.
+
+    Returns {variable: {month: value}} dict.
+    """
+    raw = get_setting(conn, 'revenue_model')
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning('Failed to parse revenue_model setting, returning empty')
+        return {}
+
+
+def save_revenue_model_bulk(conn: ConnectionWrapper, live: dict) -> None:
+    """Persist revenue model inputs to app_settings as JSON.
+
+    live: {variable: {month: value}}
+    """
+    set_setting(conn, 'revenue_model', json.dumps(live))
 
 
 # ---------------------------------------------------------------------------
