@@ -8,8 +8,14 @@ from db import (
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
+from analytics.metrics import (
+    get_channel_revenue, get_amazon_spend, get_nc_stats,
+    nc_revenue_fraction,
+    compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
+)
 from analytics.retention import get_projected_new_repeat_summary
 from ui.components import render_html_table, render_freshness_badge, smart_date_filter
+from ui.pacing_helpers import build_pace_row, style_pace_df, render_white_table
 from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday
 
@@ -220,59 +226,18 @@ def render(ctx):
             _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
             _cm_ret_orders = int(mkt_df.loc[_cm_mask, "_ret_orders"].sum()) if _cm_mask.any() else 0
 
-            # Amazon MTD: Revenue from daily_sku_sales, Spend from amazon_daily_rollup,
-            # NC from orders/order_items (DB ground truth)
+            # Amazon MTD: Revenue, Spend, NC from centralized helpers
             _cm_amz_rev = 0
             _cm_amz_spend = 0
+            _cm_amz_nc = 0
+            _cm_amz_nc_rev = 0
             try:
                 with get_db() as _amz_conn:
-                    # Revenue from daily_sku_sales
-                    _amz_mtd = _amz_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
-                        (f"{_cur_month}-01", _yesterday_str),
-                    ).fetchone()
-                    _cm_amz_rev = float(_amz_mtd[0] or 0)
-
-                    # Spend from amazon_daily_rollup
-                    _amz_rollup = _amz_conn.execute(
-                        "SELECT SUM(spend) AS total_spend "
-                        "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
-                        (f"{_cur_month}-01", _yesterday_str),
-                    ).fetchone()
-                    if _amz_rollup and _amz_rollup["total_spend"] is not None:
-                        _cm_amz_spend = float(_amz_rollup["total_spend"] or 0)
-
-                    # Amazon NC count + proportional NC Rev (matches DoD table approach)
-                    # Use order_items to determine new/repeat *fraction*, then apply to
-                    # daily_sku_sales revenue (the authoritative Amazon revenue source).
-                    _amz_nc_row = _amz_conn.execute(
-                        "WITH cust_first AS ("
-                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
-                        "  FROM orders WHERE source = 'amazon'"
-                        "  GROUP BY customer_id"
-                        ") "
-                        "SELECT"
-                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN o.customer_id END) AS new_customers,"
-                        "  SUM(oi.total_price) AS oi_total_rev,"
-                        "  SUM(CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
-                        " FROM orders o"
-                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
-                        " JOIN order_items oi ON o.order_id = oi.order_id"
-                        " WHERE o.order_date BETWEEN ? AND ?"
-                        " AND o.source = 'amazon'",
-                        (f"{_cur_month}-01", _yesterday_str,
-                         f"{_cur_month}-01", _yesterday_str,
-                         f"{_cur_month}-01", _yesterday_str),
-                    ).fetchone()
-                    _cm_amz_nc = int(float(_amz_nc_row['new_customers'] or 0))
-                    _oi_total = float(_amz_nc_row['oi_total_rev'] or 0)
-                    _oi_new = float(_amz_nc_row['oi_new_rev'] or 0)
-                    _new_frac = _oi_new / _oi_total if _oi_total > 0 else 0
-                    _cm_amz_nc_rev = _cm_amz_rev * _new_frac
+                    _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
+                    _cm_amz_spend = get_amazon_spend(_amz_conn, f"{_cur_month}-01", _yesterday_str)
+                    _nc = get_nc_stats(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
+                    _cm_amz_nc = _nc['new_customers']
+                    _cm_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _cm_amz_rev)
             except Exception:
                 pass
 
@@ -314,57 +279,19 @@ def render(ctx):
             _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
             _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-            # Amazon L7D from daily_sku_sales (revenue) + amazon_daily_rollup (spend)
-            # + orders/order_items (NC)
+            # Amazon L7D from centralized helpers (divided by 7 for daily avg)
             _l7d_amz_rev = 0
             _l7d_amz_spend = 0
+            _l7d_amz_nc = 0
+            _l7d_amz_nc_rev = 0
             try:
                 _l7d_start_str = str(_l7d_start)
                 with get_db() as _l7_conn:
-                    _l7_amz = _l7_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date >= ? AND sale_date <= ?",
-                        (_l7d_start_str, _yesterday_str),
-                    ).fetchone()
-                    _l7d_amz_rev = float(_l7_amz[0] or 0) / 7
-
-                    # Spend from amazon_daily_rollup
-                    _l7_rollup = _l7_conn.execute(
-                        "SELECT SUM(spend) AS total_spend "
-                        "FROM amazon_daily_rollup WHERE date >= ? AND date <= ?",
-                        (_l7d_start_str, _yesterday_str),
-                    ).fetchone()
-                    if _l7_rollup and _l7_rollup["total_spend"] is not None:
-                        _l7d_amz_spend = float(_l7_rollup["total_spend"] or 0) / 7
-
-                    # Amazon NC count + proportional NC Rev (matches DoD table approach)
-                    _l7_nc_row = _l7_conn.execute(
-                        "WITH cust_first AS ("
-                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
-                        "  FROM orders WHERE source = 'amazon'"
-                        "  GROUP BY customer_id"
-                        ") "
-                        "SELECT"
-                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN o.customer_id END) AS new_customers,"
-                        "  SUM(oi.total_price) AS oi_total_rev,"
-                        "  SUM(CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
-                        " FROM orders o"
-                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
-                        " JOIN order_items oi ON o.order_id = oi.order_id"
-                        " WHERE o.order_date BETWEEN ? AND ?"
-                        " AND o.source = 'amazon'",
-                        (_l7d_start_str, _yesterday_str,
-                         _l7d_start_str, _yesterday_str,
-                         _l7d_start_str, _yesterday_str),
-                    ).fetchone()
-                    _l7d_amz_nc = float(_l7_nc_row['new_customers'] or 0) / 7
-                    _l7_oi_total = float(_l7_nc_row['oi_total_rev'] or 0)
-                    _l7_oi_new = float(_l7_nc_row['oi_new_rev'] or 0)
-                    _l7_new_frac = _l7_oi_new / _l7_oi_total if _l7_oi_total > 0 else 0
-                    _l7d_amz_nc_rev = (_l7d_amz_rev * 7) * _l7_new_frac / 7
+                    _l7d_amz_rev = get_channel_revenue(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str) / 7
+                    _l7d_amz_spend = get_amazon_spend(_l7_conn, _l7d_start_str, _yesterday_str) / 7
+                    _nc = get_nc_stats(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str)
+                    _l7d_amz_nc = _nc['new_customers'] / 7
+                    _l7d_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _l7d_amz_rev * 7) / 7
             except Exception:
                 pass
 
@@ -376,55 +303,18 @@ def render(ctx):
             _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
             _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-            # Amazon yesterday from daily_sku_sales (revenue) + amazon_daily_rollup (spend)
-            # + orders/order_items (NC)
+            # Amazon yesterday from centralized helpers
             _yd_amz_rev = 0
             _yd_amz_spend = 0
+            _yd_amz_nc = 0
+            _yd_amz_nc_rev = 0
             try:
                 with get_db() as _yd_conn:
-                    _yd_amz = _yd_conn.execute(
-                        "SELECT SUM(revenue) FROM daily_sku_sales WHERE source = 'amazon' AND sale_date = ?",
-                        (_yesterday_str,),
-                    ).fetchone()
-                    _yd_amz_rev = float(_yd_amz[0] or 0)
-
-                    # Spend from amazon_daily_rollup
-                    _yd_rollup = _yd_conn.execute(
-                        "SELECT spend FROM amazon_daily_rollup WHERE date = ?",
-                        (_yesterday_str,),
-                    ).fetchone()
-                    if _yd_rollup:
-                        _yd_amz_spend = float(_yd_rollup[0] or 0)
-
-                    # Amazon NC count + proportional NC Rev (matches DoD table approach)
-                    _yd_nc_row = _yd_conn.execute(
-                        "WITH cust_first AS ("
-                        "  SELECT customer_id, MIN(order_date) AS first_order_date"
-                        "  FROM orders WHERE source = 'amazon'"
-                        "  GROUP BY customer_id"
-                        ") "
-                        "SELECT"
-                        "  COUNT(DISTINCT CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN o.customer_id END) AS new_customers,"
-                        "  SUM(oi.total_price) AS oi_total_rev,"
-                        "  SUM(CASE WHEN cf.first_order_date >= ?"
-                        "       AND cf.first_order_date <= ?"
-                        "       THEN oi.total_price ELSE 0 END) AS oi_new_rev"
-                        " FROM orders o"
-                        " JOIN cust_first cf ON o.customer_id = cf.customer_id"
-                        " JOIN order_items oi ON o.order_id = oi.order_id"
-                        " WHERE o.order_date BETWEEN ? AND ?"
-                        " AND o.source = 'amazon'",
-                        (_yesterday_str, _yesterday_str,
-                         _yesterday_str, _yesterday_str,
-                         _yesterday_str, _yesterday_str),
-                    ).fetchone()
-                    _yd_amz_nc = int(float(_yd_nc_row['new_customers'] or 0))
-                    _yd_oi_total = float(_yd_nc_row['oi_total_rev'] or 0)
-                    _yd_oi_new = float(_yd_nc_row['oi_new_rev'] or 0)
-                    _yd_new_frac = _yd_oi_new / _yd_oi_total if _yd_oi_total > 0 else 0
-                    _yd_amz_nc_rev = _yd_amz_rev * _yd_new_frac
+                    _yd_amz_rev = get_channel_revenue(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
+                    _yd_amz_spend = get_amazon_spend(_yd_conn, _yesterday_str, _yesterday_str)
+                    _nc = get_nc_stats(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
+                    _yd_amz_nc = _nc['new_customers']
+                    _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
             except Exception:
                 pass
 
@@ -435,158 +325,6 @@ def render(ctx):
             _nav_channel = ctx.get('channel', 'Rollup')
 
             if _has_goals:
-                # Build pacing row helper
-                # --- Color helpers ---
-                # For revenue: above pace = green, below = red
-                # For spend: above pace = red (overspending), below = green
-                def _pace_color(pct, invert=False):
-                    """Return CSS for pacing cells with colored bg tint + bold text. invert=True for spend."""
-                    if invert:
-                        if pct <= 0.95:
-                            return "color: #0a7a3e; font-weight: 700; background-color: rgba(16,185,80,0.12)"
-                        elif pct <= 1.05:
-                            return "color: #92700c; font-weight: 700; background-color: rgba(245,166,35,0.12)"
-                        else:
-                            return "color: #b91c1c; font-weight: 700; background-color: rgba(220,38,38,0.10)"
-                    else:
-                        if pct >= 1.05:
-                            return "color: #0a7a3e; font-weight: 700; background-color: rgba(16,185,80,0.12)"
-                        elif pct >= 0.95:
-                            return "color: #92700c; font-weight: 700; background-color: rgba(245,166,35,0.12)"
-                        else:
-                            return "color: #b91c1c; font-weight: 700; background-color: rgba(220,38,38,0.10)"
-
-                def _plus_minus_color(val, invert=False):
-                    """Color for +/- column. Positive = green for rev, red for spend."""
-                    if invert:
-                        if val > 0:
-                            return "color: #b91c1c; font-weight: 700; background-color: rgba(220,38,38,0.08)"
-                        elif val < 0:
-                            return "color: #0a7a3e; font-weight: 700; background-color: rgba(16,185,80,0.08)"
-                        return ""
-                    else:
-                        if val > 0:
-                            return "color: #0a7a3e; font-weight: 700; background-color: rgba(16,185,80,0.08)"
-                        elif val < 0:
-                            return "color: #b91c1c; font-weight: 700; background-color: rgba(220,38,38,0.08)"
-                        return ""
-
-                def _build_pace_row(label, mtd_actual, goal, l7d_avg, yd_actual, is_spend=False):
-                    should_be = goal * _pct_month
-                    pacing = (mtd_actual / should_be) if should_be > 0 else 0
-                    plus_minus = mtd_actual - should_be
-                    remaining = goal - mtd_actual
-                    adjusted_daily = remaining / _remaining_days if _remaining_days > 0 else 0
-                    eom_pacing = (mtd_actual / _pct_month) / goal if goal > 0 and _pct_month > 0 else 0
-                    projection = mtd_actual / _pct_month if _pct_month > 0 else 0
-                    yd_goal = goal / _days_in_month
-                    yd_pacing = (yd_actual / yd_goal) if yd_goal > 0 else 0
-                    return {
-                        "_label": label,
-                        "_is_spend": is_spend,
-                        "_pacing_raw": pacing,
-                        "_plus_minus_raw": plus_minus,
-                        "_eom_pacing_raw": eom_pacing,
-                        "_yd_pacing_raw": yd_pacing,
-                        "": label,
-                        "Pacing": f"{pacing:.0%}",
-                        "MTD Actual": f"${mtd_actual:,.0f}",
-                        "Should Be": f"${should_be:,.0f}",
-                        "+/- Pacing": f"${plus_minus:+,.0f}",
-                        "L7D Avg": f"${l7d_avg:,.0f}",
-                        "Adj. Daily": f"${adjusted_daily:,.0f}",
-                        "EOM Pacing": f"{eom_pacing:.0%}",
-                        "Remaining": f"${remaining:,.0f}",
-                        "Projection": f"${projection:,.0f}",
-                        "EOM Goal": f"${goal:,.0f}",
-                        "Yest. Actual": f"${yd_actual:,.0f}",
-                        "Yest. Goal": f"${yd_goal:,.0f}",
-                        "Yest. Pace": f"{yd_pacing:.0%}",
-                    }
-
-                def _style_pace_df(df_raw):
-                    """Apply red/yellow/green styling to a pacing DataFrame."""
-                    # Extract hidden columns for styling, then drop them
-                    display_cols = [c for c in df_raw.columns if not c.startswith("_")]
-                    style_data = df_raw.copy()
-                    df_display = df_raw[display_cols].copy()
-
-                    def _apply_styles(row_styler):
-                        idx = row_styler.name
-                        is_spend = style_data.loc[idx, "_is_spend"]
-                        pacing_raw = style_data.loc[idx, "_pacing_raw"]
-                        plus_raw = style_data.loc[idx, "_plus_minus_raw"]
-                        eom_raw = style_data.loc[idx, "_eom_pacing_raw"]
-                        yd_raw = style_data.loc[idx, "_yd_pacing_raw"]
-                        styles = [""] * len(row_styler)
-                        col_map = {c: i for i, c in enumerate(display_cols)}
-                        # Bold label column
-                        if "" in col_map:
-                            styles[col_map[""]] = "font-weight: 600; color: #0F3557"
-                        if "Pacing" in col_map:
-                            styles[col_map["Pacing"]] = _pace_color(pacing_raw, invert=is_spend)
-                        if "+/- Pacing" in col_map:
-                            styles[col_map["+/- Pacing"]] = _plus_minus_color(plus_raw, invert=is_spend)
-                        if "EOM Pacing" in col_map:
-                            styles[col_map["EOM Pacing"]] = _pace_color(eom_raw, invert=is_spend)
-                        if "Yest. Pace" in col_map:
-                            styles[col_map["Yest. Pace"]] = _pace_color(yd_raw, invert=is_spend)
-                        if "Projection" in col_map:
-                            styles[col_map["Projection"]] = _pace_color(eom_raw, invert=is_spend)
-                        return styles
-
-                    styled = (
-                        df_display.style
-                        .set_properties(**{
-                            "font-size": "0.84rem",
-                            "font-family": "Visby CF, DM Sans, -apple-system, sans-serif",
-                            "color": "#1e2d3d",
-                            "background-color": "#ffffff",
-                        })
-                        .apply(_apply_styles, axis=1)
-                        .set_table_styles([
-                            {"selector": "th", "props": [
-                                ("background-color", "#F0F4F8"),
-                                ("color", "#0F3557"),
-                                ("font-weight", "600"),
-                                ("font-size", "0.74rem"),
-                                ("text-transform", "uppercase"),
-                                ("letter-spacing", "0.05em"),
-                                ("border-bottom", "2px solid #D6DEE8"),
-                                ("padding", "11px 14px"),
-                                ("position", "sticky"),
-                                ("top", "0"),
-                                ("z-index", "1"),
-                            ]},
-                            {"selector": "td", "props": [
-                                ("border-bottom", "1px solid #F0F4F8"),
-                                ("padding", "9px 14px"),
-                            ]},
-                        ])
-                    )
-                    return styled
-
-                def _render_white_table(styled_df):
-                    """Render a Pandas Styler as an HTML table with white bg, preserving cell-level colors."""
-                    html = styled_df.hide(axis="index").to_html()
-                    st.markdown(
-                        '<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
-                        'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
-                        'width:100%;">'
-                        '<style>'
-                        '.pace-table table { width:100%; border-collapse:collapse; }'
-                        '.pace-table th, .pace-table td { white-space:nowrap; }'
-                        '.pace-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
-                        '.pace-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
-                        '.pace-table td[style*="color"] { -webkit-text-fill-color: unset; }'
-                        '</style>'
-                        f'<div class="pace-table" style="overflow-x:auto;max-height:600px;overflow-y:auto;">{html}</div></div>',
-                        unsafe_allow_html=True,
-                    )
-
-                # Use global HTML table renderer
-                _render_df_as_html = render_html_table
-
                 # -- DTC actuals (Google + Meta spend, Shopify revenue) --
                 _goal_dtc_rev = _goal_nc_rev + _goal_repeat_rev
                 _cm_dtc_rev = _cm_nc_rev + _cm_ret_rev
@@ -607,19 +345,19 @@ def render(ctx):
                 _yd_total_spend = _yd_dtc_spend + _yd_amz_spend
                 _cm_total_repeat_rev = _cm_ret_rev  # Amazon repeat not tracked in this source
 
-                # Efficiency metrics
-                _business_mer = _total_actual_rev / _cm_total_spend if _cm_total_spend > 0 else 0
+                # Efficiency metrics (centralized formulas)
+                _business_mer = compute_mer(_total_actual_rev, _cm_total_spend)
 
                 # DTC efficiency (NC metrics from Shopify orders DB only)
-                _dtc_nc_roas = _cm_nc_rev / _cm_dtc_spend if _cm_dtc_spend > 0 else 0
-                _dtc_nc_aov = _cm_nc_rev / _cm_nc if _cm_nc > 0 else 0
-                _dtc_cpa = _cm_dtc_spend / _cm_nc if _cm_nc > 0 else 0
+                _dtc_nc_roas = compute_nc_roas(_cm_nc_rev, _cm_dtc_spend)
+                _dtc_nc_aov = compute_aov(_cm_nc_rev, _cm_nc)
+                _dtc_cpa = compute_nc_cpa(_cm_dtc_spend, _cm_nc)
 
                 # Combined NC metrics (DTC + Amazon)
                 _cm_total_nc = _cm_nc + _cm_amz_nc
                 _cm_total_nc_rev = _cm_nc_rev + _cm_amz_nc_rev
-                _total_nc_roas = _cm_total_nc_rev / _cm_total_spend if _cm_total_spend > 0 else 0
-                _blended_cpa = _cm_total_spend / _cm_total_nc if _cm_total_nc > 0 else 0
+                _total_nc_roas = compute_nc_roas(_cm_total_nc_rev, _cm_total_spend)
+                _blended_cpa = compute_nc_cpa(_cm_total_spend, _cm_total_nc)
 
                 # -- Spend goal from media plan --
                 _goal_spend = 0
@@ -653,16 +391,19 @@ def render(ctx):
                     _rollup_rows = []
                     _goal_total_spend = _goal_spend + _goal_amz_spend
                     if _goal_total_spend > 0:
-                        _rollup_rows.append(_build_pace_row("Total Spend", _cm_total_spend, _goal_total_spend,
-                                                            _l7d_total_spend, _yd_total_spend, is_spend=True))
+                        _rollup_rows.append(build_pace_row("Total Spend", _cm_total_spend, _goal_total_spend,
+                                                           _l7d_total_spend, _yd_total_spend,
+                                                           _pct_month, _days_in_month, _remaining_days, is_spend=True))
                     _rollup_rows.extend([
-                        _build_pace_row("Total Revenue", _total_actual_rev, _goal_total_rev,
-                                        _l7d_rev + _l7d_amz_rev, _yd_rev + _yd_amz_rev),
-                        _build_pace_row("Repeat Revenue", _cm_total_repeat_rev, _goal_repeat_rev,
-                                        _l7d_ret_rev, _yd_ret_rev),
+                        build_pace_row("Total Revenue", _total_actual_rev, _goal_total_rev,
+                                       _l7d_rev + _l7d_amz_rev, _yd_rev + _yd_amz_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
+                        build_pace_row("Repeat Revenue", _cm_total_repeat_rev, _goal_repeat_rev,
+                                       _l7d_ret_rev, _yd_ret_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
                     ])
                     _rollup_df = pd.DataFrame(_rollup_rows)
-                    _render_white_table(_style_pace_df(_rollup_df))
+                    render_white_table(style_pace_df(_rollup_df))
 
                 # ============================================================
                 # DTC (Shopify) — Google + Meta spend
@@ -683,15 +424,19 @@ def render(ctx):
                     _dtc_rows = []
                     if _goal_spend > 0:
                         _goal_dtc_spend = _goal_spend  # DTC spend goal from media plan
-                        _dtc_rows.append(_build_pace_row("Spend", _cm_dtc_spend, _goal_dtc_spend,
-                                                         _l7d_dtc_spend, _yd_dtc_spend, is_spend=True))
+                        _dtc_rows.append(build_pace_row("Spend", _cm_dtc_spend, _goal_dtc_spend,
+                                                        _l7d_dtc_spend, _yd_dtc_spend,
+                                                        _pct_month, _days_in_month, _remaining_days, is_spend=True))
                     _dtc_rows.extend([
-                        _build_pace_row("Revenue", _cm_dtc_rev, _goal_dtc_rev, _l7d_dtc_rev, _yd_dtc_rev),
-                        _build_pace_row("New Customer Rev", _cm_nc_rev, _goal_nc_rev, _l7d_nc_rev, _yd_nc_rev),
-                        _build_pace_row("Repeat Customer Rev", _cm_ret_rev, _goal_repeat_rev, _l7d_ret_rev, _yd_ret_rev),
+                        build_pace_row("Revenue", _cm_dtc_rev, _goal_dtc_rev, _l7d_dtc_rev, _yd_dtc_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
+                        build_pace_row("New Customer Rev", _cm_nc_rev, _goal_nc_rev, _l7d_nc_rev, _yd_nc_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
+                        build_pace_row("Repeat Customer Rev", _cm_ret_rev, _goal_repeat_rev, _l7d_ret_rev, _yd_ret_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
                     ])
                     _dtc_df = pd.DataFrame(_dtc_rows)
-                    _render_white_table(_style_pace_df(_dtc_df))
+                    render_white_table(style_pace_df(_dtc_df))
 
                 # ============================================================
                 # AMAZON — revenue from daily_sku_sales, spend from amazon_daily_rollup, NC from orders
@@ -714,13 +459,15 @@ def render(ctx):
                     _amz_rows = []
                     if _goal_amz_spend > 0:
                         _amz_rows.append(
-                            _build_pace_row("Spend", _cm_amz_spend, _goal_amz_spend, _l7d_amz_spend, _yd_amz_spend, is_spend=True),
+                            build_pace_row("Spend", _cm_amz_spend, _goal_amz_spend, _l7d_amz_spend, _yd_amz_spend,
+                                           _pct_month, _days_in_month, _remaining_days, is_spend=True),
                         )
                     _amz_rows.append(
-                        _build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev),
+                        build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
                     )
                     _amz_df = pd.DataFrame(_amz_rows)
-                    _render_white_table(_style_pace_df(_amz_df))
+                    render_white_table(style_pace_df(_amz_df))
 
             else:
                 # No goals — show MTD summary with last month comparison
@@ -938,7 +685,7 @@ def render(ctx):
             def _render_perf_table_colored(df, period_col, max_height=420):
                 """Render a performance table with gradient period-over-period color coding."""
                 if df.empty or len(df) < 2:
-                    _render_df_as_html(df, max_height=max_height)
+                    render_html_table(df, max_height=max_height)
                     return
 
                 # Sort descending for display (most recent first)
