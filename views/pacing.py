@@ -433,8 +433,13 @@ def render_hero_bars(data):
     st.markdown(bar_html, unsafe_allow_html=True)
 
 
-def render_pacing_detail_table(data):
-    """Render revenue + spend pacing tables (Rollup/DTC/Amazon rows)."""
+def render_pacing_detail_table(data, source_filter=None):
+    """Render revenue + spend pacing tables, optionally filtered by channel.
+
+    Args:
+        data: Pacing data dict from compute_pacing_data().
+        source_filter: 'shopify', 'amazon', or None (Rollup — show all rows).
+    """
     if not data or not data['has_goals']:
         return
 
@@ -443,34 +448,40 @@ def render_pacing_detail_table(data):
     # --- Revenue Pacing ---
     st.caption('**Revenue Pacing**')
     rev_rows = []
-    rev_rows.append(build_pace_row("Rollup", d['total_actual_rev'], d['goal_total_rev'],
-                                   d['l7d_total_rev'], d['yd_total_rev'],
-                                   d['pct_month'], d['days_in_month'], d['remaining_days']))
-    rev_rows.append(build_pace_row("DTC", d['cm_dtc_rev'], d['goal_dtc_rev'],
-                                   d['l7d_dtc_rev'], d['yd_dtc_rev'],
-                                   d['pct_month'], d['days_in_month'], d['remaining_days']))
-    rev_rows.append(build_pace_row("Amazon", d['cm_amz_rev'], d['goal_amz_rev'],
-                                   d['l7d_amz_rev'], d['yd_amz_rev'],
-                                   d['pct_month'], d['days_in_month'], d['remaining_days']))
-    render_white_table(style_pace_df(pd.DataFrame(rev_rows)))
+    if not source_filter:
+        rev_rows.append(build_pace_row("Rollup", d['total_actual_rev'], d['goal_total_rev'],
+                                       d['l7d_total_rev'], d['yd_total_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days']))
+    if source_filter in (None, 'shopify'):
+        rev_rows.append(build_pace_row("DTC", d['cm_dtc_rev'], d['goal_dtc_rev'],
+                                       d['l7d_dtc_rev'], d['yd_dtc_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days']))
+    if source_filter in (None, 'amazon'):
+        rev_rows.append(build_pace_row("Amazon", d['cm_amz_rev'], d['goal_amz_rev'],
+                                       d['l7d_amz_rev'], d['yd_amz_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days']))
+    if rev_rows:
+        render_white_table(style_pace_df(pd.DataFrame(rev_rows)))
 
     # --- Spend Pacing ---
     _has_spend_goals = d.get('goal_total_spend', 0) > 0
     if _has_spend_goals:
         st.caption('**Spend Pacing**')
         spend_rows = []
-        spend_rows.append(build_pace_row("Rollup", d['cm_total_spend'], d['goal_total_spend'],
-                                         d['l7d_total_spend'], d['yd_total_spend'],
-                                         d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
-        if d.get('goal_spend', 0) > 0:
+        if not source_filter:
+            spend_rows.append(build_pace_row("Rollup", d['cm_total_spend'], d['goal_total_spend'],
+                                             d['l7d_total_spend'], d['yd_total_spend'],
+                                             d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
+        if source_filter in (None, 'shopify') and d.get('goal_spend', 0) > 0:
             spend_rows.append(build_pace_row("DTC", d['cm_dtc_spend'], d['goal_spend'],
                                              d['l7d_dtc_spend'], d['yd_dtc_spend'],
                                              d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
-        if d.get('goal_amz_spend', 0) > 0:
+        if source_filter in (None, 'amazon') and d.get('goal_amz_spend', 0) > 0:
             spend_rows.append(build_pace_row("Amazon", d['cm_amz_spend'], d['goal_amz_spend'],
                                              d['l7d_amz_spend'], d['yd_amz_spend'],
                                              d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
-        render_white_table(style_pace_df(pd.DataFrame(spend_rows)))
+        if spend_rows:
+            render_white_table(style_pace_df(pd.DataFrame(spend_rows)))
 
 
 def render_pacing(ctx):

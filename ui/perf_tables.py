@@ -143,6 +143,100 @@ def render_perf_table_colored(df, period_col, max_height=420, grey_cols=None):
     )
 
 
+def render_perf_table_transposed(df, period_col, max_height=420, grey_cols=None):
+    """Render a performance table transposed: periods as columns, metrics as rows.
+
+    Coloring compares each metric across periods (most recent vs prior).
+    """
+    if df.empty or len(df) < 2:
+        from ui.components import render_html_table
+        render_html_table(df, max_height=max_height)
+        return
+
+    grey_cols = grey_cols or set()
+
+    # Sort periods descending (most recent first)
+    sorted_df = df.sort_values(period_col, ascending=False).reset_index(drop=True)
+    period_labels = sorted_df[period_col].tolist()
+    metric_cols = [c for c in sorted_df.columns if c != period_col]
+
+    # Build transposed: rows=metrics, columns=period labels
+    transposed = {'Metric': metric_cols}
+    for _, row in sorted_df.iterrows():
+        transposed[row[period_col]] = [row[c] for c in metric_cols]
+    t_df = pd.DataFrame(transposed)
+
+    from ui.tables import gradient_perf_style, _parse_perf_num
+
+    def _apply_styles(row):
+        idx = row.name
+        metric = row['Metric']
+        styles = ['font-weight:600;color:#0F3557'] + [''] * (len(row) - 1)
+
+        if metric in grey_cols:
+            styles = ['font-weight:600;color:#9ca3af'] + ['color:#9ca3af;font-weight:400'] * (len(row) - 1)
+            return styles
+
+        # Compare most recent (col index 1) with the next older period (col index 2)
+        if len(period_labels) >= 2:
+            curr_val = _parse_perf_num(row.iloc[1])
+            prev_val = _parse_perf_num(row.iloc[2])
+            if curr_val is not None and prev_val is not None and prev_val != 0:
+                pct_change = (curr_val - prev_val) / abs(prev_val)
+                higher_is_good = PERF_COL_DIRECTION.get(metric, True)
+                styles[1] = gradient_perf_style(pct_change, higher_is_good)
+
+        return styles
+
+    styled = (
+        t_df.style
+        .set_properties(**{
+            'font-size': '0.84rem',
+            'font-family': 'Visby CF, DM Sans, -apple-system, sans-serif',
+            'color': '#1e2d3d',
+            'background-color': '#ffffff',
+        })
+        .apply(_apply_styles, axis=1)
+        .set_table_styles([
+            {'selector': 'th', 'props': [
+                ('background-color', '#F0F4F8'),
+                ('color', '#0F3557'),
+                ('font-weight', '600'),
+                ('font-size', '0.74rem'),
+                ('text-transform', 'uppercase'),
+                ('letter-spacing', '0.05em'),
+                ('border-bottom', '2px solid #D6DEE8'),
+                ('padding', '11px 14px'),
+                ('position', 'sticky'),
+                ('top', '0'),
+                ('z-index', '1'),
+            ]},
+            {'selector': 'td', 'props': [
+                ('border-bottom', '1px solid #F0F4F8'),
+                ('padding', '9px 14px'),
+                ('white-space', 'nowrap'),
+            ]},
+        ])
+        .hide(axis='index')
+    )
+    html = styled.to_html()
+    height_style = f'max-height:{max_height}px;overflow-y:auto;' if max_height else ''
+    st.markdown(
+        f'<div style="background:#ffffff;border-radius:12px;'
+        f'box-shadow:0 2px 12px rgba(15,53,87,0.08);border:1px solid #E8EDF3;'
+        f'width:100%;overflow:hidden;">'
+        f'<div class="perf-table" style="overflow-x:auto;{height_style}">'
+        '<style>'
+        '.perf-table table { width:100%; border-collapse:collapse; }'
+        '.perf-table th, .perf-table td { white-space:nowrap; }'
+        '.perf-table th { position:sticky; top:0; z-index:1; background-color:#F0F4F8 !important; }'
+        '.perf-table tr:hover td:not([style*="background-color"]) { background:#F7FAFC !important; }'
+        '</style>'
+        f'{html}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
     """Build the 6-column, 3-row (Rollup/DTC/Amazon) trend table for Overview.
 
