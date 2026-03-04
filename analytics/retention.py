@@ -648,14 +648,20 @@ def get_new_repeat_summary(start_date, end_date, source_filter=None):
     Returns dict with: new_customers, repeat_customers, new_revenue,
         repeat_revenue, new_orders, repeat_orders, new_aov, repeat_aov
     """
-    first_source = source_filter or 'shopify'
     source_clause = ""
-    first_source_params = [first_source]
+    if source_filter:
+        first_source_clause = " WHERE source = ?"
+        first_source_params = [source_filter]
+        source_clause = " AND o.source = ?"
+    else:
+        # Rollup: no source filter — find first order across ALL channels
+        first_source_clause = ""
+        first_source_params = []
+
     params_cust = [start_date, end_date, start_date, start_date, end_date]
     params_rev = [start_date, end_date, start_date, start_date, end_date, start_date, start_date, end_date]
 
     if source_filter:
-        source_clause = " AND o.source = ?"
         params_cust.append(source_filter)
         params_rev.append(source_filter)
 
@@ -664,7 +670,7 @@ def get_new_repeat_summary(start_date, end_date, source_filter=None):
         row = conn.execute(f"""
             WITH cust_first AS (
                 SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
+                FROM orders{first_source_clause}
                 GROUP BY customer_id
             )
             SELECT
@@ -688,7 +694,7 @@ def get_new_repeat_summary(start_date, end_date, source_filter=None):
         row2 = conn.execute(f"""
             WITH cust_first AS (
                 SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
+                FROM orders{first_source_clause}
                 GROUP BY customer_id
             )
             SELECT
@@ -799,13 +805,17 @@ def get_last_order_date(source_filter=None):
 def _get_dow_daily_new_customers(start_date, end_date, source_filter=None):
     """Return a DataFrame with first_order_date and new_customer count per day,
     plus dow (0=Mon … 6=Sun) for building DOW indices."""
-    first_source = source_filter or 'shopify'
-    params = [first_source, start_date, end_date]
+    if source_filter:
+        first_clause = " WHERE source = ?"
+        params = [source_filter, start_date, end_date]
+    else:
+        first_clause = ""
+        params = [start_date, end_date]
     with get_db() as conn:
-        df = read_sql("""
+        df = read_sql(f"""
             WITH cust_first AS (
                 SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
+                FROM orders{first_clause}
                 GROUP BY customer_id
             )
             SELECT first_order_date, COUNT(*) AS new_customers
