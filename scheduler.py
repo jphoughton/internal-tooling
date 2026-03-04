@@ -73,6 +73,21 @@ def run_daemon():
     print(f"Amazon catchup syncs at 11:00 and 17:00 {SYNC_TIMEZONE}.")
     print(f"Press Ctrl+C to stop.\n")
 
+    # On startup, run models if precomputed data is stale or missing
+    try:
+        from db import get_db, get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'master_dtc_forecast', max_age_hours=25)
+        if not cached:
+            print("Precomputed data stale or missing — running models on startup...")
+            from analytics.orchestrator import run_all_daily_models
+            model_results = run_all_daily_models(triggered_by='startup')
+            print(f"Startup model runs completed: {model_results}")
+        else:
+            print("Precomputed data is fresh, skipping startup model run.")
+    except Exception as e:
+        print(f"Startup model check failed: {e}")
+
     while True:
         schedule.run_pending()
         time.sleep(60)
@@ -104,6 +119,11 @@ if __name__ == "__main__":
             shopify_workers=args.shopify_workers,
             chunk_months=args.chunk_months,
         )
+    elif "--models-only" in sys.argv:
+        print("Running analytics models only (no ETL sync)...")
+        from analytics.orchestrator import run_all_daily_models
+        model_results = run_all_daily_models(triggered_by='manual')
+        print(f"Model runs completed: {model_results}")
     elif "--now" in sys.argv:
         print("Running immediate sync...")
         run_daily_sync(full_refresh=False)

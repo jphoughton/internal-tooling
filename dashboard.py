@@ -506,8 +506,14 @@ if st.sidebar.button("Refresh Data"):
                 for k in errors:
                     err_msg = str(results[k]).replace("ERROR: ", "")
                     st.sidebar.error(f"**{k.title()} sync failed:** {err_msg}")
-            # Only rerun if we got some successes (otherwise keep errors visible)
+            # Run analytics models to populate pre-computed page data
             if successes:
+                sync_container.info("Computing analytics models...")
+                try:
+                    from analytics.orchestrator import run_all_daily_models
+                    run_all_daily_models(triggered_by='etl_sync')
+                except Exception as e:
+                    log.warning('Post-sync model run failed: %s', e)
                 clear_waterfall_cache()
                 st.cache_data.clear()
                 st.rerun()
