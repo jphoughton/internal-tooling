@@ -94,19 +94,22 @@ def _load_overview_daily_trend():
 
 @st.cache_data(ttl=300)
 def _load_top_skus():
-    """Load top 10 SKUs by units sold."""
+    """Load top 10 flavors by units sold (unified across Amazon + Shopify)."""
     with get_db() as conn:
-        return read_sql("""
-            SELECT oi.sku, sm.product_name, sm.category,
-                   SUM(oi.quantity) as total_units,
-                   SUM(oi.total_price) as total_revenue
-            FROM order_items oi
-            JOIN sku_master sm ON oi.sku = sm.sku
-            JOIN orders o ON oi.order_id = o.order_id
-            GROUP BY oi.sku, sm.product_name, sm.category
+        df = read_sql("""
+            SELECT sku, SUM(units_sold) as total_units
+            FROM daily_sku_sales
+            GROUP BY sku
             ORDER BY total_units DESC
-            LIMIT 10
         """, conn)
+    if df.empty:
+        return df
+    # Map each SKU to its unified flavor name
+    df['flavor'] = df['sku'].apply(lambda s: get_flavor(s) or s)
+    # Group by flavor to combine same-flavor SKUs across channels/formats
+    grouped = df.groupby('flavor', as_index=False)['total_units'].sum()
+    grouped = grouped.sort_values('total_units', ascending=False).head(10)
+    return grouped
 
 
 def render(ctx):
@@ -466,13 +469,8 @@ def render(ctx):
     st.caption('Best-selling SKUs by units sold.')
     top = _load_top_skus()
     if not top.empty:
-        top = top.copy()
-        top['label'] = top.apply(
-            lambda r: get_flavor(r['sku'], r.get('product_name', '')) or r['sku'],
-            axis=1,
-        )
         fig = go.Figure(go.Bar(
-            x=top['total_units'], y=top['label'], orientation='h',
+            x=top['total_units'], y=top['flavor'], orientation='h',
             text=top['total_units'], textposition='outside',
             marker_color='#0F3557',
         ))
