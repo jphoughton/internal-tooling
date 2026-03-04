@@ -192,6 +192,106 @@ def render(ctx):
 
     st.markdown(f'**{len(patterns_df)} patterns** to review')
 
+    # --- Bulk Operations ---
+    # Build selectable labels: "direction_icon example (N txns)"
+    _bulk_labels = []
+    _bulk_label_to_idx = {}
+    for idx, row in patterns_df.iterrows():
+        example = (row.get('example', '') or '')[:60]
+        direction = row.get('direction', '') or ''
+        tx_count = int(row.get('tx_count', 0))
+        dir_icon = '>' if direction == 'credit' else '<'
+        label = f'{dir_icon} {example} ({tx_count} txns)'
+        _bulk_labels.append(label)
+        _bulk_label_to_idx[label] = idx
+
+    with st.expander('Bulk Operations', expanded=False):
+        st.caption(
+            'Select multiple patterns and assign them all to the same '
+            'category at once.'
+        )
+        bulk_selected = st.multiselect(
+            'Select patterns',
+            options=_bulk_labels,
+            default=[],
+            key='txmap_bulk_select',
+            placeholder='Choose patterns to bulk-assign...',
+        )
+
+        if bulk_selected:
+            bulk_col1, bulk_col2 = st.columns([2, 1])
+            with bulk_col1:
+                # Category dropdown for bulk (exclude 'unmapped')
+                _bulk_cat_options = [
+                    k for k in _CATEGORY_OPTIONS if k != 'unmapped'
+                ]
+                bulk_category = st.selectbox(
+                    'Assign category',
+                    _bulk_cat_options,
+                    index=0,
+                    format_func=lambda x: _CATEGORY_LABELS.get(x, x),
+                    key='txmap_bulk_category',
+                )
+            with bulk_col2:
+                st.markdown(
+                    f'<div style="font-size:0.85rem;padding-top:1.6rem;">'
+                    f'<b>{len(bulk_selected)}</b> pattern(s) selected'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            if st.button(
+                'Apply to Selected',
+                type='primary',
+                key='txmap_bulk_apply',
+                use_container_width=True,
+            ):
+                saved = 0
+                try:
+                    with get_db() as conn:
+                        for label in bulk_selected:
+                            b_idx = _bulk_label_to_idx[label]
+                            b_row = patterns_df.loc[b_idx]
+                            normalized = b_row['normalized']
+                            example = b_row.get('example', '') or ''
+                            if not normalized:
+                                continue
+                            is_transfer = (
+                                1 if bulk_category == 'internal_transfer' else 0
+                            )
+                            is_dup = 1 if bulk_category == 'duplicate' else 0
+                            upsert_category_mapping(
+                                conn,
+                                match_pattern=normalized,
+                                category=bulk_category,
+                                raw_example=example,
+                                is_transfer=is_transfer,
+                                is_duplicate=is_dup,
+                            )
+                            saved += 1
+                except Exception as e:
+                    log.error('Bulk mapping failed: %s', e)
+                    st.error(f'Bulk mapping failed: {e}')
+
+                if saved > 0:
+                    st.success(f'Saved {saved} bulk mappings!')
+                    try:
+                        with st.spinner('Re-classifying transactions...'):
+                            with get_db() as conn:
+                                count = reclassify_all_transactions(conn)
+                        st.success(
+                            f'Updated {count} transactions with new categories.'
+                        )
+                    except Exception as e:
+                        log.error('Reclassification failed: %s', e)
+                        st.warning(
+                            f'Mappings saved but reclassification failed: {e}'
+                        )
+                    st.rerun()
+                else:
+                    st.info('No patterns could be mapped.')
+        else:
+            st.info('Select patterns above to enable bulk assignment.')
+
     # Mapping form
     with st.form('mapping_form'):
         mapping_updates = []
