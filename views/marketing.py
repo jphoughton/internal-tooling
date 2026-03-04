@@ -694,9 +694,13 @@ def render(ctx):
                     )
                 if not _amz_rev_daily.empty:
                     _amz_daily = _amz_rev_daily
+                    _amz_daily["_date"] = pd.to_datetime(_amz_daily["sale_date"])
                     if not _amz_spend_daily.empty:
-                        _amz_spend_daily = project_daily_spend_gaps(
-                            _amz_spend_daily, date_col='sale_date', spend_col='_amz_spend')
+                        try:
+                            _amz_spend_daily = project_daily_spend_gaps(
+                                _amz_spend_daily, date_col='sale_date', spend_col='_amz_spend')
+                        except Exception:
+                            pass
                         _amz_daily = _amz_daily.merge(
                             _amz_spend_daily[['sale_date', '_amz_spend']], on="sale_date", how="left")
                     if "_amz_spend" not in _amz_daily.columns:
@@ -724,8 +728,6 @@ def render(ctx):
                     _new_frac = (_amz_daily["oi_new_rev"] / _oi_total).where(_oi_total > 0, 0)
                     _amz_daily["_amz_new_rev"] = _amz_daily["_amz_revenue"] * _new_frac
                     _amz_daily["_amz_repeat_rev"] = _amz_daily["_amz_revenue"] * (1 - _new_frac)
-
-                    _amz_daily["_date"] = pd.to_datetime(_amz_daily["sale_date"])
             except Exception:
                 pass
 

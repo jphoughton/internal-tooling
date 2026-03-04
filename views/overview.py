@@ -252,7 +252,7 @@ def render(ctx):
             _pb_margin = 1 - _cogs_pct - _fulfill_pct
             _has_amz_ret = bool(_amz_ret and any(v > 0 for v in _amz_ret.values()))
 
-            with st.expander('CAC Payback Breakdown', expanded=False):
+            with st.expander('CAC Payback Breakdown', expanded=True):
                 _nc_count = d['cm_total_nc']
                 _total_spend = d['cm_total_spend']
                 _total_nc_rev = d['cm_total_nc_rev']
@@ -337,7 +337,7 @@ def render(ctx):
     # Section 3: Pacing Detail (expander)
     # ================================================================
     if pacing_data and pacing_data['has_goals']:
-        with st.expander('Pacing Detail', expanded=False):
+        with st.expander('Pacing Detail', expanded=True):
             st.caption('*MTD actuals vs pro-rated monthly goals (goal \u00d7 days elapsed / days in month). '
                        'Revenue from daily_sku_sales, spend from Google Sheets + Amazon daily rollup, '
                        'goals from forecast model.*')
@@ -350,7 +350,7 @@ def render(ctx):
     _gs_spend = _load_gs_spend()
     _amz_daily = _load_amazon_daily()
 
-    with st.expander('Performance Trends', expanded=True):
+    with st.expander('Performance Trends', expanded=False):
         st.caption('*DoD: 3-day avg vs same 3 days prior week. WoW: current week vs prior week. '
                    'Green = improving, red = declining. NC Rev % and Contribution % greyed for DoD (too volatile daily).*')
         _dod_tab, _wow_tab = st.tabs(['Day over Day', 'Week over Week'])
