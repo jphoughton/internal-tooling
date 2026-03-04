@@ -1,4 +1,5 @@
 """Projected Inventory page."""
+import json as _json_pi
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -16,6 +17,19 @@ from analytics.dtc_demand import (
     get_current_month_progress,
 )
 from ui.components import render_html_table, render_freshness_badge
+
+
+def _get_precomputed(key):
+    """Load precomputed result from DB, return parsed JSON or None."""
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json_pi.loads(cached)
+    except Exception:
+        pass
+    return None
 
 
 def render(ctx, embedded=False):
@@ -103,34 +117,41 @@ def render(ctx, embedded=False):
         pi_rollup = pd.DataFrame()
         pi_revenue = {}
         try:
-            import json as _json_pi
-            with get_db() as conn:
-                pi_spend = get_media_spend(conn, source='All Sources')
-                pi_amz_rev = get_amazon_revenue_forecast(conn)
-            if not pi_spend:
-                pi_spend = [{'month': (datetime.utcnow() + relativedelta(months=i)).strftime('%Y-%m'),
-                             'spend': 0, 'new_customer_roas': 0.7} for i in range(12)]
-            pi_amz_dict = {r['month']: r['revenue'] for r in pi_amz_rev if r.get('revenue', 0) > 0} if pi_amz_rev else None
+            # Try precomputed master forecast first
+            _precomputed_dtc = _get_precomputed('master_dtc_forecast')
+            if _precomputed_dtc is not None:
+                pi_rollup = pd.DataFrame(_precomputed_dtc.get('rollup_table', {}))
+                pi_revenue = _precomputed_dtc.get('revenue', {})
+                pi_forecast_ok = not pi_rollup.empty
+            else:
+                # Live computation fallback
+                with get_db() as conn:
+                    pi_spend = get_media_spend(conn, source='All Sources')
+                    pi_amz_rev = get_amazon_revenue_forecast(conn)
+                if not pi_spend:
+                    pi_spend = [{'month': (datetime.utcnow() + relativedelta(months=i)).strftime('%Y-%m'),
+                                 'spend': 0, 'new_customer_roas': 0.7} for i in range(12)]
+                pi_amz_dict = {r['month']: r['revenue'] for r in pi_amz_rev if r.get('revenue', 0) > 0} if pi_amz_rev else None
 
-            pi_media_json = _json_pi.dumps(pi_spend, sort_keys=True)
-            pi_wf = _cached_waterfall(pi_media_json, 'shopify', 12, _load_seasonal_json())
-            pi_sku_fc = _cached_sku_forecast(
-                pi_wf.to_json(), 'shopify', _load_sku_seasonal_json(), _load_seasonal_json(),
-            ) if not pi_wf.empty else pd.DataFrame()
+                pi_media_json = _json_pi.dumps(pi_spend, sort_keys=True)
+                pi_wf = _cached_waterfall(pi_media_json, 'shopify', 12, _load_seasonal_json())
+                pi_sku_fc = _cached_sku_forecast(
+                    pi_wf.to_json(), 'shopify', _load_sku_seasonal_json(), _load_seasonal_json(),
+                ) if not pi_wf.empty else pd.DataFrame()
 
-            _bv_pi = ctx.get('biz_vars', {})
-            pi_dtc = build_master_dtc_forecast(
-                shopify_waterfall_df=pi_wf,
-                shopify_sku_forecast_df=pi_sku_fc,
-                amazon_growth_rate=_bv_pi.get('amazon_growth_pct', 0.0),
-                horizon_months=_bv_pi.get('forecast_horizon', 12),
-                forecast_skus=FORECAST_SKUS,
-                media_plan=pi_spend,
-                amazon_revenue_forecast=pi_amz_dict,
-            )
-            pi_rollup = pi_dtc['rollup_table']
-            pi_revenue = pi_dtc.get('revenue', {})
-            pi_forecast_ok = not pi_rollup.empty
+                _bv_pi = ctx.get('biz_vars', {})
+                pi_dtc = build_master_dtc_forecast(
+                    shopify_waterfall_df=pi_wf,
+                    shopify_sku_forecast_df=pi_sku_fc,
+                    amazon_growth_rate=_bv_pi.get('amazon_growth_pct', 0.0),
+                    horizon_months=_bv_pi.get('forecast_horizon', 12),
+                    forecast_skus=FORECAST_SKUS,
+                    media_plan=pi_spend,
+                    amazon_revenue_forecast=pi_amz_dict,
+                )
+                pi_rollup = pi_dtc['rollup_table']
+                pi_revenue = pi_dtc.get('revenue', {})
+                pi_forecast_ok = not pi_rollup.empty
         except Exception as e:
             st.warning(f'Could not load demand forecast: {e}')
 

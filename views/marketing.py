@@ -20,13 +20,56 @@ from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday
 
 
+def _merge_shopify_daily(rev_df, cust_df):
+    """Merge revenue and customer DataFrames and compute derived columns."""
+    rev_df['sale_date'] = pd.to_datetime(rev_df['sale_date'])
+    cust_df['sale_date'] = pd.to_datetime(cust_df['sale_date'])
+
+    df = rev_df.merge(cust_df, on='sale_date', how='left')
+    df['total_orders'] = df['total_orders'].fillna(0).astype(int)
+    df['new_customers'] = df['new_customers'].fillna(0).astype(int)
+    df['total_customers'] = df['total_customers'].fillna(0).astype(int)
+
+    # Derive new/repeat revenue using order_items fraction applied to daily_sku_sales revenue
+    oi_total = df['oi_total_rev'].fillna(0)
+    oi_new = df['oi_new_rev'].fillna(0)
+    frac_new = (oi_new / oi_total).fillna(0).clip(0, 1)
+    df['_revenue'] = df['revenue']
+    df['_units'] = df['units']
+    df['_orders'] = df['total_orders']
+    df['_nc_orders'] = df['new_customers']
+    df['_ret_orders'] = df['_orders'] - df['_nc_orders']
+    df['_nc_revenue'] = df['_revenue'] * frac_new
+    df['_ret_revenue'] = df['_revenue'] * (1 - frac_new)
+    df['_date'] = df['sale_date']
+    return df
+
+
 @st.cache_data(ttl=300)
 def _load_shopify_daily_metrics():
     """Load daily DTC metrics from Shopify DB (revenue, orders, new/repeat customers).
 
     Uses MIN(order_date) from orders table for accurate first-order classification
     (matches Shopify admin's new vs returning definition).
+    Tries precomputed data first, falls back to live DB queries.
     """
+    import json as _json_mkt
+
+    # Try precomputed data first
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            rev_cached = get_precomputed(conn, 'shopify_daily_revenue', max_age_hours=25)
+            cust_cached = get_precomputed(conn, 'shopify_daily_customers', max_age_hours=25)
+        if rev_cached and cust_cached:
+            rev_df = pd.DataFrame(_json_mkt.loads(rev_cached))
+            cust_df = pd.DataFrame(_json_mkt.loads(cust_cached))
+            if not rev_df.empty and not cust_df.empty:
+                return _merge_shopify_daily(rev_df, cust_df)
+    except Exception:
+        pass
+
+    # Fall back to live DB queries
     with get_db() as conn:
         rev_df = read_sql(
             "SELECT sale_date, SUM(revenue) AS revenue, SUM(units_sold) AS units "
@@ -55,27 +98,7 @@ def _load_shopify_daily_metrics():
     if rev_df.empty:
         return pd.DataFrame()
 
-    rev_df['sale_date'] = pd.to_datetime(rev_df['sale_date'])
-    cust_df['sale_date'] = pd.to_datetime(cust_df['sale_date'])
-
-    df = rev_df.merge(cust_df, on='sale_date', how='left')
-    df['total_orders'] = df['total_orders'].fillna(0).astype(int)
-    df['new_customers'] = df['new_customers'].fillna(0).astype(int)
-    df['total_customers'] = df['total_customers'].fillna(0).astype(int)
-
-    # Derive new/repeat revenue using order_items fraction applied to daily_sku_sales revenue
-    oi_total = df['oi_total_rev'].fillna(0)
-    oi_new = df['oi_new_rev'].fillna(0)
-    frac_new = (oi_new / oi_total).fillna(0).clip(0, 1)
-    df['_revenue'] = df['revenue']
-    df['_units'] = df['units']
-    df['_orders'] = df['total_orders']
-    df['_nc_orders'] = df['new_customers']
-    df['_ret_orders'] = df['_orders'] - df['_nc_orders']
-    df['_nc_revenue'] = df['_revenue'] * frac_new
-    df['_ret_revenue'] = df['_revenue'] * (1 - frac_new)
-    df['_date'] = df['sale_date']
-    return df
+    return _merge_shopify_daily(rev_df, cust_df)
 
 
 @st.cache_data(ttl=300)
@@ -178,32 +201,56 @@ def render(ctx):
             _mkt_summary = None
             _mkt_revenue = {}
             _mkt_amz_media = []
+            _mkt_media = []
+
+            # Try precomputed master forecast first
             try:
-                _seasonal_json_mkt = _load_seasonal_json()
+                from db import get_precomputed
+                import json as _json_mkt_pre
+                with get_db() as _pc_mkt_conn:
+                    _fc_mkt_cached = get_precomputed(_pc_mkt_conn, 'master_dtc_forecast', max_age_hours=25)
+                if _fc_mkt_cached:
+                    _precomputed_mkt = _json_mkt_pre.loads(_fc_mkt_cached)
+                    if 'summary' in _precomputed_mkt:
+                        _mkt_summary = pd.DataFrame(_precomputed_mkt['summary'])
+                    _mkt_revenue = _precomputed_mkt.get('revenue', {})
+            except Exception:
+                pass
+
+            # Always load media spend (needed for spend goals)
+            try:
                 with get_db() as _goals_conn:
                     _mkt_media = get_media_spend(_goals_conn, source="All Sources")
                     _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
-                    _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
-                import json as _json_mkt
-                _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), 'shopify', _mkt_horizon, _seasonal_json_mkt)
-                if _mkt_wf is not None and not _mkt_wf.empty:
-                    _mkt_sku_table = _cached_sku_forecast(
-                        _mkt_wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json_mkt,
-                    )
-                    _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
-                    _dtc_mkt = build_master_dtc_forecast(
-                        shopify_waterfall_df=_mkt_wf,
-                        shopify_sku_forecast_df=_mkt_sku_table,
-                        amazon_growth_rate=_mkt_amz_growth / 100.0,
-                        horizon_months=_mkt_horizon,
-                        forecast_skus=FORECAST_SKUS,
-                        media_plan=_mkt_media,
-                        amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
-                    )
-                    _mkt_summary = _dtc_mkt["summary"]
-                    _mkt_revenue = _dtc_mkt.get("revenue", {})
-            except Exception as _mkt_err:
-                st.caption(f"Could not load revenue goals: {_mkt_err}")
+            except Exception:
+                pass
+
+            # Fall back to live computation if precomputed miss
+            if _mkt_summary is None:
+                try:
+                    _seasonal_json_mkt = _load_seasonal_json()
+                    with get_db() as _goals_conn2:
+                        _amz_rev_f = get_amazon_revenue_forecast(_goals_conn2)
+                    import json as _json_mkt
+                    _mkt_wf = _cached_waterfall(_json_mkt.dumps(_mkt_media, sort_keys=True), 'shopify', _mkt_horizon, _seasonal_json_mkt)
+                    if _mkt_wf is not None and not _mkt_wf.empty:
+                        _mkt_sku_table = _cached_sku_forecast(
+                            _mkt_wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json_mkt,
+                        )
+                        _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
+                        _dtc_mkt = build_master_dtc_forecast(
+                            shopify_waterfall_df=_mkt_wf,
+                            shopify_sku_forecast_df=_mkt_sku_table,
+                            amazon_growth_rate=_mkt_amz_growth / 100.0,
+                            horizon_months=_mkt_horizon,
+                            forecast_skus=FORECAST_SKUS,
+                            media_plan=_mkt_media,
+                            amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
+                        )
+                        _mkt_summary = _dtc_mkt["summary"]
+                        _mkt_revenue = _dtc_mkt.get("revenue", {})
+                except Exception as _mkt_err:
+                    st.caption(f"Could not load revenue goals: {_mkt_err}")
 
             # Pre-compute current-month pacing vars (data through yesterday only)
             _today = business_today()

@@ -8,6 +8,7 @@ CFO perspective: This replaces the Google Sheets 13-week cash flow model.
 Shows where cash is going, when it's tight, and what levers to pull.
 Every number is traceable back to actual bank transactions or explicit forecasts.
 """
+import json as _json_cf
 import logging
 from datetime import date, timedelta
 
@@ -20,6 +21,19 @@ from db import get_db, read_sql, get_cashflow_setting, set_cashflow_setting
 from utils.constants import CASHFLOW_CATEGORIES
 
 log = logging.getLogger(__name__)
+
+
+def _get_precomputed_cf(key):
+    """Load precomputed result from DB, return parsed JSON or None."""
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json_cf.loads(cached)
+    except Exception:
+        pass
+    return None
 
 
 def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: int) -> go.Figure:
@@ -417,28 +431,44 @@ def render(ctx):
     scenario_key = (scenario or 'Base').lower()
     horizon_weeks = {'13 weeks': 13, '26 weeks': 26, '52 weeks': 52}.get(horizon_label, 13)
 
-    # Build forecast
+    # Build forecast — try precomputed first for base scenario
     try:
-        with st.spinner('Building forecast...'):
-            with get_db() as conn:
-                from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
+        _cf_precomputed = None
+        if scenario_key == 'base':
+            _cf_key = 'cashflow_forecast_52w' if horizon_weeks >= 26 else 'cashflow_forecast_13w'
+            _cf_precomputed = _get_precomputed_cf(_cf_key)
 
-                forecast_df = build_cashflow_forecast(
-                    conn,
-                    start_date=date.today() - timedelta(weeks=4),  # include 4 weeks of actuals
-                    weeks=horizon_weeks + 4,
-                    scenario=scenario_key,
+        if _cf_precomputed is not None:
+            forecast_df = pd.DataFrame(_cf_precomputed['df'])
+            kpis = _cf_precomputed['kpis']
+            if forecast_df.empty:
+                st.info(
+                    'No bank transactions found. Upload a CSV in the section '
+                    'below to get started.'
                 )
+                _render_upload_section()
+                return
+        else:
+            with st.spinner('Building forecast...'):
+                with get_db() as conn:
+                    from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
 
-                if forecast_df.empty:
-                    st.info(
-                        'No bank transactions found. Upload a CSV in the section '
-                        'below to get started.'
+                    forecast_df = build_cashflow_forecast(
+                        conn,
+                        start_date=date.today() - timedelta(weeks=4),
+                        weeks=horizon_weeks + 4,
+                        scenario=scenario_key,
                     )
-                    _render_upload_section()
-                    return
 
-                kpis = get_cashflow_kpis(conn, forecast_df)
+                    if forecast_df.empty:
+                        st.info(
+                            'No bank transactions found. Upload a CSV in the section '
+                            'below to get started.'
+                        )
+                        _render_upload_section()
+                        return
+
+                    kpis = get_cashflow_kpis(conn, forecast_df)
     except Exception as e:
         log.exception('Cash flow forecast error')
         st.error(

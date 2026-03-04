@@ -13,6 +13,20 @@ from analytics.sku_flavors import get_flavor
 from analytics.retention import get_new_repeat_daily_revenue, get_projected_new_repeat_summary
 from ui.components import render_freshness_badge, smart_date_filter
 from views.pacing import render_pacing
+import json as _json_ov_precompute
+
+
+def _get_precomputed(key):
+    """Load precomputed result from DB, return parsed JSON or None."""
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json_ov_precompute.loads(cached)
+    except Exception:
+        pass
+    return None
 
 
 @st.cache_data(ttl=300)
@@ -302,7 +316,17 @@ def render(ctx):
     with nr_col_left:
         st.subheader('New vs Repeat Revenue')
         st.caption('New vs returning customer revenue (7-day avg) from Shopify orders.')
-        nr_daily = get_new_repeat_daily_revenue(str(ov_start), str(ov_end))
+        # Try precomputed full dataset, filter client-side
+        _nr_daily_cached = _get_precomputed('new_repeat_daily_revenue')
+        if _nr_daily_cached is not None:
+            nr_daily = pd.DataFrame(_nr_daily_cached)
+            if not nr_daily.empty and 'order_date' in nr_daily.columns:
+                nr_daily = nr_daily[
+                    (nr_daily['order_date'] >= str(ov_start)) &
+                    (nr_daily['order_date'] <= str(ov_end))
+                ].reset_index(drop=True)
+        else:
+            nr_daily = get_new_repeat_daily_revenue(str(ov_start), str(ov_end))
         if not nr_daily.empty:
             nr_daily['order_date'] = pd.to_datetime(nr_daily['order_date'])
             nr_daily['new_7d'] = nr_daily['new_revenue'].rolling(7, min_periods=1).mean()

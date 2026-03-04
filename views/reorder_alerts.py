@@ -1,4 +1,5 @@
 """Reorder Alerts page."""
+import json as _json_reorder
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -13,6 +14,19 @@ from db import (
 )
 from ui.components import render_html_table, render_freshness_badge
 from analytics.sku_flavors import get_flavor
+
+
+def _get_precomputed_reorder(key):
+    """Load precomputed result from DB, return parsed JSON or None."""
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json_reorder.loads(cached)
+    except Exception:
+        pass
+    return None
 
 
 def render(ctx, embedded=False):
@@ -45,35 +59,52 @@ def render(ctx, embedded=False):
     safety_wk = bv['safety_buffer_weeks']
     st.caption(f"Lead time: {lt_weeks} wks · MOQ: {moq:,} units · Safety: {safety_wk} wks — change in **Variables** page")
 
-    # --- Get SKU forecast from waterfall ---
+    # --- Try precomputed reorder plan ---
+    _precomputed_rp = _get_precomputed_reorder('reorder_plan')
+
     has_forecast = False
     sku_table = pd.DataFrame()
-    try:
-        import json as _json_ro
-        wf_source_ro = None
-        with get_db() as conn:
-            existing_spend_ro = get_media_spend(conn, source="All Sources")
-        if existing_spend_ro:
-            media_plan_ro = existing_spend_ro
-        else:
-            media_plan_ro = [{"month": (datetime.utcnow() + relativedelta(months=i)).strftime("%Y-%m"),
-                               "spend": 0, "new_customer_roas": 0.7} for i in range(12)]
-        media_json_ro = _json_ro.dumps(media_plan_ro, sort_keys=True)
-        wf_ro = _cached_waterfall(media_json_ro, wf_source_ro, 12, _load_seasonal_json())
 
-        if not wf_ro.empty:
-            sku_table = _cached_sku_forecast(
-                wf_ro.to_json(), wf_source_ro, _load_sku_seasonal_json(), _load_seasonal_json(),
-            )
-            if not sku_table.empty:
-                sku_table = sku_table[sku_table["SKU"].isin(FORECAST_SKUS)].copy()
-                if "Variant" in sku_table.columns:
-                    sku_table = sku_table.drop(columns=["Variant"])
-                if "Flavor" not in sku_table.columns:
-                    sku_table.insert(1, "Flavor", sku_table["SKU"].map(lambda s: get_flavor(s)))
-                has_forecast = True
-    except Exception as e:
-        st.warning(f"Could not load demand forecast: {e}")
+    if _precomputed_rp is not None:
+        reorder_df = pd.DataFrame(_precomputed_rp['df'])
+        reorder_events = _precomputed_rp.get('events', [])
+        # Convert date strings back to date objects for events
+        for ev in reorder_events:
+            for dk in ['reorder_by', 'arrival_date', 'stockout_date']:
+                if dk in ev and isinstance(ev[dk], str):
+                    try:
+                        ev[dk] = datetime.strptime(ev[dk][:10], '%Y-%m-%d').date()
+                    except (ValueError, TypeError):
+                        pass
+        has_forecast = not reorder_df.empty
+    else:
+        # --- Get SKU forecast from waterfall (live computation) ---
+        try:
+            import json as _json_ro
+            wf_source_ro = None
+            with get_db() as conn:
+                existing_spend_ro = get_media_spend(conn, source="All Sources")
+            if existing_spend_ro:
+                media_plan_ro = existing_spend_ro
+            else:
+                media_plan_ro = [{"month": (datetime.utcnow() + relativedelta(months=i)).strftime("%Y-%m"),
+                                   "spend": 0, "new_customer_roas": 0.7} for i in range(12)]
+            media_json_ro = _json_ro.dumps(media_plan_ro, sort_keys=True)
+            wf_ro = _cached_waterfall(media_json_ro, wf_source_ro, 12, _load_seasonal_json())
+
+            if not wf_ro.empty:
+                sku_table = _cached_sku_forecast(
+                    wf_ro.to_json(), wf_source_ro, _load_sku_seasonal_json(), _load_seasonal_json(),
+                )
+                if not sku_table.empty:
+                    sku_table = sku_table[sku_table["SKU"].isin(FORECAST_SKUS)].copy()
+                    if "Variant" in sku_table.columns:
+                        sku_table = sku_table.drop(columns=["Variant"])
+                    if "Flavor" not in sku_table.columns:
+                        sku_table.insert(1, "Flavor", sku_table["SKU"].map(lambda s: get_flavor(s)))
+                    has_forecast = True
+        except Exception as e:
+            st.warning(f"Could not load demand forecast: {e}")
 
     # --- Get combined inventory (3PL + Amazon FBA) ---
     inv_data_3pl = []
@@ -160,16 +191,17 @@ def render(ctx, embedded=False):
     if not has_forecast:
         st.warning("No demand forecast available. Go to **Demand Forecast** to set up your media spend plan first.")
     else:
-        with st.spinner("Building reorder plan..."):
-            reorder_df, reorder_events = build_reorder_plan(
-                sku_forecast_table=sku_table,
-                inventory_data=inv_data,
-                lead_time_weeks=lt_weeks,
-                moq=moq,
-                safety_weeks=safety_wk,
-                forecast_skus=FORECAST_SKUS,
-                planned_inbound=ro_planned_inbound,
-            )
+        if _precomputed_rp is None:
+            with st.spinner("Building reorder plan..."):
+                reorder_df, reorder_events = build_reorder_plan(
+                    sku_forecast_table=sku_table,
+                    inventory_data=inv_data,
+                    lead_time_weeks=lt_weeks,
+                    moq=moq,
+                    safety_weeks=safety_wk,
+                    forecast_skus=FORECAST_SKUS,
+                    planned_inbound=ro_planned_inbound,
+                )
 
         if reorder_df.empty:
             st.warning("No reorder data available for the core forecast SKUs.")

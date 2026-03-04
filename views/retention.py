@@ -1,6 +1,7 @@
 """Retention page — Triple Whale-style cohort analysis table."""
-import json as _json
+import json
 import calendar
+import logging
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -14,7 +15,10 @@ from db import (
     get_setting, set_setting, upsert_seasonal_index,
     get_media_spend,
     get_model_runs,
+    get_precomputed,
 )
+
+log = logging.getLogger(__name__)
 from analytics.retention import (
     get_customer_cohort_data,
     get_cohort_sizes,
@@ -25,6 +29,55 @@ from analytics.retention import (
 from analytics.waterfall import clear_waterfall_cache
 from ui.components import render_freshness_badge, render_model_freshness, smart_date_filter, render_html_table
 from ui.tables import make_cohort_cell_style
+
+
+def _get_precomputed_df(key):
+    """Try to load a precomputed DataFrame from the DB."""
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            data = json.loads(cached) if isinstance(cached, str) else cached
+            return pd.DataFrame(data)
+    except Exception:
+        log.debug('Precomputed cache miss for %s', key)
+    return None
+
+
+def _get_precomputed_json(key):
+    """Try to load a precomputed JSON result from the DB."""
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return json.loads(cached) if isinstance(cached, str) else cached
+    except Exception:
+        log.debug('Precomputed cache miss for %s', key)
+    return None
+
+
+def _load_precomputed_matrices(source_val):
+    """Try to load cohort matrices from precomputed cache.
+
+    Returns the dict matching build_cohort_matrices() output, or None.
+    """
+    key = f'cohort_matrices_{source_val}'
+    raw = _get_precomputed_json(key)
+    if raw is None:
+        return None
+    try:
+        result = {}
+        for k, v in raw.items():
+            if k in ('revenue', 'orders', 'customers'):
+                result[k] = pd.DataFrame(v)
+            elif k in ('cohort_sizes', 'first_order_revenue'):
+                result[k] = pd.Series(v)
+            else:
+                result[k] = v
+        return result
+    except Exception:
+        log.debug('Failed to deserialize cohort_matrices_%s', source_val)
+        return None
 
 
 @st.cache_data(ttl=300)
@@ -178,8 +231,18 @@ def render(ctx):
     sku_val = None if sku_filter == 'All SKUs' else sku_filter
 
     # --- Cohort Analysis Table ---
-    matrices = build_cohort_matrices(sku_filter=sku_val, source_filter=source_val)
-    summary = get_cohort_summary(source_filter=source_val)
+    # Try precomputed cache when no SKU filter is applied
+    matrices = None
+    if sku_val is None:
+        matrices = _load_precomputed_matrices(source_val)
+    if matrices is None:
+        matrices = build_cohort_matrices(sku_filter=sku_val, source_filter=source_val)
+
+    summary = None
+    if sku_val is None:
+        summary = _get_precomputed_df(f'cohort_summary_{source_val}')
+    if summary is None:
+        summary = get_cohort_summary(source_filter=source_val)
 
     if matrices['revenue'].empty:
         st.warning('No retention data available with current filters.')
@@ -257,7 +320,11 @@ def render(ctx):
 
     # --- Retention Curve ---
     st.divider()
-    matrix = get_customer_cohort_data(sku_filter=sku_val, source_filter=source_val)
+    matrix = None
+    if sku_val is None:
+        matrix = _get_precomputed_df(f'customer_cohort_data_{source_val}')
+    if matrix is None:
+        matrix = get_customer_cohort_data(sku_filter=sku_val, source_filter=source_val)
     if not matrix.empty:
         all_cohorts_curve = sorted(matrix.index.tolist())
         filtered_cohorts = [c for c in all_cohorts_curve if start_str <= c <= end_str] if 'start_str' in dir() else all_cohorts_curve
@@ -299,7 +366,9 @@ def render(ctx):
             # Cohort sizes
             st.subheader('Cohort Sizes')
             st.caption('New customer acquisitions per month from Shopify orders.')
-            sizes = get_cohort_sizes(source_filter=source_val)
+            sizes = _get_precomputed_df(f'cohort_sizes_{source_val}')
+            if sizes is None:
+                sizes = get_cohort_sizes(source_filter=source_val)
             if not sizes.empty:
                 sizes = sizes[sizes['cohort'].between(start_str, end_str)] if 'start_str' in dir() else sizes
             if not sizes.empty:
@@ -317,7 +386,9 @@ def render(ctx):
         st.subheader('Repeat Purchase Summary')
         st.caption('Repeat rate by cohort — customers with 2+ distinct Amazon orders (keyed by hashed buyer email).')
 
-        _rr = get_repeat_rate_summary(source_filter='amazon')
+        _rr = _get_precomputed_df('repeat_rate_summary_amazon')
+        if _rr is None:
+            _rr = get_repeat_rate_summary(source_filter='amazon')
         if not _rr.empty:
             _rr_filtered = _rr.copy()
             if 'start_str' in dir() and 'end_str' in dir():
@@ -414,7 +485,7 @@ def render(ctx):
                 _media_plan_raw = get_media_spend(conn, source='All Sources')
                 _seasonal_json = _load_seasonal_json() if _load_seasonal_json else None
 
-            _media_plan_json = _json.dumps(_media_plan_raw, sort_keys=True)
+            _media_plan_json = json.dumps(_media_plan_raw, sort_keys=True)
             _wf = _cached_waterfall(_media_plan_json, 'shopify', 12, _seasonal_json)
             _metrics = _cached_aov(None)
 

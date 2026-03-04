@@ -21,6 +21,19 @@ from analytics.dtc_demand import (
 from ui.components import render_html_table, render_freshness_badge, render_model_freshness
 
 
+def _get_precomputed(key):
+    """Load precomputed result from DB, return parsed JSON or None."""
+    try:
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=300)
 def _load_sku_list():
     with get_db() as conn:
@@ -199,23 +212,35 @@ def render(ctx, embedded=False):
     media_plan = edited_spend.to_dict('records')
     media_plan_json = _json.dumps(media_plan, sort_keys=True)
     with st.spinner('Computing demand forecast...'):
-        _seasonal_json = _load_seasonal_json()
-        _sku_seasonal_json = _load_sku_seasonal_json()
-        waterfall_df = _cached_waterfall(media_plan_json, 'shopify', horizon, _seasonal_json)
-        shopify_sku_table = _cached_sku_forecast(
-            waterfall_df.to_json(), 'shopify', _sku_seasonal_json, _seasonal_json,
-        ) if not waterfall_df.empty else pd.DataFrame()
+        # Try precomputed master forecast first
+        _precomputed_dtc = _get_precomputed('master_dtc_forecast')
+        if _precomputed_dtc is not None:
+            dtc = {}
+            for k, v in _precomputed_dtc.items():
+                if k in ('summary', 'new_customer_table', 'repeat_customer_table', 'amazon_table', 'rollup_table'):
+                    dtc[k] = pd.DataFrame(v)
+                elif k == 'revenue':
+                    dtc[k] = v
+                else:
+                    dtc[k] = v
+        else:
+            # Live computation fallback
+            _seasonal_json = _load_seasonal_json()
+            _sku_seasonal_json = _load_sku_seasonal_json()
+            waterfall_df = _cached_waterfall(media_plan_json, 'shopify', horizon, _seasonal_json)
+            shopify_sku_table = _cached_sku_forecast(
+                waterfall_df.to_json(), 'shopify', _sku_seasonal_json, _seasonal_json,
+            ) if not waterfall_df.empty else pd.DataFrame()
 
-        # Master DTC forecast
-        dtc = build_master_dtc_forecast(
-            shopify_waterfall_df=waterfall_df,
-            shopify_sku_forecast_df=shopify_sku_table,
-            amazon_growth_rate=amz_growth / 100.0,
-            horizon_months=horizon,
-            forecast_skus=FORECAST_SKUS,
-            media_plan=media_plan,
-            amazon_revenue_forecast=amz_rev_forecast_dict if amz_rev_forecast_dict else None,
-        )
+            dtc = build_master_dtc_forecast(
+                shopify_waterfall_df=waterfall_df,
+                shopify_sku_forecast_df=shopify_sku_table,
+                amazon_growth_rate=amz_growth / 100.0,
+                horizon_months=horizon,
+                forecast_skus=FORECAST_SKUS,
+                media_plan=media_plan,
+                amazon_revenue_forecast=amz_rev_forecast_dict if amz_rev_forecast_dict else None,
+            )
 
     summary_df = dtc['summary']
     new_customer_table = dtc['new_customer_table']
@@ -413,7 +438,8 @@ def render(ctx, embedded=False):
         if not amazon_table.empty:
             # Amazon metrics (above table)
             amz_total = amazon_table['Total'].sum()
-            velocity = get_amazon_sku_velocity()
+            _cached_velocity = _get_precomputed('amazon_sku_velocity')
+            velocity = _cached_velocity if _cached_velocity else get_amazon_sku_velocity()
             total_daily = sum(v['avg_daily'] for v in velocity.values()) if velocity else 0
             rev_metrics = revenue.get('metrics', {})
             amz_rpu = rev_metrics.get('amazon_rev_per_unit', 0)

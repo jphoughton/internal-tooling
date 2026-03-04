@@ -53,30 +53,53 @@ def render_pacing(ctx):
     _mkt_summary = None
     _mkt_amz_media = []
     _wf = None
+    _mkt_media = []
+
+    # Try precomputed master forecast first
     try:
-        _seasonal_json = _load_seasonal_json()
+        from db import get_precomputed
+        import json as _json_pac_pre
+        with get_db() as _pc_conn:
+            _fc_cached = get_precomputed(_pc_conn, 'master_dtc_forecast', max_age_hours=25)
+        if _fc_cached:
+            _precomputed_fc = _json_pac_pre.loads(_fc_cached)
+            if 'summary' in _precomputed_fc:
+                _mkt_summary = pd.DataFrame(_precomputed_fc['summary'])
+    except Exception:
+        pass
+
+    # Always load media spend (needed for spend goals and waterfall NC count)
+    try:
         with get_db() as _goals_conn:
             _mkt_media = get_media_spend(_goals_conn, source="All Sources")
             _mkt_amz_media = get_media_spend(_goals_conn, source="Amazon")
-            _amz_rev_f = get_amazon_revenue_forecast(_goals_conn)
-        import json as _json_pac
-        _wf = _cached_waterfall(_json_pac.dumps(_mkt_media, sort_keys=True), 'shopify', 12, _seasonal_json)
-        if _wf is not None and not _wf.empty:
-            _sku_table = _cached_sku_forecast(
-                _wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json,
-            )
-            _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
-            _dtc_fc = build_master_dtc_forecast(
-                shopify_waterfall_df=_wf,
-                shopify_sku_forecast_df=_sku_table,
-                horizon_months=12,
-                forecast_skus=FORECAST_SKUS,
-                media_plan=_mkt_media,
-                amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
-            )
-            _mkt_summary = _dtc_fc["summary"]
     except Exception:
         pass
+
+    # If precomputed miss, fall back to live computation
+    if _mkt_summary is None:
+        try:
+            _seasonal_json = _load_seasonal_json()
+            with get_db() as _goals_conn2:
+                _amz_rev_f = get_amazon_revenue_forecast(_goals_conn2)
+            import json as _json_pac
+            _wf = _cached_waterfall(_json_pac.dumps(_mkt_media, sort_keys=True), 'shopify', 12, _seasonal_json)
+            if _wf is not None and not _wf.empty:
+                _sku_table = _cached_sku_forecast(
+                    _wf.to_json(), None, _load_sku_seasonal_json(), _seasonal_json,
+                )
+                _amz_rev_dict = {r["month"]: r["revenue"] for r in _amz_rev_f if r.get("revenue", 0) > 0}
+                _dtc_fc = build_master_dtc_forecast(
+                    shopify_waterfall_df=_wf,
+                    shopify_sku_forecast_df=_sku_table,
+                    horizon_months=12,
+                    forecast_skus=FORECAST_SKUS,
+                    media_plan=_mkt_media,
+                    amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
+                )
+                _mkt_summary = _dtc_fc["summary"]
+        except Exception:
+            pass
 
     # Pre-compute current-month pacing vars (data through yesterday only)
     _today = business_today()
