@@ -187,7 +187,7 @@ def render(ctx):
         except Exception:
             _fulfill_pct = 0.18
 
-        # Get both retention curves
+        # Get both retention curves (revenue-based — captures repurchase rate + order value changes)
         _dtc_ret = None
         _amz_ret = None
         try:
@@ -260,6 +260,11 @@ def render(ctx):
                 st.caption(f'Total media to recover: **${_total_spend:,.0f}** | '
                            f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfill) | '
                            f'Retention: **{_ret_label}**')
+                st.caption('*Revenue retention rate = incremental revenue in month N \u00f7 first-order revenue '
+                           '(captures both repurchase probability and order value changes). '
+                           '60/30/10 recency weighting across cohorts from 2020+. '
+                           'Differs from Retention pages which show customer repurchase % only. '
+                           'Payback = month when cumulative contribution margin covers total media spend.*')
 
                 # Build month-by-month columns — TOTAL NC revenue (all customers)
                 _use_curve = _blended_ret or _dtc_ret
@@ -293,11 +298,11 @@ def render(ctx):
 
                     _row_data = {}
                     if _has_amz_ret:
-                        _row_data['DTC Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
-                        _row_data['Amazon Retention'] = '\u2014' if _m == 0 else f'{_amz_r:.1%}'
-                        _row_data['Blended Retention'] = '\u2014' if _m == 0 else f'{_blend_r:.1%}'
+                        _row_data['DTC Rev. Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
+                        _row_data['Amazon Rev. Retention'] = '\u2014' if _m == 0 else f'{_amz_r:.1%}'
+                        _row_data['Blended Rev. Retention'] = '\u2014' if _m == 0 else f'{_blend_r:.1%}'
                     else:
-                        _row_data['DTC Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
+                        _row_data['DTC Rev. Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
                     _row_data['NC Revenue'] = f'${_rev_total:,.0f}'
                     _row_data[f'COGS ({_cogs_pct:.0%})'] = f'(${_cogs_total:,.0f})'
                     _row_data[f'Fulfillment ({_fulfill_pct:.0%})'] = f'(${_ful_total:,.0f})'
@@ -324,6 +329,9 @@ def render(ctx):
     # ================================================================
     if pacing_data and pacing_data['has_goals']:
         with st.expander('Pacing Detail', expanded=False):
+            st.caption('*MTD actuals vs pro-rated monthly goals (goal \u00d7 days elapsed / days in month). '
+                       'Revenue from daily_sku_sales, spend from Google Sheets + Amazon daily rollup, '
+                       'goals from forecast model.*')
             render_pacing_detail_table(pacing_data)
 
     # ================================================================
@@ -334,6 +342,8 @@ def render(ctx):
     _amz_daily = _load_amazon_daily()
 
     with st.expander('Performance Trends', expanded=True):
+        st.caption('*DoD: 3-day avg vs same 3 days prior week. WoW: current week vs prior week. '
+                   'Green = improving, red = declining. NC Rev % and Contribution % greyed for DoD (too volatile daily).*')
         _dod_tab, _wow_tab = st.tabs(['Day over Day', 'Week over Week'])
 
         with _dod_tab:

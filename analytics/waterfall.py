@@ -13,7 +13,7 @@ import pandas as pd
 import time
 from datetime import datetime
 from db import get_db
-from analytics.retention import get_revenue_retention_data
+from analytics.retention import get_revenue_retention_data, get_customer_cohort_data
 from utils.date_helpers import month_str as _month_str, parse_month as _parse_month, add_months as _add_months, month_diff as _month_diff
 
 # Simple TTL cache for expensive computations (survives within a Streamlit rerun cycle).
@@ -130,6 +130,66 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
             curve[offset] = float(values.mean())
 
     # Extrapolate beyond observed data
+    curve = _extrapolate_curve(curve)
+    return curve
+
+
+def get_customer_retention_curve(source_filter=None, min_cohorts=3, recency_weighted=True):
+    """Build a customer repurchase retention curve with recency weighting.
+
+    Uses the same customer cohort data as the DTC/Amazon Retention pages
+    (get_customer_cohort_data) but applies 60/30/10 recency weighting and
+    decay extrapolation — so rates match the Retention page charts exactly
+    when recency_weighted=False, and are close but recency-biased when True.
+
+    Returns dict {month_offset: repurchase_rate} where repurchase_rate is
+    the fraction of cohort customers who made a purchase in that month.
+    """
+    _sf = source_filter or 'shopify'
+    _cache_key = f"cust_retention_{_sf}_rw{recency_weighted}"
+    matrix = _get_cached(
+        _cache_key,
+        lambda: get_customer_cohort_data(source_filter=_sf)
+    )
+    if matrix is None or matrix.empty:
+        return {}
+
+    # Convert Period index to string for consistent comparison
+    str_index = [str(c) for c in matrix.index]
+    matrix.index = str_index
+
+    # Only include cohorts from 2020-01 onwards
+    all_cohorts = sorted(matrix.index.tolist())
+    cohorts = [c for c in all_cohorts if c >= COHORT_START]
+    if len(cohorts) < min_cohorts:
+        cohorts = all_cohorts
+    matrix = matrix.loc[cohorts]
+
+    sorted_cohorts = sorted(matrix.index.tolist())
+    n = len(sorted_cohorts)
+    weights = _compute_recency_weights(sorted_cohorts, recency_weighted)
+
+    curve = {}
+    for col in matrix.columns:
+        offset = int(col)
+        if offset == 0:
+            continue  # skip M0 (always 100%)
+        values = matrix[col].dropna()
+        if len(values) < min_cohorts:
+            continue
+
+        if recency_weighted and n >= 6:
+            w_sum = 0.0
+            val_sum = 0.0
+            for cohort in values.index:
+                w = weights.get(cohort, 0)
+                val_sum += values[cohort] * w
+                w_sum += w
+            if w_sum > 0:
+                curve[offset] = val_sum / w_sum
+        else:
+            curve[offset] = float(values.mean())
+
     curve = _extrapolate_curve(curve)
     return curve
 

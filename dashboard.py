@@ -20,6 +20,7 @@ from analytics.waterfall import (
     get_active_sources,
     get_configured_sources,
     get_average_retention_curve,
+    get_customer_retention_curve,
     get_aov_and_units,
     build_waterfall,
     build_sku_forecast_table,
@@ -40,6 +41,10 @@ _CACHE_VERSION = 'v2'  # bump to force cache invalidation on deploy
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_retention_curve(source_filter):
     return get_average_retention_curve(source_filter)
+
+@st.cache_data(ttl=_CACHE_TTL)
+def _cached_customer_retention_curve(source_filter):
+    return get_customer_retention_curve(source_filter)
 
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_aov_and_units(source_filter):
@@ -773,6 +778,7 @@ _ctx = {
     'cached_waterfall': _cached_waterfall,
     'cached_sku_forecast': _cached_sku_forecast,
     'cached_retention_curve': _cached_retention_curve,
+    'cached_customer_retention_curve': _cached_customer_retention_curve,
     'cached_aov_and_units': _cached_aov_and_units,
     'load_seasonal_json': _load_seasonal_json,
     'load_sku_seasonal_json': _load_sku_seasonal_json,
