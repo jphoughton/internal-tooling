@@ -178,7 +178,7 @@ def render(ctx):
                    delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
                    delta_color='off')
 
-        # CAC Payback — contribution-margin model with COGS, fulfillment, retention
+        # CAC Payback — blended DTC + Amazon contribution-margin model
         biz = ctx.get('biz_vars', {})
         _cogs_pct = float(biz.get('cogs_pct', 25)) / 100
         try:
@@ -187,79 +187,124 @@ def render(ctx):
         except Exception:
             _fulfill_pct = 0.18
 
-        _ret_curve = None
+        # Get both retention curves
+        _dtc_ret = None
+        _amz_ret = None
         try:
-            _ret_curve = ctx['cached_retention_curve']('shopify')
+            _dtc_ret = ctx['cached_retention_curve']('shopify')
         except Exception:
             pass
+        try:
+            _amz_ret = ctx['cached_retention_curve']('amazon')
+        except Exception:
+            pass
+
+        # Blended retention curve weighted by NC count
+        _dtc_nc = max(d.get('cm_nc', 0), 0)
+        _amz_nc = max(d.get('cm_amz_nc', 0), 0)
+        _total_nc = _dtc_nc + _amz_nc
+        _dtc_w = _dtc_nc / _total_nc if _total_nc > 0 else 1.0
+        _amz_w = _amz_nc / _total_nc if _total_nc > 0 else 0.0
+
+        _blended_ret = {}
+        if _dtc_ret or _amz_ret:
+            _all_months = set()
+            if _dtc_ret:
+                _all_months.update(_dtc_ret.keys())
+            if _amz_ret:
+                _all_months.update(_amz_ret.keys())
+            for _mk in _all_months:
+                _dr = (_dtc_ret or {}).get(_mk, 0)
+                _ar = (_amz_ret or {}).get(_mk, 0)
+                _blended_ret[_mk] = _dr * _dtc_w + _ar * _amz_w
 
         _cac_payback = compute_cac_payback(
             d['cm_total_spend'], d['cm_total_nc'], d['cm_total_nc_rev'],
             cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
-            retention_curve=_ret_curve,
+            retention_curve=_blended_ret or _dtc_ret,
         )
         _goal_cac_payback = None
         if d.get('goal_nc_count', 0) > 0 and d.get('goal_total_spend', 0) > 0:
             _goal_cac_payback = compute_cac_payback(
                 d['goal_total_spend'], d['goal_nc_count'], d['goal_nc_rev'],
                 cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
-                retention_curve=_ret_curve,
+                retention_curve=_blended_ret or _dtc_ret,
             )
         h3.metric('CAC Payback',
                    f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
                    delta=f"Target: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
                    delta_color='off',
-                   help='Months until contribution margin (rev \u2212 COGS \u2212 fulfillment) covers CAC, including repeat revenue')
+                   help='Months until blended contribution margin covers CAC')
 
         # CAC Payback math breakdown
         if d['cm_total_nc'] > 0 and d['cm_total_spend'] > 0:
             _pb_cac = d['cm_total_spend'] / d['cm_total_nc']
             _pb_aov = d['cm_total_nc_rev'] / d['cm_total_nc']
             _pb_margin = 1 - _cogs_pct - _fulfill_pct
+            _has_amz_ret = bool(_amz_ret and any(v > 0 for v in _amz_ret.values()))
+
             with st.expander('CAC Payback Breakdown', expanded=False):
+                _nc_count = d['cm_total_nc']
+                _total_spend = d['cm_total_spend']
+                _total_nc_rev = d['cm_total_nc_rev']
+
                 # Show input variables with sources
-                v1, v2, v3, v4 = st.columns(4)
-                v1.metric('AOV (NC Rev / NC Count)', f'${_pb_aov:,.0f}')
-                v2.metric('CPA (Spend / NC Count)', f'${_pb_cac:,.0f}')
-                v3.metric('COGS % (Settings)', f'{_cogs_pct:.0%}')
-                v4.metric('Fulfillment % (Cash Flow)', f'{_fulfill_pct:.0%}')
+                v1, v2, v3, v4, v5 = st.columns(5)
+                v1.metric('New Customers', f'{_nc_count:,}')
+                v2.metric('NC Revenue (M0)', f'${_total_nc_rev:,.0f}')
+                v3.metric('Total Media Spend', f'${_total_spend:,.0f}')
+                v4.metric('COGS % (Settings)', f'{_cogs_pct:.0%}')
+                v5.metric('Fulfillment % (Cash Flow)', f'{_fulfill_pct:.0%}')
 
-                st.caption(f'CPA to recover: **${_pb_cac:,.2f}** per customer | '
+                _ret_label = f'Blended (DTC {_dtc_w:.0%} + Amazon {_amz_w:.0%} by NC count)' if _has_amz_ret else 'DTC only'
+                st.caption(f'Total media to recover: **${_total_spend:,.0f}** | '
                            f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfill) | '
-                           f'Retention: **DTC only** (Amazon has no customer data)')
+                           f'Retention: **{_ret_label}**')
 
-                # Build month-by-month columns (transposed: months across top, calcs down)
+                # Build month-by-month columns — TOTAL NC revenue (all customers)
+                _use_curve = _blended_ret or _dtc_ret
                 _max_show = 12
                 _payback_found = False
-                _month_data = {}  # keyed by column label
+                _month_data = {}
                 _cumul = 0
 
                 for _m in range(0, _max_show + 1):
+                    _col = f'M{_m}'
                     if _m == 0:
-                        _rev = _pb_aov
-                        _ret_val = 1.0
-                        _col = 'M0'
+                        _rev_total = _total_nc_rev
+                        _dtc_r = 1.0
+                        _amz_r = 1.0
+                        _blend_r = 1.0
                     else:
-                        _ret_val = _ret_curve.get(_m, 0) if _ret_curve else 0
-                        _rev = _pb_aov * _ret_val
-                        _col = f'M{_m}'
+                        _dtc_r = (_dtc_ret or {}).get(_m, 0)
+                        _amz_r = (_amz_ret or {}).get(_m, 0)
+                        _blend_r = (_use_curve or {}).get(_m, 0)
+                        _rev_total = _total_nc_rev * _blend_r
 
-                    _cogs_amt = _rev * _cogs_pct
-                    _ful_amt = _rev * _fulfill_pct
-                    _contrib = _rev * _pb_margin
-                    _cpa_hit = _pb_cac if _m == 0 else 0
-                    _net = _contrib - _cpa_hit
-                    _cumul += _net
+                    _cogs_total = _rev_total * _cogs_pct
+                    _ful_total = _rev_total * _fulfill_pct
+                    _contrib_total = _rev_total * _pb_margin
+                    _media_hit = _total_spend if _m == 0 else 0
+                    _net_total = _contrib_total - _media_hit
+                    _cumul += _net_total
 
-                    _month_data[_col] = {
-                        'DTC Retention': '\u2014' if _m == 0 else f'{_ret_val:.1%}',
-                        'Revenue': f'${_rev:,.2f}',
-                        f'COGS ({_cogs_pct:.0%})': f'(${_cogs_amt:,.2f})',
-                        f'Fulfillment ({_fulfill_pct:.0%})': f'(${_ful_amt:,.2f})',
-                        'CPA': f'(${_cpa_hit:,.2f})' if _m == 0 else '\u2014',
-                        'Net': f'${_net:,.2f}' if _net >= 0 else f'(${abs(_net):,.2f})',
-                        'Cumulative': f'${_cumul:,.2f}' if _cumul >= 0 else f'(${abs(_cumul):,.2f})',
-                    }
+                    def _fmt(v):
+                        return f'${v:,.0f}' if v >= 0 else f'(${abs(v):,.0f})'
+
+                    _row_data = {}
+                    if _has_amz_ret:
+                        _row_data['DTC Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
+                        _row_data['Amazon Retention'] = '\u2014' if _m == 0 else f'{_amz_r:.1%}'
+                        _row_data['Blended Retention'] = '\u2014' if _m == 0 else f'{_blend_r:.1%}'
+                    else:
+                        _row_data['DTC Retention'] = '\u2014' if _m == 0 else f'{_dtc_r:.1%}'
+                    _row_data['NC Revenue'] = f'${_rev_total:,.0f}'
+                    _row_data[f'COGS ({_cogs_pct:.0%})'] = f'(${_cogs_total:,.0f})'
+                    _row_data[f'Fulfillment ({_fulfill_pct:.0%})'] = f'(${_ful_total:,.0f})'
+                    _row_data['Media Spend'] = f'(${_media_hit:,.0f})' if _m == 0 else '\u2014'
+                    _row_data['Net'] = _fmt(_net_total)
+                    _row_data['Cumulative'] = _fmt(_cumul)
+                    _month_data[_col] = _row_data
 
                     if _cumul >= 0 and _m > 0 and not _payback_found:
                         _payback_found = True
