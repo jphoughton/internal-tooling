@@ -217,51 +217,62 @@ def render(ctx):
             _pb_aov = d['cm_total_nc_rev'] / d['cm_total_nc']
             _pb_margin = 1 - _cogs_pct - _fulfill_pct
             with st.expander('CAC Payback Breakdown', expanded=False):
-                # Show input variables
+                # Show input variables with sources
                 v1, v2, v3, v4 = st.columns(4)
-                v1.metric('AOV', f'${_pb_aov:,.0f}')
-                v2.metric('CPA', f'${_pb_cac:,.0f}')
-                v3.metric('COGS %', f'{_cogs_pct:.0%}')
-                v4.metric('Fulfillment %', f'{_fulfill_pct:.0%}')
+                v1.metric('AOV (NC Rev / NC Count)', f'${_pb_aov:,.0f}')
+                v2.metric('CPA (Spend / NC Count)', f'${_pb_cac:,.0f}')
+                v3.metric('COGS % (Settings)', f'{_cogs_pct:.0%}')
+                v4.metric('Fulfillment % (Cash Flow)', f'{_fulfill_pct:.0%}')
 
-                # Build month-by-month table
-                _pb_rows = []
-                _cumul = 0
+                st.caption(f'CPA to recover: **${_pb_cac:,.2f}** per customer | '
+                           f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfill) | '
+                           f'Retention: **DTC only** (Amazon has no customer data)')
+
+                # Build month-by-month columns (transposed: months across top, calcs down)
                 _max_show = 12
                 _payback_found = False
+                _month_data = {}  # keyed by column label
+                _cumul = 0
+
                 for _m in range(0, _max_show + 1):
                     if _m == 0:
                         _rev = _pb_aov
                         _ret_val = 1.0
-                        _label = 'M0 (First Purchase)'
+                        _col = 'M0'
                     else:
                         _ret_val = _ret_curve.get(_m, 0) if _ret_curve else 0
                         _rev = _pb_aov * _ret_val
-                        _label = f'M{_m}'
+                        _col = f'M{_m}'
 
                     _cogs_amt = _rev * _cogs_pct
                     _ful_amt = _rev * _fulfill_pct
                     _contrib = _rev * _pb_margin
-                    _cumul += _contrib
+                    _cpa_hit = _pb_cac if _m == 0 else 0
+                    _net = _contrib - _cpa_hit
+                    _cumul += _net
 
-                    _row = {
-                        'Month': _label,
-                        'Retention': f'{_ret_val:.1%}' if _m > 0 else '\u2014',
+                    _month_data[_col] = {
+                        'DTC Retention': '\u2014' if _m == 0 else f'{_ret_val:.1%}',
                         'Revenue': f'${_rev:,.2f}',
-                        'COGS': f'${_cogs_amt:,.2f}',
-                        'Fulfillment': f'${_ful_amt:,.2f}',
-                        'Contribution': f'${_contrib:,.2f}',
-                        'Cumulative CM': f'${_cumul:,.2f}',
+                        f'COGS ({_cogs_pct:.0%})': f'(${_cogs_amt:,.2f})',
+                        f'Fulfillment ({_fulfill_pct:.0%})': f'(${_ful_amt:,.2f})',
+                        'CPA': f'(${_cpa_hit:,.2f})' if _m == 0 else '\u2014',
+                        'Net': f'${_net:,.2f}' if _net >= 0 else f'(${abs(_net):,.2f})',
+                        'Cumulative': f'${_cumul:,.2f}' if _cumul >= 0 else f'(${abs(_cumul):,.2f})',
                     }
-                    _pb_rows.append(_row)
-                    if _cumul >= _pb_cac and not _payback_found:
+
+                    if _cumul >= 0 and _m > 0 and not _payback_found:
                         _payback_found = True
                         if _m < _max_show:
-                            _max_show = _m + 1  # show one row past payback
+                            _max_show = _m + 1
 
-                _pb_df = pd.DataFrame(_pb_rows[:_max_show + 1])
-                st.caption(f'CPA to recover: **${_pb_cac:,.2f}** | Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfillment)')
-                render_html_table(_pb_df)
+                # Build transposed DataFrame: rows = metric names, columns = M0..MN
+                _cols_to_show = [f'M{i}' for i in range(_max_show + 1) if f'M{i}' in _month_data]
+                _metric_names = list(next(iter(_month_data.values())).keys())
+                _transposed = {' ': _metric_names}
+                for _col in _cols_to_show:
+                    _transposed[_col] = [_month_data[_col][k] for k in _metric_names]
+                render_html_table(pd.DataFrame(_transposed))
 
     # ================================================================
     # Section 3: Pacing Detail (expander)
