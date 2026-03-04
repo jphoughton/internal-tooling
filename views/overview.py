@@ -211,6 +211,58 @@ def render(ctx):
                    delta_color='off',
                    help='Months until contribution margin (rev \u2212 COGS \u2212 fulfillment) covers CAC, including repeat revenue')
 
+        # CAC Payback math breakdown
+        if d['cm_total_nc'] > 0 and d['cm_total_spend'] > 0:
+            _pb_cac = d['cm_total_spend'] / d['cm_total_nc']
+            _pb_aov = d['cm_total_nc_rev'] / d['cm_total_nc']
+            _pb_margin = 1 - _cogs_pct - _fulfill_pct
+            with st.expander('CAC Payback Breakdown', expanded=False):
+                # Show input variables
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric('AOV', f'${_pb_aov:,.0f}')
+                v2.metric('CPA', f'${_pb_cac:,.0f}')
+                v3.metric('COGS %', f'{_cogs_pct:.0%}')
+                v4.metric('Fulfillment %', f'{_fulfill_pct:.0%}')
+
+                # Build month-by-month table
+                _pb_rows = []
+                _cumul = 0
+                _max_show = 12
+                _payback_found = False
+                for _m in range(0, _max_show + 1):
+                    if _m == 0:
+                        _rev = _pb_aov
+                        _ret_val = 1.0
+                        _label = 'M0 (First Purchase)'
+                    else:
+                        _ret_val = _ret_curve.get(_m, 0) if _ret_curve else 0
+                        _rev = _pb_aov * _ret_val
+                        _label = f'M{_m}'
+
+                    _cogs_amt = _rev * _cogs_pct
+                    _ful_amt = _rev * _fulfill_pct
+                    _contrib = _rev * _pb_margin
+                    _cumul += _contrib
+
+                    _row = {
+                        'Month': _label,
+                        'Retention': f'{_ret_val:.1%}' if _m > 0 else '\u2014',
+                        'Revenue': f'${_rev:,.2f}',
+                        'COGS': f'${_cogs_amt:,.2f}',
+                        'Fulfillment': f'${_ful_amt:,.2f}',
+                        'Contribution': f'${_contrib:,.2f}',
+                        'Cumulative CM': f'${_cumul:,.2f}',
+                    }
+                    _pb_rows.append(_row)
+                    if _cumul >= _pb_cac and not _payback_found:
+                        _payback_found = True
+                        if _m < _max_show:
+                            _max_show = _m + 1  # show one row past payback
+
+                _pb_df = pd.DataFrame(_pb_rows[:_max_show + 1])
+                st.caption(f'CPA to recover: **${_pb_cac:,.2f}** | Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfillment)')
+                render_html_table(_pb_df)
+
     # ================================================================
     # Section 3: Pacing Detail (expander)
     # ================================================================
