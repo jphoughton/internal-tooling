@@ -9,8 +9,8 @@ from db import (
 )
 from analytics.dtc_demand import build_master_dtc_forecast
 from analytics.metrics import (
-    get_channel_revenue, get_amazon_spend, get_nc_stats,
-    nc_revenue_fraction,
+    get_channel_revenue, get_amazon_spend, get_amazon_spend_projected, get_nc_stats,
+    nc_revenue_fraction, project_daily_spend_gaps,
     compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
 )
 from analytics.retention import get_projected_new_repeat_summary
@@ -281,7 +281,7 @@ def render(ctx):
             try:
                 with get_db() as _amz_conn:
                     _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-                    _cm_amz_spend = get_amazon_spend(_amz_conn, f"{_cur_month}-01", _yesterday_str)
+                    _cm_amz_spend, _, _ = get_amazon_spend_projected(_amz_conn, f"{_cur_month}-01", _yesterday_str)
                     _nc = get_nc_stats(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
                     _cm_amz_nc = _nc['new_customers']
                     _cm_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _cm_amz_rev)
@@ -335,7 +335,8 @@ def render(ctx):
                 _l7d_start_str = str(_l7d_start)
                 with get_db() as _l7_conn:
                     _l7d_amz_rev = get_channel_revenue(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str) / 7
-                    _l7d_amz_spend = get_amazon_spend(_l7_conn, _l7d_start_str, _yesterday_str) / 7
+                    _l7d_amz_spend_total, _, _ = get_amazon_spend_projected(_l7_conn, _l7d_start_str, _yesterday_str)
+                    _l7d_amz_spend = _l7d_amz_spend_total / 7
                     _nc = get_nc_stats(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str)
                     _l7d_amz_nc = _nc['new_customers'] / 7
                     _l7d_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _l7d_amz_rev * 7) / 7
@@ -358,7 +359,7 @@ def render(ctx):
             try:
                 with get_db() as _yd_conn:
                     _yd_amz_rev = get_channel_revenue(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-                    _yd_amz_spend = get_amazon_spend(_yd_conn, _yesterday_str, _yesterday_str)
+                    _yd_amz_spend, _, _ = get_amazon_spend_projected(_yd_conn, _yesterday_str, _yesterday_str)
                     _nc = get_nc_stats(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
                     _yd_amz_nc = _nc['new_customers']
                     _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
@@ -694,7 +695,10 @@ def render(ctx):
                 if not _amz_rev_daily.empty:
                     _amz_daily = _amz_rev_daily
                     if not _amz_spend_daily.empty:
-                        _amz_daily = _amz_daily.merge(_amz_spend_daily, on="sale_date", how="left")
+                        _amz_spend_daily = project_daily_spend_gaps(
+                            _amz_spend_daily, date_col='sale_date', spend_col='_amz_spend')
+                        _amz_daily = _amz_daily.merge(
+                            _amz_spend_daily[['sale_date', '_amz_spend']], on="sale_date", how="left")
                     if "_amz_spend" not in _amz_daily.columns:
                         _amz_daily["_amz_spend"] = 0
                     _amz_daily["_amz_spend"] = _amz_daily["_amz_spend"].fillna(0)

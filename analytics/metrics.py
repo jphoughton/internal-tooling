@@ -131,6 +131,115 @@ def get_amazon_spend(conn, start_date, end_date):
     return 0
 
 
+def get_amazon_spend_projected(conn, start_date, end_date):
+    """SUM(spend) from amazon_daily_rollup with L7D projection for gap days.
+
+    If the Google Sheet lags behind (max date with data < yesterday),
+    projects missing days using the average daily spend from the last 7
+    days with actual data.
+
+    Returns:
+        (total_spend, projected_spend, gap_days) tuple where:
+        - total_spend = actual + projected
+        - projected_spend = the projected portion only
+        - gap_days = number of days projected
+    """
+    from utils.date_helpers import business_yesterday
+
+    actual = get_amazon_spend(conn, start_date, end_date)
+    yesterday = business_yesterday()
+    yesterday_str = str(yesterday)
+
+    # If end_date is in the future or beyond yesterday, cap at yesterday
+    if str(end_date) > yesterday_str:
+        end_date = yesterday_str
+
+    # Find the max date with spend data in the range
+    row = conn.execute(
+        "SELECT MAX(date) AS max_date FROM amazon_daily_rollup "
+        "WHERE date >= ? AND date <= ? AND spend IS NOT NULL AND spend > 0",
+        (start_date, end_date),
+    ).fetchone()
+
+    max_date_str = row['max_date'] if row and row['max_date'] else None
+    if not max_date_str or str(max_date_str) >= yesterday_str:
+        return (actual, 0, 0)
+
+    # Calculate gap days
+    from datetime import datetime
+    max_date = datetime.strptime(str(max_date_str)[:10], '%Y-%m-%d').date()
+    gap_days = (yesterday - max_date).days
+
+    if gap_days <= 0:
+        return (actual, 0, 0)
+
+    # Get L7D average daily spend from last 7 days with data
+    l7d_row = conn.execute(
+        "SELECT AVG(spend) AS avg_spend FROM ("
+        "  SELECT spend FROM amazon_daily_rollup "
+        "  WHERE spend IS NOT NULL AND spend > 0 "
+        "  ORDER BY date DESC LIMIT 7"
+        ")",
+    ).fetchone()
+
+    l7d_avg = float(l7d_row['avg_spend']) if l7d_row and l7d_row['avg_spend'] else 0
+    projected = gap_days * l7d_avg
+
+    return (actual + projected, projected, gap_days)
+
+
+def project_daily_spend_gaps(spend_df, date_col='sale_date', spend_col='_amz_spend'):
+    """Fill in missing recent days in a daily spend DataFrame using L7D average.
+
+    Mutates nothing — returns a new DataFrame with projected rows appended.
+    Projected rows have '_projected' = True.
+
+    Args:
+        spend_df: DataFrame with date and spend columns.
+        date_col: Name of the date column (string dates).
+        spend_col: Name of the spend column.
+
+    Returns:
+        DataFrame with gap rows appended (if any).
+    """
+    import pandas as pd
+    from utils.date_helpers import business_yesterday
+    from datetime import timedelta
+
+    if spend_df.empty or spend_col not in spend_df.columns:
+        return spend_df
+
+    df = spend_df.copy()
+    df['_projected'] = False
+
+    # Find max date with actual spend
+    _has_spend = df[df[spend_col].fillna(0) > 0]
+    if _has_spend.empty:
+        return df
+
+    max_date = pd.to_datetime(_has_spend[date_col]).max().date()
+    yesterday = business_yesterday()
+
+    if max_date >= yesterday:
+        return df
+
+    # L7D average from last 7 days with data
+    _recent = _has_spend.nlargest(7, date_col)
+    l7d_avg = _recent[spend_col].mean()
+
+    # Generate gap rows
+    gap_rows = []
+    current = max_date + timedelta(days=1)
+    while current <= yesterday:
+        gap_rows.append({date_col: str(current), spend_col: l7d_avg, '_projected': True})
+        current += timedelta(days=1)
+
+    if gap_rows:
+        df = pd.concat([df, pd.DataFrame(gap_rows)], ignore_index=True)
+
+    return df
+
+
 def get_nc_stats(conn, source, start_date, end_date):
     """New customer count + order-item revenue split for a source + date range.
 

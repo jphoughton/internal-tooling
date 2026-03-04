@@ -10,7 +10,7 @@ from db import (
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
 )
 from analytics.sku_flavors import get_flavor
-from analytics.metrics import compute_cac_payback, compute_nc_roas, compute_nc_cpa
+from analytics.metrics import compute_cac_payback, compute_nc_roas, compute_nc_cpa, project_daily_spend_gaps
 from ui.components import render_freshness_badge, render_html_table
 from ui.perf_tables import render_perf_table_colored, build_overview_trend_rows
 from views.pacing import compute_pacing_data, render_hero_bars, render_pacing_detail_table
@@ -51,7 +51,8 @@ def _load_amazon_daily():
             return pd.DataFrame()
         df = rev
         if not spend.empty:
-            df = df.merge(spend, on='sale_date', how='left')
+            spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
+            df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
         if '_amz_spend' not in df.columns:
             df['_amz_spend'] = 0
         df['_amz_spend'] = df['_amz_spend'].fillna(0)
@@ -170,11 +171,19 @@ def render(ctx):
         _rev_pace_goal = d['goal_total_rev'] * _pct if d['has_goals'] else 0
         _nc_pace_goal = d['goal_nc_count'] * _pct if d.get('goal_nc_count', 0) > 0 else 0
 
-        h1, h2, h3 = st.columns(3)
+        _spend_pace_goal = d['goal_total_spend'] * _pct if d.get('goal_total_spend', 0) > 0 else 0
+        _spend_gap = d.get('amz_spend_gap_days', 0)
+        _spend_label = 'Spend MTD (est)' if _spend_gap > 0 else 'Spend MTD'
+
+        h1, h2, h3, h4 = st.columns(4)
         h1.metric('Total Rev MTD', f"${d['total_actual_rev']:,.0f}",
                    delta=f"Pace: ${_rev_pace_goal:,.0f}" if _rev_pace_goal > 0 else None,
                    delta_color='off')
-        h2.metric('New Customers MTD', f"{d['cm_total_nc']:,}",
+        h2.metric(_spend_label, f"${d['cm_total_spend']:,.0f}",
+                   delta=f"Pace: ${_spend_pace_goal:,.0f}" if _spend_pace_goal > 0 else None,
+                   delta_color='off',
+                   help=f"Includes {_spend_gap}d projected Amazon spend (L7D avg)" if _spend_gap > 0 else None)
+        h3.metric('New Customers MTD', f"{d['cm_total_nc']:,}",
                    delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
                    delta_color='off')
 
@@ -230,7 +239,7 @@ def render(ctx):
                 cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
                 retention_curve=_blended_ret or _dtc_ret,
             )
-        h3.metric('CAC Payback',
+        h4.metric('CAC Payback',
                    f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
                    delta=f"Target: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
                    delta_color='off',

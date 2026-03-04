@@ -8,7 +8,7 @@ from db import (
 )
 from analytics.dtc_demand import build_master_dtc_forecast
 from analytics.metrics import (
-    get_channel_revenue, get_amazon_spend, get_nc_stats,
+    get_channel_revenue, get_amazon_spend, get_amazon_spend_projected, get_nc_stats,
     nc_revenue_fraction, get_total_customers,
     compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
 )
@@ -126,10 +126,13 @@ def compute_pacing_data(ctx):
     _cm_amz_spend = 0
     _cm_amz_nc = 0
     _cm_amz_nc_rev = 0
+    _amz_spend_projected = 0
+    _amz_spend_gap_days = 0
     try:
         with get_db() as _amz_conn:
             _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-            _cm_amz_spend = get_amazon_spend(_amz_conn, f"{_cur_month}-01", _yesterday_str)
+            _cm_amz_spend, _amz_spend_projected, _amz_spend_gap_days = get_amazon_spend_projected(
+                _amz_conn, f"{_cur_month}-01", _yesterday_str)
             _nc = get_nc_stats(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
             _cm_amz_nc = _nc['new_customers']
             _cm_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _cm_amz_rev)
@@ -171,7 +174,8 @@ def compute_pacing_data(ctx):
         _l7d_start_str = str(_l7d_start)
         with get_db() as _l7_conn:
             _l7d_amz_rev = get_channel_revenue(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str) / 7
-            _l7d_amz_spend = get_amazon_spend(_l7_conn, _l7d_start_str, _yesterday_str) / 7
+            _l7d_amz_spend_total, _, _ = get_amazon_spend_projected(_l7_conn, _l7d_start_str, _yesterday_str)
+            _l7d_amz_spend = _l7d_amz_spend_total / 7
             _nc = get_nc_stats(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str)
             _l7d_amz_nc = _nc['new_customers'] / 7
             _l7d_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _l7d_amz_rev * 7) / 7
@@ -194,7 +198,8 @@ def compute_pacing_data(ctx):
     try:
         with get_db() as _yd_conn:
             _yd_amz_rev = get_channel_revenue(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-            _yd_amz_spend = get_amazon_spend(_yd_conn, _yesterday_str, _yesterday_str)
+            _yd_amz_spend_total, _, _ = get_amazon_spend_projected(_yd_conn, _yesterday_str, _yesterday_str)
+            _yd_amz_spend = _yd_amz_spend_total
             _nc = get_nc_stats(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
             _yd_amz_nc = _nc['new_customers']
             _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
@@ -308,6 +313,8 @@ def compute_pacing_data(ctx):
         'cm_amz_spend': _cm_amz_spend,
         'cm_amz_nc': _cm_amz_nc,
         'cm_amz_nc_rev': _cm_amz_nc_rev,
+        'amz_spend_projected': _amz_spend_projected,
+        'amz_spend_gap_days': _amz_spend_gap_days,
         # Goals
         'goal_nc_rev': _goal_nc_rev,
         'goal_repeat_rev': _goal_repeat_rev,
