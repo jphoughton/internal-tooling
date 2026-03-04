@@ -14,6 +14,7 @@ from db import (
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
     get_inventory_snapshot, save_inventory_snapshot,
+    get_precomputed,
 )
 from analytics.waterfall import (
     get_active_sources,
@@ -446,39 +447,25 @@ if configured_sources:
 else:
     st.sidebar.caption("\u2699\uFE0F No sources \u2014 go to Settings")
 
-# --- Auto-sync: trigger if no successful sync since 5 AM PST today ---
+# --- Last synced indicator (replaces auto-sync — scheduler handles daily ETL) ---
 if configured_sources:
     _last_ts = _cached_last_sync_ts()
-    _needs_auto_sync = False
     if _last_ts:
         try:
-            from datetime import datetime as _dt_auto
-            from zoneinfo import ZoneInfo as _ZI
-            from config import SYNC_HOUR as _SH, SYNC_TIMEZONE as _STZ
-            _pst = _ZI(_STZ)
-            _now_pst = _dt_auto.now(_pst)
-            _today_sync_cutoff = _now_pst.replace(hour=_SH, minute=0, second=0, microsecond=0)
-            _last_dt = _dt_auto.strptime(_last_ts[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=_ZI('UTC'))
-            _needs_auto_sync = _now_pst >= _today_sync_cutoff and _last_dt < _today_sync_cutoff
+            from datetime import datetime as _dt_badge
+            _last_dt = _dt_badge.strptime(_last_ts[:19], "%Y-%m-%d %H:%M:%S")
+            _ago = datetime.utcnow() - _last_dt
+            if _ago.days > 0:
+                _ago_str = f"{_ago.days}d ago"
+            elif _ago.seconds > 3600:
+                _ago_str = f"{_ago.seconds // 3600}h ago"
+            else:
+                _ago_str = f"{_ago.seconds // 60}m ago"
+            st.sidebar.caption(f"\U0001F504 Last synced {_ago_str}")
         except (ValueError, TypeError):
-            _needs_auto_sync = True
+            st.sidebar.caption(f"\U0001F504 Last synced: {_last_ts[:16]}")
     else:
-        _needs_auto_sync = True  # Never synced before
-
-    if _needs_auto_sync and "auto_sync_done" not in st.session_state:
-        st.session_state["auto_sync_done"] = True
-        st.sidebar.info("\u23F3 Auto-syncing (no sync since 5 AM today)...")
-        try:
-            from etl.sync import run_daily_sync as _auto_sync
-            _auto_results = _auto_sync(full_refresh=False)
-            clear_waterfall_cache()
-            st.cache_data.clear()
-            if _auto_results:
-                _auto_ok = [k for k, v in _auto_results.items() if not str(v).startswith("ERROR")]
-                if _auto_ok:
-                    st.sidebar.success(f"Auto-sync complete: {', '.join(_auto_ok)}")
-        except Exception as _auto_err:
-            st.sidebar.warning(f"Auto-sync failed: {_auto_err}")
+        st.sidebar.caption("\u26A0\uFE0F No sync data — click Refresh Data")
 
 # Sync button
 if st.sidebar.button("Refresh Data"):
@@ -533,11 +520,28 @@ if st.sidebar.button("Refresh Data"):
 # ================================================================
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _compute_global_alerts():
-    """Compute reorder & FBA transfer urgency alerts for the notification bar."""
-    alerts = {"reorder": [], "transfer": []}
+    """Read pre-computed reorder & FBA transfer alerts from DB.
 
-    # Cash flow alerts
-    alerts["cashflow"] = []
+    Falls back to live computation if pre-computed results are not available.
+    """
+    # Try pre-computed first (populated by orchestrator after daily sync)
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'global_alerts', max_age_hours=25)
+        if cached:
+            import json as _json_alerts
+            return _json_alerts.loads(cached)
+    except Exception:
+        pass
+
+    # Fallback: compute live (first deploy before scheduler runs)
+    return _compute_global_alerts_live()
+
+
+def _compute_global_alerts_live():
+    """Live computation fallback for global alerts."""
+    alerts = {"reorder": [], "transfer": [], "cashflow": []}
+
     try:
         with get_db() as conn:
             from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
@@ -557,7 +561,6 @@ def _compute_global_alerts():
         from analytics.reorder import build_reorder_plan
         import json as _json_alert
 
-        # Load forecast
         _seasonal_alert = _load_seasonal_json()
         with get_db() as conn:
             _media_alert = get_media_spend(conn, source="All Sources")
@@ -579,7 +582,6 @@ def _compute_global_alerts():
         if "Flavor" not in _sku_alert.columns:
             _sku_alert.insert(1, "Flavor", _sku_alert["SKU"].map(lambda s: get_flavor(s)))
 
-        # Load inventory (use cached API wrappers)
         combined_inv = {}
         try:
             _3pl_items = _cached_3pl_inventory()
@@ -619,7 +621,6 @@ def _compute_global_alerts():
 
         inv_data = list(combined_inv.values())
 
-        # Build reorder plan
         with get_db() as conn:
             _planned = {}
             try:
@@ -653,7 +654,6 @@ def _compute_global_alerts():
                         "qty": int(row.get("Order Qty", 0)),
                     })
 
-        # FBA transfer alerts
         if _amz_inv_items:
             from utils.date_helpers import business_today as _biz_today, business_yesterday as _biz_yesterday
             with get_db() as conn:
@@ -781,28 +781,6 @@ _ctx = {
     'source_filter': _source_filter,
     'page': page,
 }
-
-# --- Pre-warm critical caches (first load only) ---
-# Trigger cached functions so data is ready before the page renders.
-# These are no-ops if the cache is already warm (within TTL).
-if 'caches_warmed' not in st.session_state:
-    st.session_state['caches_warmed'] = True
-    try:
-        _cached_3pl_inventory()
-    except Exception:
-        pass
-    try:
-        _cached_amazon_inventory()
-    except Exception:
-        pass
-    try:
-        if _ctx_media_spend:
-            import json as _json_warm
-            _warm_seasonal = _load_seasonal_json()
-            _warm_media = _json_warm.dumps(_ctx_media_spend, sort_keys=True)
-            _cached_waterfall(_warm_media, None, 12, _warm_seasonal)
-    except Exception:
-        pass
 
 if _page_type == 'Overview':
     from views.overview import render

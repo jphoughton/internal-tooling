@@ -8,44 +8,87 @@ def render(ctx):
 
     if channel == 'DTC':
         tabs = st.tabs(['Inventory', 'Demand Forecast', 'Reorder'])
-        with tabs[0]:
+
+        @st.fragment
+        def _dtc_inventory():
             from views.inventory_3pl import render as render_3pl
             render_3pl(ctx, embedded=True)
-        with tabs[1]:
+
+        @st.fragment
+        def _dtc_forecast():
             from views.demand_forecast import render as render_forecast
             render_forecast(ctx, embedded=True)
-        with tabs[2]:
+
+        @st.fragment
+        def _dtc_reorder():
             from views.reorder_alerts import render as render_reorder
             render_reorder(ctx, embedded=True)
             st.divider()
             from views.projected_inventory import render as render_proj
             render_proj(ctx, embedded=True)
 
+        with tabs[0]:
+            _dtc_inventory()
+        with tabs[1]:
+            _dtc_forecast()
+        with tabs[2]:
+            _dtc_reorder()
+
     elif channel == 'Amazon':
         tabs = st.tabs(['Inventory', 'Demand Forecast', 'Transfers'])
-        with tabs[0]:
+
+        @st.fragment
+        def _amz_inventory():
             from views.inventory_amazon import render as render_amz_inv
             render_amz_inv(ctx, embedded=True)
-        with tabs[1]:
+
+        @st.fragment
+        def _amz_forecast():
             from views.demand_forecast import render as render_forecast
             render_forecast(ctx, embedded=True)
-        with tabs[2]:
+
+        @st.fragment
+        def _amz_transfers():
             from views.fba_transfers import render as render_fba
             render_fba(ctx, embedded=True)
 
+        with tabs[0]:
+            _amz_inventory()
+        with tabs[1]:
+            _amz_forecast()
+        with tabs[2]:
+            _amz_transfers()
+
     else:  # Rollup
         tabs = st.tabs(['Inventory', 'Demand Forecast', 'Projected Inventory', 'Reorder'])
-        with tabs[0]:
+
+        @st.fragment
+        def _rollup_inventory():
             _render_combined_inventory(ctx)
-        with tabs[1]:
+
+        @st.fragment
+        def _rollup_forecast():
             from views.demand_forecast import render as render_forecast
             render_forecast(ctx, embedded=True)
-        with tabs[2]:
+
+        @st.fragment
+        def _rollup_projected():
             from views.projected_inventory import render as render_proj
             render_proj(ctx, embedded=True)
-        with tabs[3]:
+
+        @st.fragment
+        def _rollup_reorder():
             from views.reorder_alerts import render as render_reorder
             render_reorder(ctx, embedded=True)
+
+        with tabs[0]:
+            _rollup_inventory()
+        with tabs[1]:
+            _rollup_forecast()
+        with tabs[2]:
+            _rollup_projected()
+        with tabs[3]:
+            _rollup_reorder()
 
 
 def _render_combined_inventory(ctx):
