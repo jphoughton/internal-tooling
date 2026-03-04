@@ -786,6 +786,7 @@ _ctx = {
     'channel': _channel,
     'source_filter': _source_filter,
     'page': page,
+    'global_alerts': _global_alerts,
 }
 
 if _page_type == 'Overview':

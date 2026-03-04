@@ -35,6 +35,15 @@ def compute_aov(revenue, order_count):
     return revenue / order_count if order_count > 0 else 0
 
 
+def compute_cac_payback(spend, new_customers, monthly_nc_revenue):
+    """CAC Payback in months. CAC / monthly contribution per new customer."""
+    if new_customers <= 0 or monthly_nc_revenue <= 0:
+        return 0
+    cac = spend / new_customers
+    monthly_contribution = monthly_nc_revenue / new_customers
+    return cac / monthly_contribution if monthly_contribution > 0 else 0
+
+
 def nc_revenue_fraction(oi_total_rev, oi_new_rev, channel_revenue):
     """Derive NC revenue using order-items fraction applied to channel revenue.
 

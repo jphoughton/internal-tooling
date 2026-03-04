@@ -20,11 +20,11 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-def render_pacing(ctx):
-    """Render the current-month pacing dashboard.
+def compute_pacing_data(ctx):
+    """Compute all pacing data without rendering.
 
-    Requires ctx keys: cached_waterfall, cached_sku_forecast, load_seasonal_json, biz_vars.
-    Returns True if content was rendered, False if data unavailable.
+    Returns a dict with all computed MTD/L7D/yesterday values, goals, and
+    derived metrics. Returns None if Shopify data is unavailable.
     """
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
@@ -34,7 +34,7 @@ def render_pacing(ctx):
     # Load Shopify DB metrics (revenue, orders, new/repeat customers)
     _shopify_daily = _load_shopify_daily_metrics()
     if _shopify_daily.empty:
-        return False
+        return None
 
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend only
     mkt_df = _shopify_daily.copy()
@@ -109,7 +109,6 @@ def render_pacing(ctx):
     _cur_month_name = _today.strftime("%B %Y")
     import calendar as _cal
     _days_in_month = _cal.monthrange(_today.year, _today.month)[1]
-    # elapsed = yesterday's day if in same month, else 0 (first day of month)
     _day_of_month = _yesterday.day if _yesterday.month == _today.month else 0
     _pct_month = _day_of_month / _days_in_month if _days_in_month > 0 else 0
 
@@ -151,42 +150,10 @@ def render_pacing(ctx):
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
-
     _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
     _remaining_days = max(_days_in_month - _day_of_month, 1)
 
-    # ============================================================
-    # RENDER PACING HEADER
-    # ============================================================
-    st.header(f"{_cur_month_name} Pacing")
-    st.caption(f"Day {_day_of_month} of {_days_in_month}")
-    st.progress(_pct_month, text=f"{_pct_month*100:.0f}%")
-
-    _nav_channel = ctx.get('channel', 'Rollup')
-
-    if not _has_goals:
-        st.info("Set up a media spend plan and Amazon forecast on the **Demand Forecast** page for pacing.")
-        st.subheader("MTD Summary")
-        if _nav_channel == 'DTC':
-            ts1, ts2, ts3 = st.columns(3)
-            ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
-            ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
-            _total_mtd = _cm_nc_rev + _cm_ret_rev
-            ts3.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
-        elif _nav_channel == 'Amazon':
-            ts1, ts2 = st.columns(2)
-            ts1.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
-            ts2.metric("Amazon Spend (MTD)", f"${_cm_amz_spend:,.0f}")
-        else:
-            ts1, ts2, ts3, ts4 = st.columns(4)
-            ts1.metric("NC Revenue (MTD)", f"${_cm_nc_rev:,.0f}")
-            ts2.metric("Repeat Revenue (MTD)", f"${_cm_ret_rev:,.0f}")
-            ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
-            _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
-            ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
-        return True
-
-    # Last 7 days averages (7 complete days ending at yesterday)
+    # Last 7 days averages
     _l7d_start = _yesterday - pd.Timedelta(days=6)
     _l7d_mask = (mkt_df["_date"].dt.date >= _l7d_start) & (mkt_df["_date"].dt.date <= _yesterday)
     _l7d_rev = mkt_df.loc[_l7d_mask, "_revenue"].sum() / 7 if _l7d_mask.any() else 0
@@ -234,7 +201,7 @@ def render_pacing(ctx):
     except Exception as e:
         log.warning("Failed to load Amazon yesterday metrics: %s", e)
 
-    # Repeat customer counts (DTC + Amazon)
+    # Repeat customer counts
     _cm_dtc_total_cust = 0
     _cm_amz_total_cust = 0
     try:
@@ -246,7 +213,7 @@ def render_pacing(ctx):
     _cm_dtc_repeat_cust = max(_cm_dtc_total_cust - _cm_nc, 0)
     _cm_amz_repeat_cust = max(_cm_amz_total_cust - _cm_amz_nc, 0)
 
-    # -- DTC actuals --
+    # Derived totals
     _goal_dtc_rev = _goal_nc_rev + _goal_repeat_rev
     _cm_dtc_rev = _cm_nc_rev + _cm_ret_rev
     _l7d_dtc_rev = _l7d_nc_rev + _l7d_ret_rev
@@ -255,12 +222,10 @@ def render_pacing(ctx):
     _l7d_dtc_spend = _l7d_spend
     _yd_dtc_spend = _yd_spend
 
-    # -- Combined Roll Up totals (DTC + Amazon) --
     _cm_total_spend = _cm_dtc_spend + _cm_amz_spend
     _l7d_total_spend = _l7d_dtc_spend + _l7d_amz_spend
     _yd_total_spend = _yd_dtc_spend + _yd_amz_spend
 
-    # NC totals (DTC + Amazon)
     _cm_total_nc = _cm_nc + _cm_amz_nc
     _cm_total_nc_rev = _cm_nc_rev + _cm_amz_nc_rev
     _l7d_total_nc = _l7d_nc + _l7d_amz_nc
@@ -268,7 +233,6 @@ def render_pacing(ctx):
     _yd_total_nc = _yd_nc + _yd_amz_nc
     _yd_total_nc_rev = _yd_nc_rev + _yd_amz_nc_rev
 
-    # Repeat totals (DTC + Amazon implied repeat)
     _cm_amz_repeat_rev = max(_cm_amz_rev - _cm_amz_nc_rev, 0)
     _cm_total_repeat_rev = _cm_ret_rev + _cm_amz_repeat_rev
     _l7d_amz_repeat_rev = max(_l7d_amz_rev - _l7d_amz_nc_rev, 0)
@@ -276,10 +240,8 @@ def render_pacing(ctx):
     _yd_amz_repeat_rev = max(_yd_amz_rev - _yd_amz_nc_rev, 0)
     _yd_total_repeat_rev = _yd_ret_rev + _yd_amz_repeat_rev
 
-    # Total repeat customers
     _cm_total_repeat_cust = _cm_dtc_repeat_cust + _cm_amz_repeat_cust
 
-    # Efficiency metrics
     _business_mer = compute_mer(_total_actual_rev, _cm_total_spend)
     _total_nc_roas = compute_nc_roas(_cm_total_nc_rev, _cm_total_spend)
     _total_nc_cpa = compute_nc_cpa(_cm_total_spend, _cm_total_nc)
@@ -287,7 +249,6 @@ def render_pacing(ctx):
     _dtc_nc_aov = compute_aov(_cm_nc_rev, _cm_nc)
     _dtc_cpa = compute_nc_cpa(_cm_dtc_spend, _cm_nc)
 
-    # L7D / Yesterday ratio metrics
     _l7d_total_rev = _l7d_rev + _l7d_amz_rev
     _l7d_mer = compute_mer(_l7d_total_rev, _l7d_total_spend)
     _l7d_total_nc_roas = compute_nc_roas(_l7d_total_nc_rev, _l7d_total_spend)
@@ -297,7 +258,7 @@ def render_pacing(ctx):
     _yd_total_nc_roas = compute_nc_roas(_yd_total_nc_rev, _yd_total_spend)
     _yd_total_nc_cpa = compute_nc_cpa(_yd_total_spend, _yd_total_nc)
 
-    # -- Spend goals from media plan --
+    # Spend goals
     _goal_spend = 0
     _spend_plan = [m for m in _mkt_media if m.get("month") == _cur_month]
     if _spend_plan:
@@ -310,75 +271,272 @@ def render_pacing(ctx):
 
     _goal_total_spend = _goal_spend + _goal_amz_spend
 
-    # NC count goal from waterfall
     _goal_nc_count = 0
     if _wf is not None and not _wf.empty:
         _wf_nc_row = _wf[_wf['month'] == _cur_month]
         if not _wf_nc_row.empty:
             _goal_nc_count = float(_wf_nc_row.iloc[0].get('new_customers_acquired', 0))
 
-    # Derived ratio goals
     _goal_mer = _goal_total_rev / _goal_total_spend if _goal_total_spend > 0 else 0
     _goal_nc_roas_ratio = _goal_nc_rev / _goal_spend if _goal_spend > 0 else 0
     _goal_nc_cpa_target = _goal_spend / _goal_nc_count if _goal_nc_count > 0 else 0
 
+    # Contribution = Revenue - Spend
+    _cm_contribution = _total_actual_rev - _cm_total_spend
+    _goal_contribution = _goal_total_rev - _goal_total_spend
+
+    return {
+        'cur_month_name': _cur_month_name,
+        'day_of_month': _day_of_month,
+        'days_in_month': _days_in_month,
+        'pct_month': _pct_month,
+        'remaining_days': _remaining_days,
+        'has_goals': _has_goals,
+        # MTD actuals
+        'total_actual_rev': _total_actual_rev,
+        'cm_nc_rev': _cm_nc_rev,
+        'cm_ret_rev': _cm_ret_rev,
+        'cm_spend': _cm_spend,
+        'cm_rev': _cm_rev,
+        'cm_orders': _cm_orders,
+        'cm_nc': _cm_nc,
+        'cm_amz_rev': _cm_amz_rev,
+        'cm_amz_spend': _cm_amz_spend,
+        'cm_amz_nc': _cm_amz_nc,
+        'cm_amz_nc_rev': _cm_amz_nc_rev,
+        # Goals
+        'goal_nc_rev': _goal_nc_rev,
+        'goal_repeat_rev': _goal_repeat_rev,
+        'goal_amz_rev': _goal_amz_rev,
+        'goal_total_rev': _goal_total_rev,
+        'goal_dtc_rev': _goal_dtc_rev,
+        'goal_spend': _goal_spend,
+        'goal_amz_spend': _goal_amz_spend,
+        'goal_total_spend': _goal_total_spend,
+        'goal_nc_count': _goal_nc_count,
+        'goal_mer': _goal_mer,
+        'goal_nc_roas_ratio': _goal_nc_roas_ratio,
+        'goal_nc_cpa_target': _goal_nc_cpa_target,
+        # Contribution
+        'cm_contribution': _cm_contribution,
+        'goal_contribution': _goal_contribution,
+        # DTC
+        'cm_dtc_rev': _cm_dtc_rev,
+        'cm_dtc_spend': _cm_dtc_spend,
+        'l7d_dtc_rev': _l7d_dtc_rev,
+        'l7d_dtc_spend': _l7d_dtc_spend,
+        'yd_dtc_rev': _yd_dtc_rev,
+        'yd_dtc_spend': _yd_dtc_spend,
+        # Totals
+        'cm_total_spend': _cm_total_spend,
+        'cm_total_nc': _cm_total_nc,
+        'cm_total_nc_rev': _cm_total_nc_rev,
+        'cm_total_repeat_rev': _cm_total_repeat_rev,
+        'cm_total_repeat_cust': _cm_total_repeat_cust,
+        # L7D
+        'l7d_total_rev': _l7d_total_rev,
+        'l7d_total_spend': _l7d_total_spend,
+        'l7d_total_nc': _l7d_total_nc,
+        'l7d_total_nc_rev': _l7d_total_nc_rev,
+        'l7d_total_repeat_rev': _l7d_total_repeat_rev,
+        'l7d_nc_rev': _l7d_nc_rev,
+        'l7d_ret_rev': _l7d_ret_rev,
+        'l7d_nc': _l7d_nc,
+        'l7d_spend': _l7d_spend,
+        'l7d_amz_rev': _l7d_amz_rev,
+        'l7d_amz_spend': _l7d_amz_spend,
+        'l7d_amz_nc': _l7d_amz_nc,
+        'l7d_amz_nc_rev': _l7d_amz_nc_rev,
+        # Yesterday
+        'yd_total_rev': _yd_total_rev,
+        'yd_total_spend': _yd_total_spend,
+        'yd_total_nc': _yd_total_nc,
+        'yd_total_nc_rev': _yd_total_nc_rev,
+        'yd_total_repeat_rev': _yd_total_repeat_rev,
+        'yd_nc_rev': _yd_nc_rev,
+        'yd_ret_rev': _yd_ret_rev,
+        'yd_nc': _yd_nc,
+        'yd_spend': _yd_spend,
+        'yd_amz_rev': _yd_amz_rev,
+        'yd_amz_spend': _yd_amz_spend,
+        'yd_amz_nc': _yd_amz_nc,
+        'yd_amz_nc_rev': _yd_amz_nc_rev,
+        # Efficiency metrics
+        'business_mer': _business_mer,
+        'total_nc_roas': _total_nc_roas,
+        'total_nc_cpa': _total_nc_cpa,
+        'dtc_nc_roas': _dtc_nc_roas,
+        'dtc_nc_aov': _dtc_nc_aov,
+        'dtc_cpa': _dtc_cpa,
+        'l7d_mer': _l7d_mer,
+        'l7d_total_nc_roas': _l7d_total_nc_roas,
+        'l7d_total_nc_cpa': _l7d_total_nc_cpa,
+        'yd_mer': _yd_mer,
+        'yd_total_nc_roas': _yd_total_nc_roas,
+        'yd_total_nc_cpa': _yd_total_nc_cpa,
+    }
+
+
+def render_hero_bars(data):
+    """Render two styled HTML progress bars: Revenue MTD vs Goal + Contribution MTD vs Goal."""
+    if not data or not data['has_goals']:
+        return
+
+    rev_pct = data['total_actual_rev'] / data['goal_total_rev'] if data['goal_total_rev'] > 0 else 0
+    rev_bar_pct = min(rev_pct, 1.0) * 100
+    rev_color = '#0a7a3e' if rev_pct >= data['pct_month'] else '#dc2626'
+
+    contrib_pct = data['cm_contribution'] / data['goal_contribution'] if data['goal_contribution'] > 0 else 0
+    contrib_bar_pct = min(max(contrib_pct, 0), 1.0) * 100
+    contrib_color = '#0a7a3e' if contrib_pct >= data['pct_month'] else '#dc2626'
+
+    pace_marker = data['pct_month'] * 100
+
+    bar_html = f'''
+    <div style="display:flex;gap:24px;margin-bottom:8px;">
+      <div style="flex:1;">
+        <div style="font-size:0.75rem;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">
+          Revenue MTD &mdash; ${data['total_actual_rev']:,.0f} / ${data['goal_total_rev']:,.0f}
+        </div>
+        <div style="position:relative;height:28px;background:#e2e8f0;border-radius:6px;overflow:hidden;">
+          <div style="width:{rev_bar_pct:.1f}%;height:100%;background:{rev_color};border-radius:6px;transition:width 0.3s;"></div>
+          <div style="position:absolute;left:{pace_marker:.1f}%;top:0;height:100%;width:2px;background:#0F3557;opacity:0.6;"></div>
+          <div style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:0.8rem;font-weight:700;color:#0F3557;">{rev_pct:.0%}</div>
+        </div>
+      </div>
+      <div style="flex:1;">
+        <div style="font-size:0.75rem;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">
+          Contribution MTD &mdash; ${data['cm_contribution']:,.0f} / ${data['goal_contribution']:,.0f}
+        </div>
+        <div style="position:relative;height:28px;background:#e2e8f0;border-radius:6px;overflow:hidden;">
+          <div style="width:{contrib_bar_pct:.1f}%;height:100%;background:{contrib_color};border-radius:6px;transition:width 0.3s;"></div>
+          <div style="position:absolute;left:{pace_marker:.1f}%;top:0;height:100%;width:2px;background:#0F3557;opacity:0.6;"></div>
+          <div style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:0.8rem;font-weight:700;color:#0F3557;">{contrib_pct:.0%}</div>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:0.72rem;color:#94a3b8;margin-bottom:12px;">
+      {data['cur_month_name']} &mdash; Day {data['day_of_month']} of {data['days_in_month']} ({data['pct_month']:.0%} elapsed)
+    </div>
+    '''
+    st.markdown(bar_html, unsafe_allow_html=True)
+
+
+def render_pacing_detail_table(data):
+    """Render the pacing detail table (Rollup/DTC/Amazon rows)."""
+    if not data or not data['has_goals']:
+        return
+
+    d = data
+    rows = []
+
+    # Rollup row
+    rows.append(build_pace_row("Rollup", d['total_actual_rev'], d['goal_total_rev'],
+                               d['l7d_total_rev'], d['yd_total_rev'],
+                               d['pct_month'], d['days_in_month'], d['remaining_days']))
+    # DTC row
+    rows.append(build_pace_row("DTC", d['cm_dtc_rev'], d['goal_dtc_rev'],
+                               d['l7d_dtc_rev'], d['yd_dtc_rev'],
+                               d['pct_month'], d['days_in_month'], d['remaining_days']))
+    # Amazon row
+    rows.append(build_pace_row("Amazon", d['cm_amz_rev'], d['goal_amz_rev'],
+                               d['l7d_amz_rev'], d['yd_amz_rev'],
+                               d['pct_month'], d['days_in_month'], d['remaining_days']))
+
+    df = pd.DataFrame(rows)
+    render_white_table(style_pace_df(df))
+
+
+def render_pacing(ctx):
+    """Render the current-month pacing dashboard.
+
+    Requires ctx keys: cached_waterfall, cached_sku_forecast, load_seasonal_json, biz_vars.
+    Returns True if content was rendered, False if data unavailable.
+    """
+    data = compute_pacing_data(ctx)
+    if data is None:
+        return False
+
+    _nav_channel = ctx.get('channel', 'Rollup')
+
     # ============================================================
-    # CHANNEL FILTER
+    # RENDER PACING HEADER
     # ============================================================
+    st.header(f"{data['cur_month_name']} Pacing")
+    st.caption(f"Day {data['day_of_month']} of {data['days_in_month']}")
+    st.progress(data['pct_month'], text=f"{data['pct_month']*100:.0f}%")
+
+    if not data['has_goals']:
+        st.info("Set up a media spend plan and Amazon forecast on the **Demand Forecast** page for pacing.")
+        st.subheader("MTD Summary")
+        if _nav_channel == 'DTC':
+            ts1, ts2, ts3 = st.columns(3)
+            ts1.metric("NC Revenue (MTD)", f"${data['cm_nc_rev']:,.0f}")
+            ts2.metric("Repeat Revenue (MTD)", f"${data['cm_ret_rev']:,.0f}")
+            _total_mtd = data['cm_nc_rev'] + data['cm_ret_rev']
+            ts3.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+        elif _nav_channel == 'Amazon':
+            ts1, ts2 = st.columns(2)
+            ts1.metric("Amazon Revenue (MTD)", f"${data['cm_amz_rev']:,.0f}")
+            ts2.metric("Amazon Spend (MTD)", f"${data['cm_amz_spend']:,.0f}")
+        else:
+            ts1, ts2, ts3, ts4 = st.columns(4)
+            ts1.metric("NC Revenue (MTD)", f"${data['cm_nc_rev']:,.0f}")
+            ts2.metric("Repeat Revenue (MTD)", f"${data['cm_ret_rev']:,.0f}")
+            ts3.metric("Amazon Revenue (MTD)", f"${data['cm_amz_rev']:,.0f}")
+            _total_mtd = data['cm_nc_rev'] + data['cm_ret_rev'] + data['cm_amz_rev']
+            ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
+        return True
+
+    d = data
     _chan_sel = {'DTC': 'DTC', 'Amazon': 'Amazon', 'Rollup': 'Rollup'}.get(_nav_channel, 'Rollup')
 
     # ============================================================
-    # ROLL UP — DTC + Amazon combined
+    # ROLL UP
     # ============================================================
     if _chan_sel in ("All", "Rollup"):
         st.subheader("Roll Up")
         st.caption('Combined Shopify + Amazon pacing against monthly goals from the demand forecast engine.')
 
-        # Row 1: Efficiency ratios
         eff1, eff2, eff3 = st.columns(3)
-        eff1.metric("Business MER", f"{_business_mer:.2f}x",
-                    help="Total Revenue / Total Spend")
-        eff2.metric("Total NC ROAS", f"{_total_nc_roas:.2f}x",
-                    help="Total NC Revenue / Total Spend")
-        eff3.metric("Total NC CPA", f"${_total_nc_cpa:,.0f}",
-                    help="Total Spend / Total New Customers")
+        eff1.metric("Business MER", f"{d['business_mer']:.2f}x", help="Total Revenue / Total Spend")
+        eff2.metric("Total NC ROAS", f"{d['total_nc_roas']:.2f}x", help="Total NC Revenue / Total Spend")
+        eff3.metric("Total NC CPA", f"${d['total_nc_cpa']:,.0f}", help="Total Spend / Total New Customers")
 
-        # Row 2: Revenue & Spend
         rev1, rev2, rev3 = st.columns(3)
-        rev1.metric("Total Spend", f"${_cm_total_spend:,.0f}")
-        rev2.metric("Total Revenue", f"${_total_actual_rev:,.0f}")
-        rev3.metric("Total New Customers", f"{_cm_total_nc:,}")
+        rev1.metric("Total Spend", f"${d['cm_total_spend']:,.0f}")
+        rev2.metric("Total Revenue", f"${d['total_actual_rev']:,.0f}")
+        rev3.metric("Total New Customers", f"{d['cm_total_nc']:,}")
 
-        # Row 3: NC/Repeat split
         nr1, nr2, nr3 = st.columns(3)
-        nr1.metric("Total NC Revenue", f"${_cm_total_nc_rev:,.0f}")
-        nr2.metric("Total Repeat Revenue", f"${_cm_total_repeat_rev:,.0f}")
-        nr3.metric("Total Repeat Customers", f"{_cm_total_repeat_cust:,}")
+        nr1.metric("Total NC Revenue", f"${d['cm_total_nc_rev']:,.0f}")
+        nr2.metric("Total Repeat Revenue", f"${d['cm_total_repeat_rev']:,.0f}")
+        nr3.metric("Total Repeat Customers", f"{d['cm_total_repeat_cust']:,}")
 
         _rollup_rows = []
-        if _goal_total_spend > 0:
-            _rollup_rows.append(build_pace_row("Total Spend", _cm_total_spend, _goal_total_spend,
-                                               _l7d_total_spend, _yd_total_spend, _pct_month, _days_in_month, _remaining_days, is_spend=True))
+        if d['goal_total_spend'] > 0:
+            _rollup_rows.append(build_pace_row("Total Spend", d['cm_total_spend'], d['goal_total_spend'],
+                                               d['l7d_total_spend'], d['yd_total_spend'], d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
         _rollup_rows.extend([
-            build_pace_row("Total Revenue", _total_actual_rev, _goal_total_rev,
-                           _l7d_total_rev, _yd_total_rev, _pct_month, _days_in_month, _remaining_days),
-            build_pace_row("Total NC Revenue", _cm_total_nc_rev, _goal_nc_rev,
-                           _l7d_total_nc_rev, _yd_total_nc_rev, _pct_month, _days_in_month, _remaining_days),
-            build_pace_row("Total Repeat Revenue", _cm_total_repeat_rev, _goal_repeat_rev,
-                           _l7d_total_repeat_rev, _yd_total_repeat_rev, _pct_month, _days_in_month, _remaining_days),
+            build_pace_row("Total Revenue", d['total_actual_rev'], d['goal_total_rev'],
+                           d['l7d_total_rev'], d['yd_total_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
+            build_pace_row("Total NC Revenue", d['cm_total_nc_rev'], d['goal_nc_rev'],
+                           d['l7d_total_nc_rev'], d['yd_total_nc_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
+            build_pace_row("Total Repeat Revenue", d['cm_total_repeat_rev'], d['goal_repeat_rev'],
+                           d['l7d_total_repeat_rev'], d['yd_total_repeat_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
         ])
-        if _goal_nc_count > 0:
-            _rollup_rows.append(build_pace_row("Total New Customers", _cm_total_nc, _goal_nc_count,
-                                               _l7d_total_nc, _yd_total_nc, _pct_month, _days_in_month, _remaining_days, fmt='count'))
-        if _goal_mer > 0:
-            _rollup_rows.append(build_pace_row("Business MER", _business_mer, _goal_mer,
-                                               _l7d_mer, _yd_mer, _pct_month, _days_in_month, _remaining_days, fmt='ratio'))
-        if _goal_nc_roas_ratio > 0:
-            _rollup_rows.append(build_pace_row("Total NC ROAS", _total_nc_roas, _goal_nc_roas_ratio,
-                                               _l7d_total_nc_roas, _yd_total_nc_roas, _pct_month, _days_in_month, _remaining_days, fmt='ratio'))
-        if _goal_nc_cpa_target > 0:
-            _rollup_rows.append(build_pace_row("Total NC CPA", _total_nc_cpa, _goal_nc_cpa_target,
-                                               _l7d_total_nc_cpa, _yd_total_nc_cpa, _pct_month, _days_in_month, _remaining_days, is_spend=True))
+        if d['goal_nc_count'] > 0:
+            _rollup_rows.append(build_pace_row("Total New Customers", d['cm_total_nc'], d['goal_nc_count'],
+                                               d['l7d_total_nc'], d['yd_total_nc'], d['pct_month'], d['days_in_month'], d['remaining_days'], fmt='count'))
+        if d['goal_mer'] > 0:
+            _rollup_rows.append(build_pace_row("Business MER", d['business_mer'], d['goal_mer'],
+                                               d['l7d_mer'], d['yd_mer'], d['pct_month'], d['days_in_month'], d['remaining_days'], fmt='ratio'))
+        if d['goal_nc_roas_ratio'] > 0:
+            _rollup_rows.append(build_pace_row("Total NC ROAS", d['total_nc_roas'], d['goal_nc_roas_ratio'],
+                                               d['l7d_total_nc_roas'], d['yd_total_nc_roas'], d['pct_month'], d['days_in_month'], d['remaining_days'], fmt='ratio'))
+        if d['goal_nc_cpa_target'] > 0:
+            _rollup_rows.append(build_pace_row("Total NC CPA", d['total_nc_cpa'], d['goal_nc_cpa_target'],
+                                               d['l7d_total_nc_cpa'], d['yd_total_nc_cpa'], d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
         _rollup_df = pd.DataFrame(_rollup_rows)
         render_white_table(style_pace_df(_rollup_df))
 
@@ -392,19 +550,19 @@ def render_pacing(ctx):
         st.caption('Shopify-only pacing vs monthly revenue goals from media spend plan.')
 
         dtc_k1, dtc_k2, dtc_k3, dtc_k4 = st.columns(4)
-        dtc_k1.metric("NC ROAS", f"{_dtc_nc_roas:.2f}x")
-        dtc_k2.metric("NC Orders", f"{_cm_nc:,}")
-        dtc_k3.metric("NC AOV", f"${_dtc_nc_aov:,.0f}")
-        dtc_k4.metric("CPA", f"${_dtc_cpa:,.0f}")
+        dtc_k1.metric("NC ROAS", f"{d['dtc_nc_roas']:.2f}x")
+        dtc_k2.metric("NC Orders", f"{d['cm_nc']:,}")
+        dtc_k3.metric("NC AOV", f"${d['dtc_nc_aov']:,.0f}")
+        dtc_k4.metric("CPA", f"${d['dtc_cpa']:,.0f}")
 
         _dtc_rows = []
-        if _goal_spend > 0:
-            _dtc_rows.append(build_pace_row("Spend", _cm_dtc_spend, _goal_spend,
-                                            _l7d_dtc_spend, _yd_dtc_spend, _pct_month, _days_in_month, _remaining_days, is_spend=True))
+        if d['goal_spend'] > 0:
+            _dtc_rows.append(build_pace_row("Spend", d['cm_dtc_spend'], d['goal_spend'],
+                                            d['l7d_dtc_spend'], d['yd_dtc_spend'], d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True))
         _dtc_rows.extend([
-            build_pace_row("Revenue", _cm_dtc_rev, _goal_dtc_rev, _l7d_dtc_rev, _yd_dtc_rev, _pct_month, _days_in_month, _remaining_days),
-            build_pace_row("New Customer Rev", _cm_nc_rev, _goal_nc_rev, _l7d_nc_rev, _yd_nc_rev, _pct_month, _days_in_month, _remaining_days),
-            build_pace_row("Repeat Customer Rev", _cm_ret_rev, _goal_repeat_rev, _l7d_ret_rev, _yd_ret_rev, _pct_month, _days_in_month, _remaining_days),
+            build_pace_row("Revenue", d['cm_dtc_rev'], d['goal_dtc_rev'], d['l7d_dtc_rev'], d['yd_dtc_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
+            build_pace_row("New Customer Rev", d['cm_nc_rev'], d['goal_nc_rev'], d['l7d_nc_rev'], d['yd_nc_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
+            build_pace_row("Repeat Customer Rev", d['cm_ret_rev'], d['goal_repeat_rev'], d['l7d_ret_rev'], d['yd_ret_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
         ])
         _dtc_df = pd.DataFrame(_dtc_rows)
         render_white_table(style_pace_df(_dtc_df))
@@ -418,20 +576,19 @@ def render_pacing(ctx):
         st.subheader("Amazon")
         st.caption('Amazon-only pacing vs revenue goals from amazon_revenue_forecast.')
 
-        _amz_roas = _cm_amz_rev / _cm_amz_spend if _cm_amz_spend > 0 else 0
+        _amz_roas = d['cm_amz_rev'] / d['cm_amz_spend'] if d['cm_amz_spend'] > 0 else 0
         amz_k1, amz_k2, amz_k3 = st.columns(3)
-        amz_k1.metric("Revenue MTD", f"${_cm_amz_rev:,.0f}")
-        amz_k2.metric("Spend MTD", f"${_cm_amz_spend:,.0f}")
-        amz_k3.metric("ROAS", f"{_amz_roas:.2f}x",
-                       help="Amazon Revenue / Amazon Spend")
+        amz_k1.metric("Revenue MTD", f"${d['cm_amz_rev']:,.0f}")
+        amz_k2.metric("Spend MTD", f"${d['cm_amz_spend']:,.0f}")
+        amz_k3.metric("ROAS", f"{_amz_roas:.2f}x", help="Amazon Revenue / Amazon Spend")
 
         _amz_rows = []
-        if _goal_amz_spend > 0:
+        if d['goal_amz_spend'] > 0:
             _amz_rows.append(
-                build_pace_row("Spend", _cm_amz_spend, _goal_amz_spend, _l7d_amz_spend, _yd_amz_spend, _pct_month, _days_in_month, _remaining_days, is_spend=True),
+                build_pace_row("Spend", d['cm_amz_spend'], d['goal_amz_spend'], d['l7d_amz_spend'], d['yd_amz_spend'], d['pct_month'], d['days_in_month'], d['remaining_days'], is_spend=True),
             )
         _amz_rows.append(
-            build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev, _pct_month, _days_in_month, _remaining_days),
+            build_pace_row("Revenue", d['cm_amz_rev'], d['goal_amz_rev'], d['l7d_amz_rev'], d['yd_amz_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
         )
         _amz_df = pd.DataFrame(_amz_rows)
         render_white_table(style_pace_df(_amz_df))
