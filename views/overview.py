@@ -29,40 +29,53 @@ def _load_amazon_daily():
                 "FROM daily_sku_sales WHERE source = 'amazon' "
                 "GROUP BY sale_date ORDER BY sale_date", conn,
             )
-            spend = read_sql(
-                "SELECT date as sale_date, spend as _amz_spend "
-                "FROM amazon_daily_rollup ORDER BY date", conn,
-            )
-            cust = read_sql(
-                "SELECT DATE(o.order_date) AS sale_date, "
-                "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                "THEN o.customer_id END) AS new_customers, "
-                "SUM(oi.total_price) AS oi_total_rev, "
-                "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                "FROM orders o "
-                "JOIN customers c ON o.customer_id = c.customer_id "
-                "JOIN order_items oi ON o.order_id = oi.order_id "
-                "WHERE o.source = %s "
-                "GROUP BY DATE(o.order_date)", conn, params=('amazon',),
-            )
         if rev.empty:
+            log.warning('_load_amazon_daily: no Amazon revenue in daily_sku_sales')
             return pd.DataFrame()
         df = rev
-        if not spend.empty:
-            spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
-            df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
+
+        # Spend — query separately so a missing table doesn't kill everything
+        try:
+            with get_db() as conn:
+                spend = read_sql(
+                    "SELECT date as sale_date, spend as _amz_spend "
+                    "FROM amazon_daily_rollup ORDER BY date", conn,
+                )
+            if not spend.empty:
+                spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
+                df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
+        except Exception as e:
+            log.warning('_load_amazon_daily: spend query failed: %s', e)
         if '_amz_spend' not in df.columns:
             df['_amz_spend'] = 0
         df['_amz_spend'] = df['_amz_spend'].fillna(0)
 
-        if not cust.empty:
-            cust['sale_date'] = cust['sale_date'].astype(str)
-            df = df.merge(
-                cust[['sale_date', 'total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']],
-                on='sale_date', how='left',
-            )
+        # Customer data — query separately
+        try:
+            with get_db() as conn:
+                cust = read_sql(
+                    "SELECT DATE(o.order_date) AS sale_date, "
+                    "COUNT(DISTINCT o.customer_id) AS total_customers, "
+                    "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                    "THEN o.customer_id END) AS new_customers, "
+                    "SUM(oi.total_price) AS oi_total_rev, "
+                    "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                    "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+                    "FROM orders o "
+                    "JOIN customers c ON o.customer_id = c.customer_id "
+                    "JOIN order_items oi ON o.order_id = oi.order_id "
+                    "WHERE o.source = %s "
+                    "GROUP BY DATE(o.order_date)", conn, params=('amazon',),
+                )
+            if not cust.empty:
+                cust['sale_date'] = cust['sale_date'].astype(str)
+                df = df.merge(
+                    cust[['sale_date', 'total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']],
+                    on='sale_date', how='left',
+                )
+        except Exception as e:
+            log.warning('_load_amazon_daily: customer query failed: %s', e)
+
         for col in ['total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']:
             if col not in df.columns:
                 df[col] = 0
@@ -76,7 +89,8 @@ def _load_amazon_daily():
         df['_amz_repeat_rev'] = df['_amz_revenue'] * (1 - _new_frac)
         df['_date'] = pd.to_datetime(df['sale_date'])
         return df
-    except Exception:
+    except Exception as e:
+        log.warning('_load_amazon_daily failed: %s', e)
         return pd.DataFrame()
 
 
@@ -250,13 +264,18 @@ def render(ctx):
                    delta_color='off')
 
         # CAC Payback
-        biz = ctx.get('biz_vars', {})
-        _cogs_pct = float(biz.get('cogs_pct', 25)) / 100
+        _cogs_pct = 0.155  # 15.5% of gross sales
         try:
             with get_db() as _cf_conn:
                 _fulfill_pct = float(get_cashflow_setting(_cf_conn, 'fulfillment_pct', '0.18'))
+                # net_to_gross from revenue model (DTC ratio)
+                from db import get_revenue_model
+                _rm = get_revenue_model(_cf_conn)
+                _ntg_vals = _rm.get('dtc_net_to_gross', [1.3859589838])
+                _net_to_gross = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
         except Exception:
             _fulfill_pct = 0.18
+            _net_to_gross = 1.3859589838
 
         _dtc_ret = None
         _amz_ret = None
@@ -298,6 +317,7 @@ def render(ctx):
         _cac_payback = compute_cac_payback(
             _hero_spend, _hero_nc, _hero_nc_rev,
             cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
+            net_to_gross=_net_to_gross,
             retention_curve=_use_ret,
         )
         _goal_cac_payback = None
@@ -305,6 +325,7 @@ def render(ctx):
             _goal_cac_payback = compute_cac_payback(
                 _hero_goal_spend, d['goal_nc_count'], d['goal_nc_rev'],
                 cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
+                net_to_gross=_net_to_gross,
                 retention_curve=_use_ret,
             )
         h4.metric('CAC Payback',
@@ -316,15 +337,18 @@ def render(ctx):
         # CAC Payback math breakdown
         _has_amz_ret = bool(_amz_ret and any(v > 0 for v in _amz_ret.values()))
         if _hero_nc > 0 and _hero_spend > 0:
-            _pb_margin = 1 - _cogs_pct - _fulfill_pct
+            # Effective COGS on net = cogs_pct × net_to_gross (since COGS is % of gross)
+            _cogs_on_net = _cogs_pct * _net_to_gross
+            _pb_margin = 1 - _cogs_on_net - _fulfill_pct
 
             with st.expander('CAC Payback Breakdown', expanded=True):
-                v1, v2, v3, v4, v5 = st.columns(5)
+                v1, v2, v3, v4, v5, v6 = st.columns(6)
                 v1.metric('New Customers', f'{_hero_nc:,}')
                 v2.metric('NC Revenue (M0)', f'${_hero_nc_rev:,.0f}')
                 v3.metric('Total Media Spend', f'${_hero_spend:,.0f}')
-                v4.metric('COGS % (Settings)', f'{_cogs_pct:.0%}')
-                v5.metric('Fulfillment % (Cash Flow)', f'{_fulfill_pct:.0%}')
+                v4.metric('COGS % of Gross', f'{_cogs_pct:.1%}')
+                v5.metric('Net \u2192 Gross', f'{_net_to_gross:.2f}x')
+                v6.metric('Fulfillment %', f'{_fulfill_pct:.0%}')
 
                 if _source_filter == 'shopify':
                     _ret_label = 'DTC only'
@@ -335,7 +359,7 @@ def render(ctx):
                 else:
                     _ret_label = 'DTC only'
                 st.caption(f'Total media to recover: **${_hero_spend:,.0f}** | '
-                           f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u2212 {_fulfill_pct:.0%} Fulfill) | '
+                           f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.1%} COGS \u00d7 {_net_to_gross:.2f}x gross \u2212 {_fulfill_pct:.0%} Fulfill) | '
                            f'Retention: **{_ret_label}**')
                 st.caption('*Revenue retention rate = incremental revenue in month N \u00f7 first-order revenue '
                            '(captures both repurchase probability and order value changes). '
@@ -361,9 +385,9 @@ def render(ctx):
                         _blend_r = (_use_ret or {}).get(_m, 0)
                         _rev_total = _hero_nc_rev * _blend_r
 
-                    _cogs_total = _rev_total * _cogs_pct
+                    _cogs_total = _rev_total * _net_to_gross * _cogs_pct
                     _ful_total = _rev_total * _fulfill_pct
-                    _contrib_total = _rev_total * _pb_margin
+                    _contrib_total = _rev_total - _cogs_total - _ful_total
                     _media_hit = _hero_spend if _m == 0 else 0
                     _net_total = _contrib_total - _media_hit
                     _cumul += _net_total
@@ -380,7 +404,7 @@ def render(ctx):
                         _curve_label = 'Rev. Retention'
                         _row_data[_curve_label] = '\u2014' if _m == 0 else f'{_blend_r:.1%}'
                     _row_data['NC Revenue'] = f'${_rev_total:,.0f}'
-                    _row_data[f'COGS ({_cogs_pct:.0%})'] = f'(${_cogs_total:,.0f})'
+                    _row_data[f'COGS ({_cogs_pct:.1%} of Gross)'] = f'(${_cogs_total:,.0f})'
                     _row_data[f'Fulfillment ({_fulfill_pct:.0%})'] = f'(${_ful_total:,.0f})'
                     _row_data['Media Spend'] = f'(${_media_hit:,.0f})' if _m == 0 else '\u2014'
                     _row_data['Net'] = _fmt(_net_total)

@@ -146,7 +146,8 @@ def render_perf_table_colored(df, period_col, max_height=420, grey_cols=None):
 def render_perf_table_transposed(df, period_col, max_height=420, grey_cols=None):
     """Render a performance table transposed: periods as columns, metrics as rows.
 
-    Coloring compares each metric across periods (most recent vs prior).
+    Column order: Metric | Current | Prior Period | % Change
+    Coloring applied to Current column and % Change column.
     """
     if df.empty or len(df) < 2:
         from ui.components import render_html_table
@@ -155,21 +156,39 @@ def render_perf_table_transposed(df, period_col, max_height=420, grey_cols=None)
 
     grey_cols = grey_cols or set()
 
-    # Sort periods descending (most recent first)
-    sorted_df = df.sort_values(period_col, ascending=False).reset_index(drop=True)
-    period_labels = sorted_df[period_col].tolist()
-    metric_cols = [c for c in sorted_df.columns if c != period_col]
+    # Use original row order (assumed chronological oldest-first), then reverse
+    # so most recent period is first column after Metric.
+    unique_periods = list(dict.fromkeys(df[period_col].tolist()))
+    unique_periods.reverse()  # most recent first
+    period_labels = unique_periods
 
-    # Build transposed: rows=metrics, columns=period labels
+    metric_cols = [c for c in df.columns if c != period_col]
+
+    # Build transposed: rows=metrics, columns=[Metric, Current, Prior, ..., % Change]
     transposed = {'Metric': metric_cols}
-    for _, row in sorted_df.iterrows():
-        transposed[row[period_col]] = [row[c] for c in metric_cols]
+    period_data = {}
+    for plabel in period_labels:
+        p_row = df[df[period_col] == plabel].iloc[0]
+        period_data[plabel] = [p_row[c] for c in metric_cols]
+        transposed[plabel] = period_data[plabel]
+
+    # Add % Change column (current vs prior, the first two periods)
+    pct_changes = []
+    if len(period_labels) >= 2:
+        for i, metric in enumerate(metric_cols):
+            curr_val = _parse_perf_num(period_data[period_labels[0]][i])
+            prev_val = _parse_perf_num(period_data[period_labels[1]][i])
+            if curr_val is not None and prev_val is not None and prev_val != 0:
+                pct = (curr_val - prev_val) / abs(prev_val) * 100
+                sign = '+' if pct > 0 else ''
+                pct_changes.append(f'{sign}{pct:.0f}%')
+            else:
+                pct_changes.append('\u2014')
+        transposed['% Change'] = pct_changes
+
     t_df = pd.DataFrame(transposed)
 
-    from ui.tables import gradient_perf_style, _parse_perf_num
-
     def _apply_styles(row):
-        idx = row.name
         metric = row['Metric']
         styles = ['font-weight:600;color:#0F3557'] + [''] * (len(row) - 1)
 
@@ -177,14 +196,19 @@ def render_perf_table_transposed(df, period_col, max_height=420, grey_cols=None)
             styles = ['font-weight:600;color:#9ca3af'] + ['color:#9ca3af;font-weight:400'] * (len(row) - 1)
             return styles
 
-        # Compare most recent (col index 1) with the next older period (col index 2)
+        # Color the Current column (index 1) based on comparison with Prior (index 2)
         if len(period_labels) >= 2:
             curr_val = _parse_perf_num(row.iloc[1])
             prev_val = _parse_perf_num(row.iloc[2])
             if curr_val is not None and prev_val is not None and prev_val != 0:
                 pct_change = (curr_val - prev_val) / abs(prev_val)
                 higher_is_good = PERF_COL_DIRECTION.get(metric, True)
-                styles[1] = gradient_perf_style(pct_change, higher_is_good)
+                color_style = gradient_perf_style(pct_change, higher_is_good)
+                styles[1] = color_style
+                # Also color the % Change column (last column)
+                if '% Change' in t_df.columns:
+                    pct_col_idx = list(t_df.columns).index('% Change')
+                    styles[pct_col_idx] = color_style
 
         return styles
 
