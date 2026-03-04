@@ -107,6 +107,11 @@ if __name__ == "__main__":
     elif "--now" in sys.argv:
         print("Running immediate sync...")
         run_daily_sync(full_refresh=False)
+        # Run analytics models to populate pre-computed results
+        print("\nRunning analytics models...")
+        from analytics.orchestrator import run_all_daily_models
+        model_results = run_all_daily_models(triggered_by='manual')
+        print(f"Model runs completed: {model_results}")
     elif "--full" in sys.argv:
         print("Running full historical refresh...")
         run_daily_sync(full_refresh=True)

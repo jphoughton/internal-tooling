@@ -442,6 +442,14 @@ _SCHEMA_SQL = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS precomputed_analytics (
+        result_key TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        computed_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
+        model_name TEXT,
+        duration_seconds REAL
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -456,6 +464,8 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_cashflow_tx_category ON cashflow_transactions(category)",
     "CREATE INDEX IF NOT EXISTS idx_cashflow_tx_account ON cashflow_transactions(account)",
     "CREATE INDEX IF NOT EXISTS idx_cashflow_overrides_week ON cashflow_overrides(week_start)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_source_customer ON orders(source, customer_id)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_source_date ON orders(source, order_date)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
@@ -1371,6 +1381,70 @@ def get_model_run(conn: ConnectionWrapper, model_name: str) -> Optional[dict[str
     except Exception as exc:
         logger.error('get_model_run failed for model=%s: %s', model_name, exc)
         raise DatabaseError(f'get_model_run failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Pre-computed analytics cache
+# ---------------------------------------------------------------------------
+def save_precomputed(
+    conn: ConnectionWrapper,
+    result_key: str,
+    result_json: str,
+    model_name: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+) -> None:
+    """Persist a pre-computed analytics result to the database."""
+    try:
+        conn.execute("""
+            INSERT INTO precomputed_analytics (result_key, result_json, computed_at, model_name, duration_seconds)
+            VALUES (%s, %s, CURRENT_TIMESTAMP::text, %s, %s)
+            ON CONFLICT(result_key) DO UPDATE SET
+                result_json = excluded.result_json,
+                computed_at = CURRENT_TIMESTAMP::text,
+                model_name = excluded.model_name,
+                duration_seconds = excluded.duration_seconds
+        """, (result_key, result_json, model_name, duration_seconds))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('save_precomputed failed for key=%s: %s', result_key, exc)
+        raise DatabaseError(f'save_precomputed failed: {exc}') from exc
+
+
+def get_precomputed(
+    conn: ConnectionWrapper,
+    result_key: str,
+    max_age_hours: float = 25.0,
+) -> Optional[str]:
+    """Retrieve a pre-computed result if it exists and is fresh enough.
+
+    Returns the raw JSON string or None if missing/stale.
+    """
+    try:
+        row = conn.execute(
+            "SELECT result_json, computed_at FROM precomputed_analytics "
+            "WHERE result_key = %s",
+            (result_key,)
+        ).fetchone()
+        if not row:
+            return None
+        # Check age
+        from datetime import datetime, timedelta, timezone
+        computed_str = row['computed_at']
+        if computed_str:
+            try:
+                computed_dt = datetime.strptime(computed_str[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+                if computed_dt < cutoff:
+                    return None
+            except (ValueError, TypeError):
+                pass  # If we can't parse the timestamp, return the data anyway
+        return row['result_json']
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('get_precomputed failed for key=%s: %s', result_key, exc)
+        raise DatabaseError(f'get_precomputed failed: {exc}') from exc
 
 
 # ---------------------------------------------------------------------------

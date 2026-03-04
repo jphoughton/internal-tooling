@@ -194,62 +194,66 @@ def render(ctx):
         start_str = start_date.strftime('%Y-%m')
         end_str = end_date.strftime('%Y-%m')
 
-        # Metric selector + cumulative toggle
-        _ctrl_col, _toggle_col = st.columns([3, 1])
-        with _ctrl_col:
-            metric = st.segmented_control(
-                'Metric',
-                options=['Total Sales', 'Retention Rate', 'LTV'],
-                default='Total Sales',
-                key='cohort_metric',
+        # Metric selector + cumulative toggle — wrapped in fragment to avoid full page rerun
+        @st.fragment
+        def _cohort_controls():
+            _ctrl_col, _toggle_col = st.columns([3, 1])
+            with _ctrl_col:
+                metric = st.segmented_control(
+                    'Metric',
+                    options=['Total Sales', 'Retention Rate', 'LTV'],
+                    default='Total Sales',
+                    key='cohort_metric',
+                )
+            with _toggle_col:
+                cumulative = st.toggle('Cumulative', value=True, key='cohort_cumulative')
+
+            if not metric:
+                metric = 'Total Sales'
+
+            display_df, month_cols = _build_cohort_table(
+                matrices, summary, metric, cumulative, start_str, end_str,
             )
-        with _toggle_col:
-            cumulative = st.toggle('Cumulative', value=True, key='cohort_cumulative')
 
-        if not metric:
-            metric = 'Total Sales'
-
-        display_df, month_cols = _build_cohort_table(
-            matrices, summary, metric, cumulative, start_str, end_str,
-        )
-
-        if display_df is None or display_df.empty:
-            st.warning('No cohorts in the selected date range.')
-        else:
-            st.subheader('Cohort Analysis')
-            st.caption(f'{metric} {"(Cumulative)" if cumulative else "(Per Month)"} — by first order month.')
-
-            # Color gradient on month columns
-            if month_cols:
-                from ui.tables import _parse_perf_num
-                flat_vals = []
-                for mc in month_cols:
-                    for v in display_df[mc]:
-                        num = _parse_perf_num(v)
-                        if num is not None and num > 0:
-                            flat_vals.append(num)
-                if flat_vals:
-                    vmin = np.percentile(flat_vals, 5)
-                    vmax = np.percentile(flat_vals, 95)
-                else:
-                    vmin, vmax = 0, 1
-                style_fn = make_cohort_cell_style(vmin, vmax)
+            if display_df is None or display_df.empty:
+                st.warning('No cohorts in the selected date range.')
             else:
-                style_fn = None
+                st.subheader('Cohort Analysis')
+                st.caption(f'{metric} {"(Cumulative)" if cumulative else "(Per Month)"} — by first order month.')
 
-            summary_cols = ['Cohort', 'Customers', 'NCPA', 'RPR']
-            column_groups = [
-                ('', summary_cols),
-                ('Month', month_cols),
-            ]
+                # Color gradient on month columns
+                if month_cols:
+                    from ui.tables import _parse_perf_num
+                    flat_vals = []
+                    for mc in month_cols:
+                        for v in display_df[mc]:
+                            num = _parse_perf_num(v)
+                            if num is not None and num > 0:
+                                flat_vals.append(num)
+                    if flat_vals:
+                        vmin = np.percentile(flat_vals, 5)
+                        vmax = np.percentile(flat_vals, 95)
+                    else:
+                        vmin, vmax = 0, 1
+                    style_fn = make_cohort_cell_style(vmin, vmax)
+                else:
+                    style_fn = None
 
-            render_html_table(
-                display_df,
-                max_height=min(len(display_df) * 35 + 60, 700),
-                style_fn=style_fn,
-                style_cols=month_cols,
-                column_groups=column_groups,
-            )
+                summary_cols = ['Cohort', 'Customers', 'NCPA', 'RPR']
+                column_groups = [
+                    ('', summary_cols),
+                    ('Month', month_cols),
+                ]
+
+                render_html_table(
+                    display_df,
+                    max_height=min(len(display_df) * 35 + 60, 700),
+                    style_fn=style_fn,
+                    style_cols=month_cols,
+                    column_groups=column_groups,
+                )
+
+        _cohort_controls()
 
     # --- Retention Curve ---
     st.divider()

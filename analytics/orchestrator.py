@@ -5,6 +5,9 @@ Runs analytics models (retention cohorts, repeat forecast, seasonality
 adjustment, SKU-level % of sales) on a daily schedule and triggers
 event-driven waterfall reruns when new repeat data arrives.
 
+All model results are persisted to the precomputed_analytics table so
+the dashboard can read them instantly without recomputing.
+
 Models:
     retention_cohorts   — rebuild cohort retention matrix
     repeat_forecast     — waterfall demand split (new + repeat)
@@ -12,10 +15,12 @@ Models:
     sku_sales_mix       — SKU-level % of sales from recent orders
     waterfall           — full waterfall build (event-driven on new repeat data)
     cashflow_forecast   — cash flow projection refresh and KPI health logging
+    global_alerts       — reorder + FBA transfer urgency alerts for notification bar
 """
+import json
 import logging
 import time
-from db import get_db, log_model_run, get_model_run
+from db import get_db, log_model_run, get_model_run, save_precomputed
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,7 @@ MODEL_SEASONALITY = 'seasonality'
 MODEL_SKU_MIX = 'sku_sales_mix'
 MODEL_WATERFALL = 'waterfall'
 MODEL_CASHFLOW = 'cashflow_forecast'
+MODEL_GLOBAL_ALERTS = 'global_alerts'
 
 ALL_DAILY_MODELS = [
     MODEL_RETENTION,
@@ -34,6 +40,7 @@ ALL_DAILY_MODELS = [
     MODEL_SKU_MIX,
     MODEL_WATERFALL,
     MODEL_CASHFLOW,
+    MODEL_GLOBAL_ALERTS,
 ]
 
 
@@ -62,13 +69,51 @@ def _run_model(model_name, fn, triggered_by='scheduler'):
     return status
 
 
+def _save_result(result_key, data, model_name, duration=None):
+    """Serialize and persist a model result to precomputed_analytics."""
+    try:
+        if isinstance(data, dict):
+            result_json = json.dumps(data, default=str)
+        else:
+            result_json = json.dumps(data, default=str)
+        with get_db() as conn:
+            save_precomputed(conn, result_key, result_json, model_name, duration)
+        logger.info('[orchestrator] Saved precomputed result: %s (%.1f KB)',
+                     result_key, len(result_json) / 1024)
+    except Exception as exc:
+        logger.error('[orchestrator] Failed to save precomputed %s: %s', result_key, exc)
+
+
 def run_retention_cohorts(triggered_by='scheduler'):
     """Recompute retention cohort matrix and cache it (Shopify/DTC only)."""
     def _compute():
-        from analytics.retention import get_customer_cohort_data, get_revenue_retention_data
+        from analytics.retention import (
+            get_customer_cohort_data, get_revenue_retention_data,
+            build_cohort_matrices, get_cohort_summary,
+        )
+        t0 = time.time()
         # Repeat model is DTC-only: compute Shopify cohorts
         get_customer_cohort_data(source_filter='shopify')
         get_revenue_retention_data(source_filter='shopify')
+
+        # Persist cohort matrices for dashboard
+        for src in ['shopify', 'amazon', None]:
+            key_suffix = src or 'rollup'
+            try:
+                matrices = build_cohort_matrices(source_filter=src or 'shopify')
+                serializable = {}
+                for k, v in matrices.items():
+                    if hasattr(v, 'to_json'):
+                        serializable[k] = json.loads(v.to_json())
+                    elif hasattr(v, 'to_dict'):
+                        serializable[k] = v.to_dict()
+                    else:
+                        serializable[k] = v
+                _save_result(f'cohort_matrices_{key_suffix}', serializable,
+                             MODEL_RETENTION, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] Failed to persist cohort_matrices_%s: %s', key_suffix, exc)
+
     return _run_model(MODEL_RETENTION, _compute, triggered_by)
 
 
@@ -84,8 +129,14 @@ def run_repeat_forecast(triggered_by='scheduler'):
         # Clear stale cache before recomputing
         clear_waterfall_cache()
         # Repeat model is DTC-only: all functions use Shopify internally
-        get_average_retention_curve()
-        get_aov_and_units()
+        t0 = time.time()
+        curve = get_average_retention_curve()
+        _save_result('retention_curve', curve, MODEL_REPEAT_FORECAST, time.time() - t0)
+
+        t0 = time.time()
+        aov = get_aov_and_units()
+        _save_result('aov_and_units', aov, MODEL_REPEAT_FORECAST, time.time() - t0)
+
         get_monthly_new_customers()
     return _run_model(MODEL_REPEAT_FORECAST, _compute, triggered_by)
 
@@ -125,8 +176,8 @@ def run_sku_sales_mix(triggered_by='scheduler'):
 def run_waterfall(triggered_by='scheduler'):
     """Build full waterfall forecast using current media plan and seasonality."""
     def _compute():
-        from analytics.waterfall import build_waterfall, clear_waterfall_cache
-        from db import get_media_spend, get_seasonal_indices, get_setting
+        from analytics.waterfall import build_waterfall, build_sku_forecast_table, clear_waterfall_cache
+        from db import get_media_spend, get_seasonal_indices, get_sku_seasonal_indices, get_setting
 
         clear_waterfall_cache()
 
@@ -138,13 +189,32 @@ def run_waterfall(triggered_by='scheduler'):
                 indices = get_seasonal_indices(conn)
                 if indices:
                     seasonal = indices
+            sku_seasonal = get_sku_seasonal_indices(conn)
 
         if not media_plan:
             logger.warning('[orchestrator] No media plan found, skipping waterfall build')
             return
 
-        build_waterfall(media_plan, horizon_months=12,
-                        seasonal_indices=seasonal)
+        t0 = time.time()
+        wf_df = build_waterfall(media_plan, horizon_months=12,
+                                seasonal_indices=seasonal)
+        wf_duration = time.time() - t0
+
+        if wf_df is not None and not wf_df.empty:
+            _save_result('waterfall_rollup', json.loads(wf_df.to_json()),
+                         MODEL_WATERFALL, wf_duration)
+
+            # Also build and persist SKU forecast
+            t0 = time.time()
+            sku_df = build_sku_forecast_table(
+                wf_df, source_filter=None,
+                sku_seasonal_indices=sku_seasonal if sku_seasonal else None,
+                global_seasonal_indices=seasonal,
+            )
+            sku_duration = time.time() - t0
+            if sku_df is not None and not sku_df.empty:
+                _save_result('sku_forecast_rollup', json.loads(sku_df.to_json()),
+                             MODEL_WATERFALL, sku_duration)
 
     return _run_model(MODEL_WATERFALL, _compute, triggered_by)
 
@@ -155,12 +225,19 @@ def run_cashflow_forecast(triggered_by='scheduler'):
         from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
 
         with get_db() as conn:
+            t0 = time.time()
             forecast_df = build_cashflow_forecast(conn, weeks=13)
+            cf_duration = time.time() - t0
             if forecast_df is None or forecast_df.empty:
                 logger.warning('[orchestrator] Cash flow forecast returned no data')
                 return
 
             kpis = get_cashflow_kpis(conn, forecast_df)
+
+        # Persist cashflow forecast
+        _save_result('cashflow_forecast', json.loads(forecast_df.to_json()),
+                     MODEL_CASHFLOW, cf_duration)
+        _save_result('cashflow_kpis', kpis, MODEL_CASHFLOW)
 
         logger.info(
             '[orchestrator] Cash flow KPIs: cash=$%,.0f, 13w_projected=$%,.0f, '
@@ -180,10 +257,209 @@ def run_cashflow_forecast(triggered_by='scheduler'):
     return _run_model(MODEL_CASHFLOW, _compute, triggered_by)
 
 
+def run_global_alerts(triggered_by='scheduler'):
+    """Pre-compute global reorder & FBA transfer alerts for the notification bar.
+
+    This chains waterfall + SKU forecast + inventory + reorder — the single
+    biggest cold-start bottleneck (5-15s).
+    """
+    def _compute():
+        import pandas as pd
+        from datetime import timedelta
+        from analytics.reorder import build_reorder_plan
+        from analytics.waterfall import build_waterfall, build_sku_forecast_table
+        from analytics.cashflow import build_cashflow_forecast, get_cashflow_kpis
+        from analytics.sku_flavors import get_flavor
+        from db import (
+            get_media_spend, get_seasonal_indices, get_sku_seasonal_indices,
+            get_setting, get_inventory_snapshot,
+        )
+        from ui.business_vars import get_business_vars
+        from utils.constants import FORECAST_SKUS
+        from utils.date_helpers import business_today, business_yesterday
+
+        alerts = {'reorder': [], 'transfer': [], 'cashflow': []}
+
+        # Cash flow alerts
+        try:
+            with get_db() as conn:
+                cf_df = build_cashflow_forecast(conn, weeks=13, scenario='base')
+                if cf_df is not None and not cf_df.empty:
+                    cf_kpis = get_cashflow_kpis(conn, cf_df)
+                    if cf_kpis.get('alert_week'):
+                        alerts['cashflow'].append({
+                            'week': cf_kpis['alert_week'],
+                            'balance': float(cf_df[cf_df['week_num'] == cf_kpis['alert_week']].iloc[0]['closing_balance']),
+                            'threshold': cf_kpis['min_cash_threshold'],
+                        })
+        except Exception:
+            pass
+
+        try:
+            with get_db() as conn:
+                media_plan = get_media_spend(conn, source='All Sources')
+                enabled = get_setting(conn, 'seasonality_enabled', 'true')
+                seasonal = None
+                if enabled == 'true':
+                    indices = get_seasonal_indices(conn)
+                    if indices:
+                        seasonal = indices
+                sku_seasonal = get_sku_seasonal_indices(conn)
+
+            if not media_plan:
+                _save_result('global_alerts', alerts, MODEL_GLOBAL_ALERTS)
+                return
+
+            wf_df = build_waterfall(media_plan, horizon_months=12, seasonal_indices=seasonal)
+            if wf_df is None or wf_df.empty:
+                _save_result('global_alerts', alerts, MODEL_GLOBAL_ALERTS)
+                return
+
+            sku_df = build_sku_forecast_table(
+                wf_df, source_filter=None,
+                sku_seasonal_indices=sku_seasonal if sku_seasonal else None,
+                global_seasonal_indices=seasonal,
+            )
+            if sku_df.empty:
+                _save_result('global_alerts', alerts, MODEL_GLOBAL_ALERTS)
+                return
+
+            sku_df = sku_df[sku_df['SKU'].isin(FORECAST_SKUS)].copy()
+            if 'Variant' in sku_df.columns:
+                sku_df = sku_df.drop(columns=['Variant'])
+            if 'Flavor' not in sku_df.columns:
+                sku_df.insert(1, 'Flavor', sku_df['SKU'].map(lambda s: get_flavor(s)))
+
+            # Load inventory from DB snapshots
+            combined_inv = {}
+            try:
+                with get_db() as conn:
+                    _3pl_items = get_inventory_snapshot(conn, 'packiyo', max_age_hours=24) or []
+                for item in _3pl_items:
+                    sku = item['sku']
+                    if sku in FORECAST_SKUS:
+                        combined_inv.setdefault(sku, {
+                            'sku': sku, 'name': item.get('name', ''),
+                            'quantity_available': 0, 'quantity_on_hand': 0,
+                            'quantity_inbound': 0, '3pl_available': 0, 'fba_fulfillable': 0,
+                        })
+                        combined_inv[sku]['3pl_available'] = int(float(item.get('quantity_available', 0) or 0))
+                        combined_inv[sku]['quantity_available'] += combined_inv[sku]['3pl_available']
+                        combined_inv[sku]['quantity_inbound'] += int(float(item.get('quantity_inbound', 0) or 0))
+            except Exception:
+                pass
+
+            amz_inv_items = []
+            try:
+                with get_db() as conn:
+                    amz_inv_items = get_inventory_snapshot(conn, 'amazon', max_age_hours=24) or []
+                for item in amz_inv_items:
+                    sku = item['sku']
+                    if sku in FORECAST_SKUS:
+                        combined_inv.setdefault(sku, {
+                            'sku': sku, 'name': item.get('name', ''),
+                            'quantity_available': 0, 'quantity_on_hand': 0,
+                            'quantity_inbound': 0, '3pl_available': 0, 'fba_fulfillable': 0,
+                        })
+                        fba_qty = int(float(item.get('total_quantity', 0) or 0))
+                        combined_inv[sku]['fba_fulfillable'] = fba_qty
+                        combined_inv[sku]['quantity_available'] += fba_qty
+            except Exception:
+                pass
+
+            if not combined_inv:
+                _save_result('global_alerts', alerts, MODEL_GLOBAL_ALERTS)
+                return
+
+            inv_data = list(combined_inv.values())
+
+            # Build reorder plan
+            with get_db() as conn:
+                planned = {}
+                try:
+                    pi_rows = conn.execute('SELECT sku, month, units FROM planned_inbound').fetchall()
+                    for r in pi_rows:
+                        planned.setdefault(r[0], {})[r[1]] = int(r[2])
+                except Exception:
+                    pass
+
+            bv = get_business_vars()
+            reorder_df, _ = build_reorder_plan(
+                sku_forecast_table=sku_df,
+                inventory_data=inv_data,
+                lead_time_weeks=bv['lead_time_weeks'],
+                moq=bv['moq_units'],
+                safety_weeks=bv['safety_buffer_weeks'],
+                forecast_skus=FORECAST_SKUS,
+                planned_inbound=planned,
+            )
+
+            if not reorder_df.empty:
+                for _, row in reorder_df.iterrows():
+                    urgency = row.get('Urgency', 'OK')
+                    if urgency in ('OVERDUE', 'ORDER NOW', 'ORDER SOON', 'EN ROUTE \u26a0\ufe0f'):
+                        days = row.get('Days Until Reorder')
+                        alerts['reorder'].append({
+                            'sku': row.get('SKU', ''),
+                            'flavor': row.get('Flavor', ''),
+                            'days': int(days) if pd.notna(days) else None,
+                            'urgency': urgency,
+                            'qty': int(row.get('Order Qty', 0)),
+                        })
+
+            # FBA transfer alerts
+            if amz_inv_items:
+                from db import read_sql
+                with get_db() as conn:
+                    amz_dem = read_sql("""
+                        SELECT sku, SUM(units_sold) / 3.0 as monthly_demand
+                        FROM daily_sku_sales
+                        WHERE source = 'amazon' AND sale_date >= date('now', '-90 days')
+                          AND sale_date <= %s
+                        GROUP BY sku
+                    """, conn, params=(str(business_yesterday()),))
+                amz_dem_map = dict(zip(amz_dem['sku'], amz_dem['monthly_demand'])) if not amz_dem.empty else {}
+                today = business_today()
+                xfer_lt = bv['fba_transfer_lt_weeks'] * 7
+
+                for item in amz_inv_items:
+                    sku = item['sku']
+                    if sku not in FORECAST_SKUS:
+                        continue
+                    fba_stock = int(float(item.get('total_quantity', 0) or 0))
+                    monthly = amz_dem_map.get(sku, 0)
+                    daily_rate = monthly / 30.44 if monthly > 0 else 0
+                    if daily_rate <= 0:
+                        continue
+                    days_of_stock = fba_stock / daily_rate
+                    if days_of_stock >= 365:
+                        continue
+                    fba_stockout = today + timedelta(days=int(days_of_stock))
+                    transfer_by = fba_stockout - timedelta(days=xfer_lt)
+                    days_until = (transfer_by - today).days
+                    if days_until <= 21:
+                        t_urg = 'OVERDUE' if days_until < 0 else ('TRANSFER NOW' if days_until <= 7 else 'TRANSFER SOON')
+                        alerts['transfer'].append({
+                            'sku': sku,
+                            'flavor': get_flavor(sku),
+                            'days': days_until,
+                            'urgency': t_urg,
+                            'fba_stock': fba_stock,
+                            'days_of_stock': round(days_of_stock),
+                        })
+
+        except Exception as exc:
+            logger.error('[orchestrator] Global alerts computation failed: %s', exc)
+
+        _save_result('global_alerts', alerts, MODEL_GLOBAL_ALERTS)
+
+    return _run_model(MODEL_GLOBAL_ALERTS, _compute, triggered_by)
+
+
 def run_all_daily_models(triggered_by='scheduler'):
     """Run all daily analytics models in dependency order.
 
-    Order matters: retention → repeat_forecast → seasonality → sku_mix → waterfall.
+    Order matters: retention → repeat_forecast → seasonality → sku_mix → waterfall → cashflow → alerts.
     Returns dict of {model_name: status}.
     """
     logger.info('[orchestrator] Starting daily model run (triggered_by=%s)', triggered_by)
@@ -197,6 +473,7 @@ def run_all_daily_models(triggered_by='scheduler'):
     results[MODEL_SKU_MIX] = run_sku_sales_mix(triggered_by)
     results[MODEL_WATERFALL] = run_waterfall(triggered_by)
     results[MODEL_CASHFLOW] = run_cashflow_forecast(triggered_by)
+    results[MODEL_GLOBAL_ALERTS] = run_global_alerts(triggered_by)
 
     duration = round(time.time() - t0, 1)
     successes = sum(1 for s in results.values() if s == 'success')
@@ -241,4 +518,5 @@ def run_waterfall_if_new_repeat_data(triggered_by='etl_sync'):
     results[MODEL_REPEAT_FORECAST] = run_repeat_forecast(triggered_by)
     results[MODEL_SEASONALITY] = run_seasonality(triggered_by)
     results[MODEL_WATERFALL] = run_waterfall(triggered_by)
+    results[MODEL_GLOBAL_ALERTS] = run_global_alerts(triggered_by)
     return results
