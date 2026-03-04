@@ -68,7 +68,7 @@ def render(ctx):
     st.markdown('---')
 
     # Filter controls
-    filter_col1, filter_col2 = st.columns([1, 1])
+    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1])
     with filter_col1:
         show_filter = st.segmented_control(
             'Show',
@@ -82,6 +82,20 @@ def render(ctx):
             ['All', 'Credits', 'Debits'],
             default='All',
             key='txmap_direction',
+        )
+    with filter_col3:
+        _SORT_OPTIONS = [
+            'Count (High\u2192Low)',
+            'Amount (High\u2192Low)',
+            'Newest First',
+            'A\u2192Z',
+            'Unmapped First',
+        ]
+        sort_by = st.selectbox(
+            'Sort by',
+            _SORT_OPTIONS,
+            index=0,
+            key='txmap_sort',
         )
 
     # Load patterns
@@ -155,6 +169,26 @@ def render(ctx):
     patterns_df['normalized'] = patterns_df['example'].apply(
         lambda x: normalize_summary(x) if pd.notna(x) else ''
     )
+
+    # Apply sort
+    if sort_by == 'Count (High\u2192Low)':
+        patterns_df = patterns_df.sort_values('tx_count', ascending=False)
+    elif sort_by == 'Amount (High\u2192Low)':
+        patterns_df = patterns_df.sort_values(
+            'total_amount', ascending=False, key=lambda s: s.abs(),
+        )
+    elif sort_by == 'Newest First':
+        patterns_df = patterns_df.sort_values('last_seen', ascending=False)
+    elif sort_by == 'A\u2192Z':
+        patterns_df = patterns_df.sort_values('normalized', ascending=True)
+    elif sort_by == 'Unmapped First':
+        patterns_df = patterns_df.sort_values(
+            'current_category',
+            ascending=True,
+            key=lambda s: s.fillna('').apply(
+                lambda v: 0 if v in ('unmapped', '') else 1
+            ),
+        )
 
     st.markdown(f'**{len(patterns_df)} patterns** to review')
 
