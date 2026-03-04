@@ -164,12 +164,18 @@ def render(ctx):
     # ================================================================
     if pacing_data:
         d = pacing_data
+        _pct = d['pct_month']  # fraction of month elapsed (e.g. 0.10 for day 3/31)
+
+        # Pro-rated goals: where we should be RIGHT NOW
+        _rev_pace_goal = d['goal_total_rev'] * _pct if d['has_goals'] else 0
+        _nc_pace_goal = d['goal_nc_count'] * _pct if d.get('goal_nc_count', 0) > 0 else 0
+
         h1, h2, h3 = st.columns(3)
         h1.metric('Total Rev MTD', f"${d['total_actual_rev']:,.0f}",
-                   delta=f"Goal: ${d['goal_total_rev']:,.0f}" if d['has_goals'] else None,
+                   delta=f"Pace: ${_rev_pace_goal:,.0f}" if _rev_pace_goal > 0 else None,
                    delta_color='off')
         h2.metric('New Customers MTD', f"{d['cm_total_nc']:,}",
-                   delta=f"Goal: {d['goal_nc_count']:,.0f}" if d.get('goal_nc_count', 0) > 0 else None,
+                   delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
                    delta_color='off')
 
         # CAC Payback — contribution-margin model with COGS, fulfillment, retention
@@ -201,7 +207,7 @@ def render(ctx):
             )
         h3.metric('CAC Payback',
                    f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
-                   delta=f"Goal: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
+                   delta=f"Target: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
                    delta_color='off',
                    help='Months until contribution margin (rev \u2212 COGS \u2212 fulfillment) covers CAC, including repeat revenue')
 

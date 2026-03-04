@@ -276,6 +276,10 @@ def compute_pacing_data(ctx):
         _wf_nc_row = _wf[_wf['month'] == _cur_month]
         if not _wf_nc_row.empty:
             _goal_nc_count = float(_wf_nc_row.iloc[0].get('new_customers_acquired', 0))
+    if _goal_nc_count == 0 and _mkt_summary is not None and not _mkt_summary.empty:
+        _sum_nc_row = _mkt_summary[_mkt_summary['month'] == _cur_month]
+        if not _sum_nc_row.empty and 'shopify_new_customers' in _sum_nc_row.columns:
+            _goal_nc_count = float(_sum_nc_row.iloc[0].get('shopify_new_customers', 0))
 
     _goal_mer = _goal_total_rev / _goal_total_spend if _goal_total_spend > 0 else 0
     _goal_nc_roas_ratio = _goal_nc_rev / _goal_spend if _goal_spend > 0 else 0

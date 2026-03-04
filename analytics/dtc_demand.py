@@ -793,8 +793,16 @@ def build_master_dtc_forecast(
         rep_rev = repeat_rev_by_month.get(m, 0)
         amz_rev = amz_rev_by_month.get(m, 0)
 
+        # NC count from waterfall for this month
+        _nc_acquired = 0
+        if shopify_waterfall_df is not None and not shopify_waterfall_df.empty:
+            _wf_row = shopify_waterfall_df[shopify_waterfall_df['month'] == m]
+            if not _wf_row.empty:
+                _nc_acquired = float(_wf_row.iloc[0].get('new_customers_acquired', 0))
+
         summary_rows.append({
             "month": m,
+            "shopify_new_customers": round(_nc_acquired),
             "shopify_repeat_units": round(rep_total),
             "shopify_new_units": round(new_total),
             "shopify_total_units": round(shopify_total),
