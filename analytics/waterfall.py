@@ -84,12 +84,14 @@ def get_average_retention_curve(source_filter=None, min_cohorts=3, recency_weigh
     - Weighting: Last 12 months = 60%, Next 12 = 30%, Rest = 10%
     - Extrapolation beyond observed data: 0.98 decay, 0.50% floor
 
-    The source_filter parameter is accepted for API compatibility but the
-    repeat model always uses Shopify-only data internally.
+    The source_filter parameter controls which channel's data to use.
+    Defaults to 'shopify' when not specified (original behaviour).
     """
+    _sf = source_filter or 'shopify'
+    _cache_key = f"rev_retention_{_sf}"
     rev_data = _get_cached(
-        "rev_retention_shopify",
-        lambda: get_revenue_retention_data(source_filter='shopify')
+        _cache_key,
+        lambda: get_revenue_retention_data(source_filter=_sf)
     )
     matrix = rev_data['matrix']
     if matrix.empty:
