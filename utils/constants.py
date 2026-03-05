@@ -85,11 +85,11 @@ CASHFLOW_CATEGORIES = {
     'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_schedule'},
     'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'dtc_revenue_pct'},
     'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'quarterly_detect'},
-    'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'trailing_avg'},
+    'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'monthly_lump'},
     'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
-    'agency': {'label': 'Agency Fees', 'group': 'expense', 'method': 'trailing_avg'},
-    'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'trailing_avg'},
-    'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'trailing_avg'},
+    'agency': {'label': 'Agency Fees', 'group': 'expense', 'method': 'monthly_lump'},
+    'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'monthly_lump'},
+    'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'monthly_lump'},
     'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'trailing_avg'},
     # COGS & Debt — outflows tracked separately from operating expenses
     'production': {'label': 'Production / COGS', 'group': 'cogs_debt', 'method': 'revenue_pct'},
@@ -101,20 +101,21 @@ CASHFLOW_CATEGORIES = {
     'unmapped': {'label': 'Unmapped', 'group': 'unmapped', 'method': None},
 }
 
-# Seed defaults for expense projections (weekly amounts) when no actuals exist
+# Seed defaults for expense projections when no actuals exist.
+# monthly_lump categories: monthly amount. Others: weekly amount.
 CASHFLOW_SEED_DEFAULTS = {
-    'media': 12500,        # ~$50K/mo
+    'media': 12500,        # ~$50K/mo (weekly avg, but hits EOM)
     'payroll': 8000,       # $16K biweekly = $8K/wk avg
-    'loan': 7500,          # ~$30K/mo
+    'loan': 7500,          # ~$30K/mo (weekly avg, but hits EOM)
     'loan_interest': 0,    # calculated from LOC balance × APR
     'fulfillment': 5000,   # $5K/wk
-    'production': 0,       # spiky, use COGS % instead
+    'production': 0,       # from P&L COGS
     'sales_tax': 1500,     # ~$18K/qtr = ~$1.5K/wk
-    'software': 2600,      # ~$10.5K/mo
-    'shipping': 2000,      # varies
-    'agency': 2600,        # ~$10.5K/mo
-    'accounting': 1250,    # ~$5K/mo
-    'insurance': 1000,     # ~$4K/mo
+    'software': 10541,     # $10,540.56/mo — monthly lump
+    'shipping': 2000,      # varies weekly
+    'agency': 7000,        # ~$7K/mo — monthly lump (agency + Quartile + creative)
+    'accounting': 2500,    # $2,500/mo — monthly lump (CPA)
+    'insurance': 3000,     # ~$3K/mo — monthly lump
     'other_expense': 500,
 }
 

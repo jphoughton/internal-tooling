@@ -562,12 +562,25 @@ def _project_expense_week(
         monthly_media = ctx.get('monthly_media_spend', {})
         monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
         # Media bills once at EOM — assign to the week containing the last day of the month
-
         _, last_day = calendar.monthrange(week_start.year, week_start.month)
         eom = date(week_start.year, week_start.month, last_day)
         if week_start <= eom <= week_end:
             return monthly
         return 0.0
+
+    elif method == 'monthly_lump':
+        # Fixed monthly expenses (software, agency, accounting, insurance).
+        # Hits once per month in the week containing the 1st.
+        # Uses trailing monthly total from bank data, or seed default.
+        first_of_month = date(week_start.year, week_start.month, 1)
+        if not (week_start <= first_of_month <= week_end):
+            return 0.0
+        # Use trailing monthly total if we have bank data
+        sched_key = f'_schedule_{category}'
+        schedule = ctx.get(sched_key)
+        if schedule and schedule.get('has_data') and schedule.get('monthly_total', 0) > 0:
+            return schedule['monthly_total']
+        return CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
     elif method == 'biweekly_schedule':
         last_amount = ctx.get('last_payroll_amount', CASHFLOW_SEED_DEFAULTS.get('payroll', 8000))
