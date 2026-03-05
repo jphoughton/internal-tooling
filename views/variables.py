@@ -395,14 +395,22 @@ def _save_revenue_model(live, months):
     with get_db() as conn:
         save_revenue_model_bulk(conn, live)
 
+        # Invalidate precomputed forecast so pacing picks up new goals
+        try:
+            conn.execute("DELETE FROM precomputed_analytics WHERE result_key = %s",
+                         ('master_dtc_forecast',))
+        except Exception:
+            pass
+
         # Sync to media_spend + amazon_revenue_forecast for waterfall/cashflow
         for m in months:
             dtc_spend = live.get('dtc_spend', {}).get(m, 0)
             dtc_roas = live.get('dtc_nc_roas', {}).get(m, 0)
             amz_spend = live.get('amazon_spend', {}).get(m, 0)
-            # Amazon total revenue = Amazon New (multiplier * DTC spend) + Amazon Repeat
+            # Amazon total revenue = Amazon New (multiplier * DTC new rev) + Amazon Repeat
             nc_mult = live.get('nc_multiplier', {}).get(m, 0)
-            amz_new = nc_mult * dtc_spend
+            dtc_new_rev = dtc_spend * dtc_roas
+            amz_new = nc_mult * dtc_new_rev
             amz_repeat = live.get('amazon_repeat', {}).get(m, 0)
             amz_total_rev = amz_new + amz_repeat
 
