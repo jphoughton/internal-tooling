@@ -364,14 +364,10 @@ def _project_revenue_week(
 ) -> float:
     """Project revenue for a single future week."""
     if category == 'dtc_revenue':
-        # Use waterfall forecast monthly revenue, distribute to weeks.
-        # Apply DTC_DOW_WEIGHTS to handle weeks that span two months:
-        # each day's share of the weekly revenue is weighted by its
-        # day-of-week payout weight, attributed to the correct month.
+        # DTC revenue net of processing fees (already deducted in context).
+        # Distribute monthly total to weeks using DOW payout weights.
         monthly_rev = ctx.get('dtc_monthly_revenue', {})
-        ratio = ctx.get('dtc_payout_ratio', 0.94)
 
-        # Accumulate weighted daily revenue across the week
         total = 0.0
         weight_sum = sum(DTC_DOW_WEIGHTS.values())
         if weight_sum <= 0:
@@ -382,32 +378,27 @@ def _project_revenue_week(
             dow_weight = DTC_DOW_WEIGHTS.get(d.weekday(), 0.0)
             month_key = d.strftime('%Y-%m')
             monthly = monthly_rev.get(month_key, 0)
-            # Daily share = monthly / ~30.44 days, then scaled by DOW weight
-            # relative to the average daily weight (weight_sum / 7)
             daily_share = (monthly / 30.44) * (dow_weight / (weight_sum / 7))
             total += daily_share
             d += timedelta(days=1)
 
-        return total * ratio
+        return total
 
     elif category == 'amazon_revenue':
-        # Amazon disburses biweekly (~8th and ~24th of each month).
-        # Non-disbursement weeks show $0 so the table reflects actual
-        # deposit timing.  Uses pre-computed schedule from ctx to avoid
-        # the per-week double-counting bug.
+        # Amazon revenue net of Amazon fees (already deducted in context).
+        # Disburses biweekly (~8th and ~24th of each month).
         monthly_rev = ctx.get('amazon_monthly_revenue', {})
-        ratio = ctx.get('amazon_payout_ratio', 0.62)
 
         schedule = ctx.get('_amazon_disbursements', {})
         week_disb = schedule.get(str(week_start), {})
         if not week_disb:
             return 0.0
 
-        # Each disbursement event = half the month's payout
+        # Each disbursement event = half the month's net payout
         total = 0.0
         for month_key, count in week_disb.items():
             monthly = monthly_rev.get(month_key, 0)
-            total += (monthly * ratio / 2) * count
+            total += (monthly / 2) * count
         return total
 
     else:
@@ -539,24 +530,26 @@ def _project_expense_week(
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    # COGS is always a % of GROSS revenue, spread evenly across weeks.
-    # Uses monthly revenue / 4.33 (not payout timing) so COGS doesn't
-    # spike on Amazon disbursement weeks and drop to zero otherwise.
+    # COGS — sourced from P&L revenue model, hits at EOM.
     if method == 'revenue_pct':
-        cogs_pct = ctx.get('cogs_pct', 0.25)
-
-        # DTC: smooth weekly gross from monthly forecast
-        dtc_monthly = ctx.get('dtc_monthly_revenue', {})
         month_key = week_start.strftime('%Y-%m')
-        dtc_month_total = dtc_monthly.get(month_key, 0)
-        dtc_weekly_gross = dtc_month_total / 4.33
+        rm_cogs = ctx.get('_rm_monthly_cogs', {}).get(month_key, 0)
+        if rm_cogs > 0:
+            # COGS hits at end of month (like media)
+            if week_end.day >= 25 or week_start.day >= 25:
+                return rm_cogs
+            return 0.0
 
-        # Amazon: smooth weekly gross from monthly forecast
+        # Fallback when revenue model has no data for this month
+        cogs_pct = ctx.get('cogs_pct', 0.25)
+        dtc_monthly = ctx.get('dtc_monthly_revenue', {})
+        dtc_month_total = dtc_monthly.get(month_key, 0)
         amz_monthly = ctx.get('amazon_monthly_revenue', {})
         amz_month_total = amz_monthly.get(month_key, 0)
-        amz_weekly_gross = amz_month_total / 4.33
-
-        return (dtc_weekly_gross + amz_weekly_gross) * cogs_pct
+        total = (dtc_month_total + amz_month_total) * cogs_pct
+        if week_end.day >= 25 or week_start.day >= 25:
+            return total
+        return 0.0
 
     # --- Method-based projection FIRST for categories with explicit timing ---
     # These methods encode business-specific timing (biweekly payroll, monthly
@@ -603,9 +596,14 @@ def _project_expense_week(
                 return monthly_interest
         return 0.0
 
-    # --- Fulfillment / 3PL: percentage of DTC revenue ---
-    # Uses the user-configurable fulfillment_pct setting from model parameters.
+    # --- Fulfillment / 3PL: sourced from P&L, spread evenly across weeks ---
     if method == 'dtc_revenue_pct':
+        month_key = week_start.strftime('%Y-%m')
+        rm_fulfill = ctx.get('_rm_monthly_fulfillment', {}).get(month_key, 0)
+        if rm_fulfill > 0:
+            return rm_fulfill / 4.33
+
+        # Fallback when revenue model has no data for this month
         fulfill_pct = ctx.get('fulfillment_pct', 0.18)
         projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
         val = projected_dtc * fulfill_pct
@@ -718,46 +716,66 @@ def build_cashflow_forecast(
     ctx['loc_apr'] = float(get_cashflow_setting(conn, 'loc_apr', '0.15'))
     loc_current = float(get_cashflow_setting(conn, 'loc_balance', '510000'))
 
-    # DTC monthly revenue from waterfall
+    # Revenue + mapped costs — sourced from the revenue model (variables page P&L).
+    # Revenue: DTC and Amazon monthly totals.
+    # Costs: media (EOM timing), fulfillment (weekly spread), COGS (weekly spread).
+    # Other cashflow expenses (payroll, software, etc.) stay independent.
     try:
-        from db import get_media_spend, get_amazon_revenue_forecast
-        media_plan = get_media_spend(conn, source='All Sources')
+        from db import get_revenue_model
+        from analytics import revenue_model as rm
 
-        # Build waterfall for DTC monthly revenue
-        from analytics.waterfall import build_waterfall
-        seasonal_df = read_sql('SELECT month_num, index_value FROM seasonal_indices', conn)
-        seasonal_dict = dict(zip(seasonal_df['month_num'], seasonal_df['index_value'])) if not seasonal_df.empty else None
-        wf = build_waterfall(media_plan, source_filter='shopify', horizon_months=12, seasonal_indices=seasonal_dict)
-        if wf is not None and not wf.empty and 'month' in wf.columns:
-            rev_col = None
-            for col in ['total_revenue', 'revenue', 'total_units_revenue']:
-                if col in wf.columns:
-                    rev_col = col
-                    break
-            if rev_col:
-                ctx['dtc_monthly_revenue'] = dict(zip(wf['month'], wf[rev_col]))
-            else:
-                ctx['dtc_monthly_revenue'] = {}
-        else:
-            ctx['dtc_monthly_revenue'] = {}
-    except Exception as exc:
-        log.warning('Could not build waterfall for cash flow: %s', exc)
+        # Generate months covering the forecast horizon (Feb 2026+)
+        _rm_months = []
+        _y, _m = week_list[0][0].year, week_list[0][0].month
+        _end_y, _end_m = week_list[-1][1].year, week_list[-1][1].month
+        while (_y, _m) <= (_end_y, _end_m):
+            mk = f'{_y:04d}-{_m:02d}'
+            if mk >= '2026-02':
+                _rm_months.append(mk)
+            _m += 1
+            if _m > 12:
+                _m = 1
+                _y += 1
+
+        db_data = get_revenue_model(conn)
+        rm_inputs = rm.merge_with_defaults(db_data, _rm_months)
+        rm_calc = rm.compute(rm_inputs, _rm_months)
+
+        # Revenue net of platform fees (what actually hits the bank).
+        # DTC: revenue - processing fees (Shopify/Stripe take before payout)
+        # Amazon: revenue - Amazon fees (deducted before disbursement)
         ctx['dtc_monthly_revenue'] = {}
-
-    # Amazon monthly revenue from forecast table
-    try:
-        amz_forecast = get_amazon_revenue_forecast(conn)
-        ctx['amazon_monthly_revenue'] = {r['month']: r['revenue'] for r in amz_forecast}
-    except Exception as e:
-        log.error('Failed to load Amazon revenue forecast: %s', e)
         ctx['amazon_monthly_revenue'] = {}
+        for _mk in _rm_months:
+            dtc_rev = rm_calc.get('dtc_rev', {}).get(_mk, 0)
+            dtc_proc = rm_calc.get('dtc_processing_amt', {}).get(_mk, 0)
+            ctx['dtc_monthly_revenue'][_mk] = dtc_rev - dtc_proc
 
-    # Media spend plan (monthly)
-    try:
-        ctx['monthly_media_spend'] = {r['month']: r['spend'] for r in media_plan}
-    except Exception as e:
-        log.error('Failed to load media spend plan: %s', e)
+            amz_rev = rm_calc.get('amazon_rev', {}).get(_mk, 0)
+            amz_fees = rm_calc.get('amazon_fulfillment_amt', {}).get(_mk, 0)
+            ctx['amazon_monthly_revenue'][_mk] = amz_rev - amz_fees
+
+        ctx['monthly_media_spend'] = rm_calc.get('total_media_spend', {})
+
+        # Monthly fulfillment (DTC 3PL only — Amazon fees already deducted
+        # from revenue above) and COGS from P&L for cashflow timing
+        ctx['_rm_monthly_fulfillment'] = {}
+        ctx['_rm_monthly_cogs'] = {}
+        for _mk in _rm_months:
+            ctx['_rm_monthly_fulfillment'][_mk] = (
+                rm_calc.get('dtc_fulfillment_amt', {}).get(_mk, 0)
+            )
+            ctx['_rm_monthly_cogs'][_mk] = (
+                rm_calc.get('dtc_cogs_amt', {}).get(_mk, 0)
+                + rm_calc.get('amazon_cogs_amt', {}).get(_mk, 0)
+            )
+    except Exception as exc:
+        log.warning('Could not load revenue model for cash flow: %s', exc)
+        ctx['dtc_monthly_revenue'] = {}
+        ctx['amazon_monthly_revenue'] = {}
         ctx['monthly_media_spend'] = {}
+        ctx['_rm_monthly_fulfillment'] = {}
+        ctx['_rm_monthly_cogs'] = {}
 
     # Payroll detection
     try:
