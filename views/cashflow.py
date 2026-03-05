@@ -174,8 +174,8 @@ def _build_balance_chart(df: pd.DataFrame, min_threshold: float, horizon_weeks: 
             cross_date = pd.to_datetime(cross_row['week_start'])
             cross_val = cross_row['closing_balance']
             # Week number relative to current week
-            current_idx = actuals.index[-1] if not actuals.empty else display.index[0]
-            cross_idx = cross_row.name
+            current_idx = int(actuals.index[-1]) if not actuals.empty else int(display.index[0])
+            cross_idx = int(cross_row.name)
             week_num = cross_idx - current_idx
             fig.add_trace(go.Scatter(
                 x=[cross_date],
