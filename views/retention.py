@@ -471,28 +471,29 @@ def render(ctx):
             st.info('No Amazon customer data available. Run a sync to pull fulfillment data.')
 
     if _is_amazon:
-        # --- Amazon Seasonality (read-only, computed from Amazon data) ---
+        # --- Amazon Seasonality (uses DTC indices) ---
         st.divider()
-        st.subheader('Amazon Seasonality')
-        st.caption('Monthly multipliers computed from Amazon repeat revenue data. '
+        st.subheader('Seasonality Applied to Amazon')
+        st.caption('Amazon repeat projections use DTC seasonal indices '
+                    '(derived from Shopify repeat revenue). '
                     '>1.0 = above-average demand, <1.0 = below-average.')
         _load_channel_seasonal = ctx.get('load_channel_seasonal_json')
         if _load_channel_seasonal:
             import json as _json_amz_seas
-            _amz_seas_json = _load_channel_seasonal('amazon')
-            if _amz_seas_json:
-                _amz_seas = {int(k): v for k, v in _json_amz_seas.loads(_amz_seas_json).items()}
+            _dtc_seas_json = _load_channel_seasonal('shopify')
+            if _dtc_seas_json:
+                _dtc_seas = {int(k): v for k, v in _json_amz_seas.loads(_dtc_seas_json).items()}
                 _month_names_amz = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                _amz_vals = [_amz_seas.get(m, 1.0) for m in range(1, 13)]
+                _dtc_vals = [_dtc_seas.get(m, 1.0) for m in range(1, 13)]
                 fig_amz_seas = go.Figure()
                 fig_amz_seas.add_trace(go.Bar(
                     x=_month_names_amz,
-                    y=_amz_vals,
-                    marker_color=['#E05252' if v < 1.0 else '#2DA87E' for v in _amz_vals],
-                    text=[f'{v:.2f}' for v in _amz_vals],
+                    y=_dtc_vals,
+                    marker_color=['#E05252' if v < 1.0 else '#2DA87E' for v in _dtc_vals],
+                    text=[f'{v:.2f}' for v in _dtc_vals],
                     textposition='outside',
-                    name='Amazon',
+                    name='DTC Seasonality',
                 ))
                 fig_amz_seas.add_shape(type='line', x0=-0.5, x1=11.5, y0=1.0, y1=1.0,
                                        line=dict(dash='dash', color='gray', width=1))
@@ -504,7 +505,7 @@ def render(ctx):
                 )
                 st.plotly_chart(fig_amz_seas, use_container_width=True)
             else:
-                st.info('Not enough Amazon data to compute seasonal indices.')
+                st.info('Not enough data to compute seasonal indices.')
         else:
             st.info('Seasonal index computation not available.')
 
