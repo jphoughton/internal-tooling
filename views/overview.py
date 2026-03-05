@@ -263,19 +263,25 @@ def render(ctx):
                    delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
                    delta_color='off')
 
-        # CAC Payback
-        _cogs_pct = 0.17  # 17% of gross sales (both channels)
-        _dtc_fulfill_pct = 0.18  # DTC fulfillment fee
-        _amz_fulfill_pct = 0.31  # Amazon fee on sales
+        # CAC Payback — pull cost assumptions from revenue model (Variables page)
+        from analytics.revenue_model import DEFAULTS
         try:
             with get_db() as _cf_conn:
-                # net_to_gross from revenue model (DTC ratio; Amazon = 1.0)
                 from db import get_revenue_model
                 _rm = get_revenue_model(_cf_conn)
-                _ntg_vals = _rm.get('dtc_net_to_gross', [1.3859589838])
-                _dtc_ntg = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
         except Exception:
-            _dtc_ntg = 1.3859589838
+            _rm = {}
+        # Current month index (0) for the first value in the monthly arrays
+        _cogs_vals = _rm.get('cogs_pct', DEFAULTS.get('cogs_pct', [0.165]))
+        _cogs_pct = float(_cogs_vals[0]) if _cogs_vals else 0.165
+        _dtc_ff_vals = _rm.get('dtc_fulfillment_pct', DEFAULTS.get('dtc_fulfillment_pct', [0.18]))
+        _dtc_fulfill_pct = float(_dtc_ff_vals[0]) if _dtc_ff_vals else 0.18
+        _amz_ff_vals = _rm.get('amazon_fulfillment_pct', DEFAULTS.get('amazon_fulfillment_pct', [0.305]))
+        _amz_fulfill_pct = float(_amz_ff_vals[0]) if _amz_ff_vals else 0.305
+        _ntg_vals = _rm.get('dtc_net_to_gross', DEFAULTS.get('dtc_net_to_gross', [1.3859589838]))
+        _dtc_ntg = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
+        _proc_vals = _rm.get('dtc_processing_pct', DEFAULTS.get('dtc_processing_pct', [0.04]))
+        _dtc_proc_pct = float(_proc_vals[0]) if _proc_vals else 0.04
         _amz_ntg = 1.0  # Amazon revenue is already gross
 
         _dtc_ret = None
@@ -315,8 +321,10 @@ def render(ctx):
                     _use_ret[_mk] = _dr * _dtc_w + _ar * _amz_w
             _use_ret = _use_ret or _dtc_ret
 
-        # Blend fulfillment % and net_to_gross by channel weight
-        _fulfill_pct = _dtc_w * _dtc_fulfill_pct + _amz_w * _amz_fulfill_pct
+        # DTC total fee = fulfillment + processing; Amazon fee is all-in
+        _dtc_total_fee = _dtc_fulfill_pct + _dtc_proc_pct
+        # Blend fees and net_to_gross by channel weight
+        _fulfill_pct = _dtc_w * _dtc_total_fee + _amz_w * _amz_fulfill_pct
         _net_to_gross = _dtc_w * _dtc_ntg + _amz_w * _amz_ntg
 
         _cac_payback = compute_cac_payback(
@@ -355,10 +363,11 @@ def render(ctx):
                 if _source_filter == 'amazon':
                     v5.metric('Amazon Fee %', f'{_amz_fulfill_pct:.0%}')
                 elif _source_filter == 'shopify':
-                    v5.metric('DTC Fulfillment %', f'{_dtc_fulfill_pct:.0%}')
+                    v5.metric('DTC Fee %', f'{_dtc_total_fee:.0%}',
+                              help=f'Fulfillment {_dtc_fulfill_pct:.0%} + Processing {_dtc_proc_pct:.0%}')
                 else:
                     v5.metric('Blended Fee %', f'{_fulfill_pct:.0%}',
-                              help=f'DTC {_dtc_fulfill_pct:.0%} \u00d7 {_dtc_w:.0%} + Amazon {_amz_fulfill_pct:.0%} \u00d7 {_amz_w:.0%}')
+                              help=f'DTC {_dtc_total_fee:.0%} \u00d7 {_dtc_w:.0%} + Amazon {_amz_fulfill_pct:.0%} \u00d7 {_amz_w:.0%}')
                 v6.metric('Net \u2192 Gross', f'{_net_to_gross:.2f}x')
 
                 if _source_filter == 'shopify':
@@ -369,7 +378,7 @@ def render(ctx):
                     _ret_label = f'Blended (DTC {_dtc_w:.0%} + Amazon {_amz_w:.0%} by NC count)'
                 else:
                     _ret_label = 'DTC only'
-                _fee_label = f'{_fulfill_pct:.0%} Fee' if _source_filter else f'{_fulfill_pct:.0%} Fee (DTC {_dtc_fulfill_pct:.0%} / Amz {_amz_fulfill_pct:.0%})'
+                _fee_label = f'{_fulfill_pct:.0%} Fee' if _source_filter else f'{_fulfill_pct:.0%} Fee (DTC {_dtc_total_fee:.0%} / Amz {_amz_fulfill_pct:.0%})'
                 st.caption(f'Total media to recover: **${_hero_spend:,.0f}** | '
                            f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u00d7 {_net_to_gross:.2f}x gross \u2212 {_fee_label}) | '
                            f'Retention: **{_ret_label}**')
