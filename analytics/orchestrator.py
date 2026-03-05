@@ -591,7 +591,7 @@ def run_page_stats(triggered_by='scheduler'):
                 # Use orders.total_amount for revenue (matches Shopify total_price
                 # incl. shipping + tax), exclude refunded/voided orders
                 rev_df = read_sql(
-                    "SELECT DATE(o.order_date) AS sale_date, "
+                    "SELECT o.order_date AS sale_date, "
                     "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
                     "SUM(oi_agg.units) AS units "
                     "FROM orders o "
@@ -601,17 +601,17 @@ def run_page_stats(triggered_by='scheduler'):
                     ") oi_agg ON o.order_id = oi_agg.order_id "
                     "WHERE o.source = %s "
                     "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY DATE(o.order_date) ORDER BY sale_date",
+                    "GROUP BY o.order_date ORDER BY sale_date",
                     conn, params=('shopify',),
                 )
                 cust_df = read_sql(
-                    "SELECT DATE(o.order_date) AS sale_date, "
+                    "SELECT o.order_date AS sale_date, "
                     "COUNT(DISTINCT o.order_id) AS total_orders, "
                     "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                    "COUNT(DISTINCT CASE WHEN DATE(fc.first_date) = DATE(o.order_date) "
+                    "COUNT(DISTINCT CASE WHEN fc.first_date = o.order_date "
                     "  THEN o.customer_id END) AS new_customers, "
                     "SUM(oi.total_price) AS oi_total_rev, "
-                    "SUM(CASE WHEN DATE(fc.first_date) = DATE(o.order_date) "
+                    "SUM(CASE WHEN fc.first_date = o.order_date "
                     "  THEN oi.total_price ELSE 0 END) AS oi_new_rev "
                     "FROM orders o "
                     "JOIN (SELECT customer_id, MIN(order_date) AS first_date "
@@ -622,7 +622,7 @@ def run_page_stats(triggered_by='scheduler'):
                     "JOIN order_items oi ON o.order_id = oi.order_id "
                     "WHERE o.source = %s "
                     "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY DATE(o.order_date) ORDER BY sale_date",
+                    "GROUP BY o.order_date ORDER BY sale_date",
                     conn, params=('shopify', 'shopify'),
                 )
             if not rev_df.empty:

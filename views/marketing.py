@@ -74,7 +74,7 @@ def _load_shopify_daily_metrics():
     # which includes shipping + tax) and exclude refunded/voided orders
     with get_db() as conn:
         rev_df = read_sql(
-            "SELECT DATE(o.order_date) AS sale_date, "
+            "SELECT o.order_date AS sale_date, "
             "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
             "SUM(oi_agg.units) AS units "
             "FROM orders o "
@@ -84,17 +84,17 @@ def _load_shopify_daily_metrics():
             ") oi_agg ON o.order_id = oi_agg.order_id "
             "WHERE o.source = %s "
             "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-            "GROUP BY DATE(o.order_date) ORDER BY sale_date",
+            "GROUP BY o.order_date ORDER BY sale_date",
             conn, params=('shopify',),
         )
         cust_df = read_sql(
-            "SELECT DATE(o.order_date) AS sale_date, "
+            "SELECT o.order_date AS sale_date, "
             "COUNT(DISTINCT o.order_id) AS total_orders, "
             "COUNT(DISTINCT o.customer_id) AS total_customers, "
-            "COUNT(DISTINCT CASE WHEN DATE(cf.actual_first) = DATE(o.order_date) "
+            "COUNT(DISTINCT CASE WHEN cf.actual_first = o.order_date "
             "THEN o.customer_id END) AS new_customers, "
             "SUM(oi.total_price) AS oi_total_rev, "
-            "SUM(CASE WHEN DATE(cf.actual_first) = DATE(o.order_date) "
+            "SUM(CASE WHEN cf.actual_first = o.order_date "
             "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
             "FROM orders o "
             "JOIN (SELECT customer_id, MIN(order_date) AS actual_first "
@@ -105,7 +105,7 @@ def _load_shopify_daily_metrics():
             "JOIN order_items oi ON o.order_id = oi.order_id "
             "WHERE o.source = %s "
             "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-            "GROUP BY DATE(o.order_date)",
+            "GROUP BY o.order_date",
             conn, params=('shopify', 'shopify'),
         )
     if rev_df.empty:
