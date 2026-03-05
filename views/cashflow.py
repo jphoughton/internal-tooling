@@ -1,12 +1,10 @@
 """
 Cash Flow Forecasting dashboard page.
 
-52-week rolling cash flow model with auto-calibrated projections,
-bank transaction imports, and scenario analysis.
+52-week rolling cash flow model with projections from the P&L revenue model.
 
 CFO perspective: This replaces the Google Sheets 13-week cash flow model.
 Shows where cash is going, when it's tight, and what levers to pull.
-Every number is traceable back to actual bank transactions or explicit forecasts.
 """
 import json as _json_cf
 import logging
@@ -442,11 +440,7 @@ def render(ctx):
             forecast_df = pd.DataFrame(_cf_precomputed['df'])
             kpis = _cf_precomputed['kpis']
             if forecast_df.empty:
-                st.info(
-                    'No bank transactions found. Upload a CSV in the section '
-                    'below to get started.'
-                )
-                _render_upload_section()
+                st.info('No forecast data available. Check that the revenue model has inputs.')
                 return
         else:
             with st.spinner('Building forecast...'):
@@ -461,22 +455,16 @@ def render(ctx):
                     )
 
                     if forecast_df.empty:
-                        st.info(
-                            'No bank transactions found. Upload a CSV in the section '
-                            'below to get started.'
-                        )
-                        _render_upload_section()
+                        st.info('No forecast data available. Check that the revenue model has inputs.')
                         return
 
                     kpis = get_cashflow_kpis(conn, forecast_df)
     except Exception as e:
         log.exception('Cash flow forecast error')
         st.error(
-            'Unable to build the cash flow forecast. This usually means bank '
-            'transaction data is missing or the database is unreachable. '
-            'Upload a Highbeam CSV below to get started.'
+            'Unable to build the cash flow forecast. Check the revenue model '
+            'inputs on the Variables page or database connectivity.'
         )
-        _render_upload_section()
         return
 
     # 1. KPI row — most prominent, CFO looks here first
@@ -525,12 +513,6 @@ def render(ctx):
 
     with st.expander('Model Settings', expanded=False):
         _render_settings_section()
-
-    with st.expander('Upload Transactions', expanded=False):
-        _render_upload_section()
-
-    with st.expander('Transaction Mappings', expanded=False):
-        _render_mapping_link()
 
 
 def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
@@ -832,46 +814,6 @@ def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map
         st.error(f'Failed to save overrides: {e}')
 
 
-def _render_upload_section():
-    """Render the bank transaction CSV upload widget."""
-    st.markdown('##### Upload Bank Transactions')
-    st.caption('Upload a Highbeam CSV export. Re-uploads are safe -- duplicates are skipped.')
-
-    uploaded = st.file_uploader(
-        'Highbeam CSV',
-        type=['csv'],
-        key='cf_csv_upload',
-        label_visibility='collapsed',
-    )
-
-    if uploaded:
-        try:
-            from etl.cashflow_csv import parse_highbeam_csv, import_transactions
-
-            df = parse_highbeam_csv(uploaded)
-            st.info(f'Parsed {len(df)} transactions from CSV')
-
-            if st.button('Import Transactions', type='primary', key='cf_import_btn'):
-                with st.spinner('Importing...'):
-                    with get_db() as conn:
-                        result = import_transactions(conn, df)
-
-                st.session_state['cf_import_result'] = result
-                st.rerun()
-
-            # Show import result persisted across rerun
-            if 'cf_import_result' in st.session_state:
-                result = st.session_state.pop('cf_import_result')
-                st.success(
-                    f"Import complete: **{result['inserted']}** new, "
-                    f"**{result['skipped']}** skipped (duplicates), "
-                    f"**{result['unmapped']}** need mapping"
-                )
-                if result['unmapped'] > 0:
-                    st.info('Go to **Transaction Mappings** to categorize unmapped transactions.')
-        except Exception as e:
-            st.error(f'Import failed: {e}')
-
 
 def _render_settings_section():
     """Render cash flow model settings."""
@@ -889,14 +831,19 @@ def _render_settings_section():
             payroll_b = get_cashflow_setting(conn, 'payroll_amount_b', '15500')
             loan_principal = get_cashflow_setting(conn, 'loan_default_principal', '30000')
             media_split = get_cashflow_setting(conn, 'media_split_early_pct', '0.40')
+            sales_tax_rate = get_cashflow_setting(conn, 'sales_tax_rate', '0.043')
             sales_tax_default = get_cashflow_setting(conn, 'sales_tax_default', '13000')
+            shipping_pct = get_cashflow_setting(conn, 'shipping_pct', '0.02')
             consulting = get_cashflow_setting(conn, 'consulting_monthly', '0')
+            opening_cash = get_cashflow_setting(conn, 'opening_cash_balance', '153000')
     except Exception as e:
         log.warning('Failed to load cashflow settings, using defaults: %s', e)
         cogs_pct, fulfill_pct = '0.25', '0.18'
         min_cash, loc_balance, loc_apr, po_cost = '100000', '510000', '0.1164', '40.00'
         payroll_a, payroll_b, loan_principal = '13000', '15500', '30000'
-        media_split, sales_tax_default, consulting = '0.40', '13000', '0'
+        media_split, sales_tax_rate, sales_tax_default = '0.40', '0.043', '13000'
+        shipping_pct, consulting = '0.02', '0'
+        opening_cash = '153000'
 
     with st.form('cf_settings_form'):
         # Row 1: COGS, Fulfillment, Production Cost
@@ -947,22 +894,40 @@ def _render_settings_section():
             help='Monthly loan principal when no specific amount is set',
         )
 
-        # Row 4: Media Split, Sales Tax, Consulting
+        # Row 4: Media Split, Sales Tax Rate, Shipping %
         cols4 = st.columns(3)
         new_media_split = cols4[0].number_input(
             'Media Split Early %', value=float(media_split) * 100,
             min_value=0.0, max_value=100.0, step=5.0, format='%.0f',
             help='How much of monthly media spend hits early in month',
         )
-        new_sales_tax = cols4[1].number_input(
-            'Sales Tax Default ($)', value=float(sales_tax_default),
-            min_value=0.0, step=1000.0, format='%.0f',
-            help='Monthly sales tax fallback when no bank data',
+        new_sales_tax_rate = cols4[1].number_input(
+            'Sales Tax Rate %', value=float(sales_tax_rate) * 100,
+            min_value=0.0, max_value=15.0, step=0.1, format='%.1f',
+            help='Sales tax as % of net sales (variable)',
         )
-        new_consulting = cols4[2].number_input(
+        new_shipping_pct = cols4[2].number_input(
+            'Shipping % of DTC Rev', value=float(shipping_pct) * 100,
+            min_value=0.0, max_value=20.0, step=0.5, format='%.1f',
+            help='Shipping cost as % of DTC revenue (variable)',
+        )
+
+        # Row 5: Opening Cash, Consulting, Sales Tax Default
+        cols5 = st.columns(3)
+        new_opening_cash = cols5[0].number_input(
+            'Opening Cash Balance ($)', value=float(opening_cash),
+            min_value=0.0, step=10000.0, format='%.0f',
+            help='Starting cash balance for the forecast',
+        )
+        new_consulting = cols5[1].number_input(
             'Consulting Monthly ($)', value=float(consulting),
             min_value=0.0, step=500.0, format='%.0f',
             help='Monthly consulting expense (set to 0 when not active)',
+        )
+        new_sales_tax = cols5[2].number_input(
+            'Sales Tax Fallback ($)', value=float(sales_tax_default),
+            min_value=0.0, step=1000.0, format='%.0f',
+            help='Flat monthly fallback if sales tax rate is 0',
         )
 
         if st.form_submit_button('Save Settings', type='primary'):
@@ -977,30 +942,12 @@ def _render_settings_section():
                 set_cashflow_setting(conn, 'payroll_amount_b', str(new_payroll_b))
                 set_cashflow_setting(conn, 'loan_default_principal', str(new_loan_principal))
                 set_cashflow_setting(conn, 'media_split_early_pct', str(new_media_split / 100))
+                set_cashflow_setting(conn, 'sales_tax_rate', str(new_sales_tax_rate / 100))
                 set_cashflow_setting(conn, 'sales_tax_default', str(new_sales_tax))
+                set_cashflow_setting(conn, 'shipping_pct', str(new_shipping_pct / 100))
                 set_cashflow_setting(conn, 'consulting_monthly', str(new_consulting))
+                set_cashflow_setting(conn, 'opening_cash_balance', str(new_opening_cash))
             st.success('Settings saved!')
             st.rerun()
 
 
-def _render_mapping_link():
-    """Render link to transaction mapping page."""
-    try:
-        with get_db() as conn:
-            from analytics.cashflow import get_mapping_stats
-            stats = get_mapping_stats(conn)
-
-        unmapped = stats.get('unmapped_tx_count', 0)
-        total = stats.get('total_tx_count', 0)
-        mapped_pct = ((total - unmapped) / total * 100) if total > 0 else 0
-
-        st.markdown(
-            f'**{mapped_pct:.0f}%** of transactions categorized '
-            f'({total - unmapped:,} of {total:,})'
-        )
-        if unmapped > 0:
-            st.warning(f'{unmapped:,} transactions need mapping.')
-
-        st.caption('Navigate to **Transaction Mapping** page in the sidebar to manage category mappings.')
-    except Exception:
-        st.caption('Upload transactions first, then use the Transaction Mapping page to categorize them.')

@@ -376,7 +376,7 @@ _NAV_ICONS = {
     'DTC Overview': '\U0001F4CA', 'DTC Marketing': '\U0001F4C8', 'DTC Retention': '\U0001F504', 'DTC Ops': '\U0001F4E6',
     'Amazon Overview': '\U0001F4CA', 'Amazon Marketing': '\U0001F4C8', 'Amazon Retention': '\U0001F504', 'Amazon Ops': '\U0001F4E6',
     'Rollup Overview': '\U0001F4CA', 'Rollup Marketing': '\U0001F4C8', 'Rollup Retention': '\U0001F504', 'Rollup Ops': '\U0001F4E6',
-    'Cash Flow': '\U0001F4B0', 'Tx Mapping': '\U0001F3F7\uFE0F',
+    'Cash Flow': '\U0001F4B0',
     'Financials': '\U0001F4B0', 'Settings': '\u2699\uFE0F', 'Variables': '\U0001F4DD',
 }
 
@@ -384,10 +384,10 @@ _NAV_GROUPS = [
     ('Rollup', ['Rollup Overview', 'Rollup Marketing', 'Rollup Retention', 'Rollup Ops']),
     ('DTC', ['DTC Overview', 'DTC Marketing', 'DTC Retention', 'DTC Ops']),
     ('Amazon', ['Amazon Overview', 'Amazon Marketing', 'Amazon Retention', 'Amazon Ops']),
-    ('Finance & Config', ['Cash Flow', 'Tx Mapping', 'Financials', 'Settings', 'Variables']),
+    ('Finance & Config', ['Cash Flow', 'Financials', 'Settings', 'Variables']),
 ]
 
-_STANDALONE_PAGES = {'Cash Flow', 'Tx Mapping', 'Financials', 'Settings', 'Variables'}
+_STANDALONE_PAGES = {'Cash Flow', 'Financials', 'Settings', 'Variables'}
 
 # Legacy URL redirect map (old page names → new)
 _LEGACY_PAGE_MAP = {
@@ -825,9 +825,6 @@ elif _page_type == 'Ops':
     render(_ctx)
 elif _page_type == 'Cash Flow':
     from views.cashflow import render
-    render(_ctx)
-elif _page_type == 'Tx Mapping':
-    from views.tx_mapping import render
     render(_ctx)
 elif _page_type == 'Financials':
     from views.financials import render

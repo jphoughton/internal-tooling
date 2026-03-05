@@ -73,33 +73,26 @@ STARTUP_OPTIONAL_INTEGRATIONS = {
 # Cash Flow categories and projection defaults
 # ---------------------------------------------------------------------------
 CASHFLOW_CATEGORIES = {
-    # Revenue
+    # Revenue (from P&L revenue model)
     'dtc_revenue': {'label': 'DTC Revenue', 'group': 'revenue', 'method': 'waterfall'},
     'amazon_revenue': {'label': 'Amazon Revenue', 'group': 'revenue', 'method': 'forecast_table'},
-    'tiktok_revenue': {'label': 'TikTok Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
-    'wholesale_revenue': {'label': 'Wholesale Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
-    'interest_income': {'label': 'Interest Income', 'group': 'revenue', 'method': 'trailing_avg'},
-    'other_revenue': {'label': 'Other Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
-    # Expenses (operating)
+    'wholesale_revenue': {'label': 'Wholesale Revenue', 'group': 'revenue', 'method': 'monthly_spread_rev'},
+    # Expenses (operating) — fixed from settings, variable from P&L
     'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_split'},
     'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_alternating'},
     'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'monthly_spread'},
-    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'monthly_lump'},
+    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'sales_tax_pct'},
     'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'monthly_week2'},
-    'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
+    'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'shipping_pct'},
     'agency': {'label': 'Marketing OpEx', 'group': 'expense', 'method': 'mktg_opex_split'},
     'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'monthly_lump'},
     'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'monthly_lump'},
     'consulting': {'label': 'Consulting', 'group': 'expense', 'method': 'monthly_lump'},
-    'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'trailing_avg'},
+    'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'monthly_lump'},
     # COGS & Debt — outflows tracked separately from operating expenses
     'production': {'label': 'Production Runs', 'group': 'cogs_debt', 'method': 'po_based'},
     'loan': {'label': 'Loan Principal', 'group': 'cogs_debt', 'method': 'loan_schedule'},
     'loan_interest': {'label': 'Loan Interest', 'group': 'cogs_debt', 'method': 'loc_interest_eom'},
-    # Special
-    'internal_transfer': {'label': 'Internal Transfer', 'group': 'transfer', 'method': None},
-    'duplicate': {'label': 'Duplicate', 'group': 'duplicate', 'method': None},
-    'unmapped': {'label': 'Unmapped', 'group': 'unmapped', 'method': None},
 }
 
 # Seed defaults for expense projections when no actuals exist.
