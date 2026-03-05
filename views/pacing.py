@@ -7,6 +7,7 @@ from db import (
     get_media_spend, get_amazon_revenue_forecast,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
+import analytics.revenue_model as rm
 from analytics.metrics import (
     get_channel_revenue, get_amazon_spend, get_amazon_spend_projected, get_nc_stats,
     nc_revenue_fraction, get_total_customers,
@@ -164,6 +165,22 @@ def compute_pacing_data(ctx):
             _goal_amz_rev = float(_plan_row.iloc[0].get("amazon_rev", 0))
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
+    # Override NC rev + NC-ROAS goals with blended (DTC + Amazon) from revenue model
+    _goal_blended_nc_rev = _goal_nc_rev  # fallback to DTC-only
+    _goal_blended_nc_roas = 0
+    try:
+        from db import get_revenue_model
+        with get_db() as _rm_conn:
+            _rm_data = get_revenue_model(_rm_conn)
+        if _rm_data:
+            _rm_months = [_cur_month]
+            _rm_inputs = rm.merge_with_defaults(_rm_data, _rm_months)
+            _rm_calc = rm.compute(_rm_inputs, _rm_months)
+            _goal_blended_nc_rev = round(_rm_calc.get('total_new', {}).get(_cur_month, _goal_nc_rev))
+            _goal_blended_nc_roas = _rm_calc.get('blended_nc_roas', {}).get(_cur_month, 0)
+    except Exception as e:
+        log.warning("Failed to load revenue model for blended NC goals: %s", e)
+
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
     _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
     _remaining_days = max(_days_in_month - _day_of_month, 1)
@@ -309,7 +326,7 @@ def compute_pacing_data(ctx):
             _goal_nc_count = float(_sum_nc_row.iloc[0].get('shopify_new_customers', 0))
 
     _goal_mer = _goal_total_rev / _goal_total_spend if _goal_total_spend > 0 else 0
-    _goal_nc_roas_ratio = _goal_nc_rev / _goal_spend if _goal_spend > 0 else 0
+    _goal_nc_roas_ratio = _goal_blended_nc_roas if _goal_blended_nc_roas > 0 else (_goal_nc_rev / _goal_spend if _goal_spend > 0 else 0)
     _goal_nc_cpa_target = _goal_spend / _goal_nc_count if _goal_nc_count > 0 else 0
 
     # Contribution = Revenue - Spend
@@ -339,7 +356,7 @@ def compute_pacing_data(ctx):
         'amz_spend_gap_days': _amz_spend_gap_days,
         'amz_nc_projected': _amz_nc_projected,
         # Goals
-        'goal_nc_rev': _goal_nc_rev,
+        'goal_nc_rev': _goal_blended_nc_rev,
         'goal_repeat_rev': _goal_repeat_rev,
         'goal_amz_rev': _goal_amz_rev,
         'goal_total_rev': _goal_total_rev,
