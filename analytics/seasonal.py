@@ -249,51 +249,79 @@ def _update_global_from_sku_indices(sku_indices):
     logger.info('[seasonal] Updated global seasonal indices from Shopify repeat revenue')
 
 
+def _compute_raw_seasonal(source, conn):
+    """Compute raw seasonal indices + per-month year counts for a source."""
+    rows = conn.execute("""
+        WITH first_orders AS (
+            SELECT customer_id, MIN(order_date) AS first_date
+            FROM orders
+            WHERE source = %s AND total_amount > 0
+            GROUP BY customer_id
+        )
+        SELECT
+            EXTRACT(MONTH FROM o.order_date::date)::int AS cal_month,
+            COUNT(DISTINCT EXTRACT(YEAR FROM o.order_date::date)) AS num_years,
+            SUM(o.total_amount) AS total_rev
+        FROM orders o
+        JOIN first_orders fo ON o.customer_id = fo.customer_id
+        WHERE o.source = %s
+          AND o.total_amount > 0
+          AND substr(o.order_date, 1, 7) <> substr(fo.first_date, 1, 7)
+          AND o.order_date >= %s
+        GROUP BY EXTRACT(MONTH FROM o.order_date::date)
+        ORDER BY cal_month
+    """, (source, source, '2020-01-01')).fetchall()
+    return rows
+
+
+def _normalize_indices(raw):
+    """Normalize index dict so average = 1.0, fill missing months."""
+    indices = {}
+    for m in range(1, 13):
+        indices[m] = raw.get(m, 1.0)
+    avg = sum(indices.values()) / 12
+    if avg > 0:
+        indices = {m: round(v / avg, 4) for m, v in indices.items()}
+    return indices
+
+
 def compute_channel_seasonal_indices(source='shopify'):
     """
-    Compute seasonal indices for a specific channel from its own sales data.
+    Compute seasonal indices for a specific channel from its own repeat revenue.
 
-    For Shopify: uses repeat revenue from orders table (excludes first orders).
-    For Amazon: uses daily_sku_sales revenue (no customer-level data available).
+    For non-Shopify channels with limited data (< 2 years per month), blends
+    with DTC (Shopify) indices as a Bayesian prior. The blend weight is based
+    on how many years of data the channel has for each calendar month:
+      - 0 years: 100% DTC
+      - 1 year:  70% DTC / 30% channel
+      - 2 years: 30% DTC / 70% channel
+      - 3+ years: 100% channel
 
     Returns:
         dict: {month_num(1-12): index_value} normalized so average = 1.0
         Returns None if insufficient data.
     """
     with get_db() as conn:
-        # Both channels have customer-level data in orders table
-        # Use repeat revenue (excluding first orders) for seasonal signal
-        rows = conn.execute("""
-            WITH first_orders AS (
-                SELECT customer_id, MIN(order_date) AS first_date
-                FROM orders
-                WHERE source = %s AND total_amount > 0
-                GROUP BY customer_id
-            )
-            SELECT
-                EXTRACT(MONTH FROM o.order_date::date)::int AS cal_month,
-                COUNT(DISTINCT EXTRACT(YEAR FROM o.order_date::date)) AS num_years,
-                SUM(o.total_amount) AS total_rev
-            FROM orders o
-            JOIN first_orders fo ON o.customer_id = fo.customer_id
-            WHERE o.source = %s
-              AND o.total_amount > 0
-              AND substr(o.order_date, 1, 7) <> substr(fo.first_date, 1, 7)
-              AND o.order_date >= %s
-            GROUP BY EXTRACT(MONTH FROM o.order_date::date)
-            ORDER BY cal_month
-        """, (source, source, '2020-01-01')).fetchall()
+        rows = _compute_raw_seasonal(source, conn)
+
+        # For non-shopify sources, also get DTC as prior
+        dtc_rows = None
+        if source != 'shopify':
+            dtc_rows = _compute_raw_seasonal('shopify', conn)
 
     if not rows or len(rows) < 6:
         logger.warning('[seasonal] Not enough data for %s seasonal indices (%d months)',
                        source, len(rows) if rows else 0)
         return None
 
-    # Average yearly revenue per calendar month
+    # Build raw indices from channel data
     monthly_avgs = {}
+    month_years = {}
     for r in rows:
         m = int(r['cal_month'])
-        monthly_avgs[m] = float(r['total_rev']) / max(int(r['num_years']), 1)
+        ny = max(int(r['num_years']), 1)
+        monthly_avgs[m] = float(r['total_rev']) / ny
+        month_years[m] = ny
 
     if not monthly_avgs:
         return None
@@ -302,17 +330,41 @@ def compute_channel_seasonal_indices(source='shopify'):
     if grand_avg <= 0:
         return None
 
-    # Compute and normalize indices
-    indices = {}
+    raw_indices = {}
     for m in range(1, 13):
-        if m in monthly_avgs:
-            indices[m] = monthly_avgs[m] / grand_avg
-        else:
-            indices[m] = 1.0
+        raw_indices[m] = monthly_avgs.get(m, grand_avg) / grand_avg
 
-    avg = sum(indices.values()) / 12
-    if avg > 0:
-        indices = {m: round(v / avg, 4) for m, v in indices.items()}
+    channel_indices = _normalize_indices(raw_indices)
 
-    logger.info('[seasonal] Computed %s seasonal indices', source)
-    return indices
+    # Blend with DTC prior if channel has limited history
+    if source != 'shopify' and dtc_rows and len(dtc_rows) >= 6:
+        dtc_avgs = {}
+        for r in dtc_rows:
+            dm = int(r['cal_month'])
+            dtc_avgs[dm] = float(r['total_rev']) / max(int(r['num_years']), 1)
+        dtc_grand = sum(dtc_avgs.values()) / len(dtc_avgs) if dtc_avgs else 1.0
+        if dtc_grand > 0:
+            dtc_raw = {m: dtc_avgs.get(m, dtc_grand) / dtc_grand for m in range(1, 13)}
+            dtc_indices = _normalize_indices(dtc_raw)
+
+            blended = {}
+            for m in range(1, 13):
+                ny = month_years.get(m, 0)
+                # Channel weight increases with data years
+                if ny >= 3:
+                    cw = 1.0
+                elif ny == 2:
+                    cw = 0.7
+                elif ny == 1:
+                    cw = 0.3
+                else:
+                    cw = 0.0
+                blended[m] = cw * channel_indices[m] + (1 - cw) * dtc_indices[m]
+
+            channel_indices = _normalize_indices(blended)
+            logger.info('[seasonal] Blended %s indices with DTC prior (max %d years/month)',
+                        source, max(month_years.values()) if month_years else 0)
+    else:
+        logger.info('[seasonal] Computed %s seasonal indices (no blending needed)', source)
+
+    return channel_indices

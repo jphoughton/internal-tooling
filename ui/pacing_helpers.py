@@ -133,6 +133,14 @@ def style_pace_df(df_raw):
     style_data = df_raw.copy()
     df_display = df_raw[display_cols].copy()
 
+    _type_colors = {
+        'Revenue': '#0a7a3e',
+        'New Rev': '#2563eb',
+        'Repeat Rev': '#7c3aed',
+        'Spend': '#b91c1c',
+        'NC-ROAS': '#0369a1',
+    }
+
     def _apply_styles(row_styler):
         idx = row_styler.name
         is_spend = style_data.loc[idx, "_is_spend"]
@@ -144,6 +152,10 @@ def style_pace_df(df_raw):
         col_map = {c: i for i, c in enumerate(display_cols)}
         if "" in col_map:
             styles[col_map[""]] = "font-weight: 600; color: #0F3557"
+        if "Type" in col_map:
+            _type_val = style_data.loc[idx, "Type"] if "Type" in style_data.columns else ""
+            _tc = _type_colors.get(_type_val, "#64748b")
+            styles[col_map["Type"]] = f"font-weight: 700; color: {_tc}; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.03em"
         if "Pacing" in col_map:
             styles[col_map["Pacing"]] = pace_color(pacing_raw, invert=is_spend)
         if "+/- Pacing" in col_map:
