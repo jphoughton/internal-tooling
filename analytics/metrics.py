@@ -36,7 +36,7 @@ def compute_aov(revenue, order_count):
 
 
 def compute_cac_payback(spend, new_customers, nc_revenue,
-                        cogs_pct=0.155, fulfillment_pct=0.18,
+                        cogs_pct=0.17, fulfillment_pct=0.18,
                         net_to_gross=1.0,
                         retention_curve=None, max_months=24):
     """CAC Payback in months using contribution-margin model.
@@ -51,7 +51,7 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         spend: Total media spend in period.
         new_customers: New customers acquired in period.
         nc_revenue: New-customer revenue in period (first-order total, net).
-        cogs_pct: Cost of goods as fraction of gross sales (default 0.155 = 15.5%).
+        cogs_pct: Cost of goods as fraction of gross sales (default 0.17 = 17%).
         fulfillment_pct: Fulfillment cost as fraction of net revenue (e.g. 0.18).
         net_to_gross: Multiplier to convert net revenue to gross sales (e.g. 1.386).
         retention_curve: Dict {month_offset: revenue_fraction} from retention

@@ -264,7 +264,7 @@ def render(ctx):
                    delta_color='off')
 
         # CAC Payback
-        _cogs_pct = 0.155  # 15.5% of gross sales
+        _cogs_pct = 0.17  # 17% of gross sales
         try:
             with get_db() as _cf_conn:
                 _fulfill_pct = float(get_cashflow_setting(_cf_conn, 'fulfillment_pct', '0.18'))
