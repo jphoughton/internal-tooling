@@ -305,7 +305,7 @@ def render(ctx, embedded=False):
                             if inv_item:
                                 meta_cols_r = {"SKU", "Flavor", "Variant"}
                                 month_cols_r = [c for c in sku_table.columns if c not in meta_cols_r]
-                                fc_row = sku_table[sku_table["SKU"] == row["SKU"]]
+                                fc_row = sku_table[sku_table["SKU"] == row["SKU"]] if "SKU" in sku_table.columns else pd.DataFrame()
                                 if not fc_row.empty:
                                     monthly = {m: float(fc_row.iloc[0][m]) for m in month_cols_r if pd.notna(fc_row.iloc[0][m]) and fc_row.iloc[0][m] > 0}
                                     runway_df, ro_info = build_inventory_runway_chart(
