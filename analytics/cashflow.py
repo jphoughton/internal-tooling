@@ -591,6 +591,21 @@ def _project_expense_week(
                 return last_amount
         return 0.0
 
+    elif method == 'monthly_sales_tax':
+        # Sales tax ~4.3% of net sales, paid monthly (EOM).
+        # Sourced from P&L net_sales if available.
+        month_key = week_start.strftime('%Y-%m')
+        _, last_day = calendar.monthrange(week_start.year, week_start.month)
+        eom = date(week_start.year, week_start.month, last_day)
+        if not (week_start <= eom <= week_end):
+            return 0.0
+        rm_net_sales = ctx.get('_rm_net_sales', {}).get(month_key, 0)
+        if rm_net_sales > 0:
+            return rm_net_sales * 0.043  # ~4.3% sales tax rate
+        # Fallback to trailing average
+        avg = compute_trailing_avg(conn, category, lookback_weeks=8)
+        return avg * 4.33 if avg > 0 else 0.0
+
     elif method == 'quarterly_detect':
         avg = compute_trailing_avg(conn, category, lookback_weeks=13)
         month = week_start.month
@@ -776,6 +791,7 @@ def build_cashflow_forecast(
             ctx['amazon_monthly_revenue'][_mk] = amz_rev - amz_fees
 
         ctx['monthly_media_spend'] = rm_calc.get('total_media_spend', {})
+        ctx['_rm_net_sales'] = rm_calc.get('net_sales', {})
 
         # Monthly fulfillment (DTC 3PL only — Amazon fees already deducted
         # from revenue above) and COGS from P&L for cashflow timing
@@ -794,6 +810,7 @@ def build_cashflow_forecast(
         ctx['dtc_monthly_revenue'] = {}
         ctx['amazon_monthly_revenue'] = {}
         ctx['monthly_media_spend'] = {}
+        ctx['_rm_net_sales'] = {}
         ctx['_rm_monthly_fulfillment'] = {}
         ctx['_rm_monthly_cogs'] = {}
 

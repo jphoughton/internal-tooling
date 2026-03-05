@@ -84,7 +84,7 @@ CASHFLOW_CATEGORIES = {
     'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_plan'},
     'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_schedule'},
     'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'dtc_revenue_pct'},
-    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'quarterly_detect'},
+    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'monthly_sales_tax'},
     'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'monthly_lump'},
     'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
     'agency': {'label': 'Agency Fees', 'group': 'expense', 'method': 'monthly_lump'},
@@ -115,7 +115,7 @@ CASHFLOW_SEED_DEFAULTS = {
     'shipping': 2000,      # varies weekly
     'agency': 7000,        # ~$7K/mo — monthly lump (agency + Quartile + creative)
     'accounting': 2500,    # $2,500/mo — monthly lump (CPA)
-    'insurance': 3000,     # ~$3K/mo — monthly lump
+    'insurance': 1900,     # $1,900/mo — monthly lump (per Excel)
     'other_expense': 500,
 }
 
