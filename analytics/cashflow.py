@@ -531,34 +531,31 @@ def _project_expense_week(
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    # COGS / Production — planned POs take priority, then P&L COGS fallback.
-    # Hits at EOM.
+    # COGS / Production — planned POs hit as EOM lump; P&L COGS spread weekly.
     if method == 'revenue_pct':
         month_key = week_start.strftime('%Y-%m')
 
         _, last_day = calendar.monthrange(week_start.year, week_start.month)
         eom = date(week_start.year, week_start.month, last_day)
         is_eom_week = week_start <= eom <= week_end
-        if not is_eom_week:
-            return 0.0
 
-        # 1. Planned POs (units × $40/unit) — most accurate
+        # 1. Planned POs (units × $40/unit) — discrete cash event at EOM
         po_cost = ctx.get('_po_monthly_production', {}).get(month_key, 0)
         if po_cost > 0:
-            return po_cost
+            return po_cost if is_eom_week else 0.0
 
-        # 2. P&L COGS fallback
+        # 2. P&L COGS — spread weekly (COGS accrues with sales, not a lump)
         rm_cogs = ctx.get('_rm_monthly_cogs', {}).get(month_key, 0)
         if rm_cogs > 0:
-            return rm_cogs
+            return rm_cogs / 4.33
 
-        # 3. Final fallback: % of revenue
+        # 3. Final fallback: % of revenue, spread weekly
         cogs_pct = ctx.get('cogs_pct', 0.25)
         dtc_monthly = ctx.get('dtc_monthly_revenue', {})
         dtc_month_total = dtc_monthly.get(month_key, 0)
         amz_monthly = ctx.get('amazon_monthly_revenue', {})
         amz_month_total = amz_monthly.get(month_key, 0)
-        return (dtc_month_total + amz_month_total) * cogs_pct
+        return (dtc_month_total + amz_month_total) * cogs_pct / 4.33
 
     # --- Method-based projection FIRST for categories with explicit timing ---
     # These methods encode business-specific timing (biweekly payroll, monthly
