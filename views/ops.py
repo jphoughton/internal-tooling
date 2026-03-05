@@ -60,7 +60,7 @@ def render(ctx):
             _amz_transfers()
 
     else:  # Rollup
-        tabs = st.tabs(['Inventory', 'Demand Forecast', 'Projected Inventory', 'Reorder'])
+        tabs = st.tabs(['Inventory', 'Demand Forecast', 'Projected Inventory', 'Reorder', '3PL Costs'])
 
         @st.fragment
         def _rollup_inventory():
@@ -81,6 +81,11 @@ def render(ctx):
             from views.reorder_alerts import render as render_reorder
             render_reorder(ctx, embedded=True)
 
+        @st.fragment
+        def _rollup_threpl_costs():
+            from views.threpl_costs import render as render_costs
+            render_costs(ctx, embedded=True)
+
         with tabs[0]:
             _rollup_inventory()
         with tabs[1]:
@@ -89,6 +94,8 @@ def render(ctx):
             _rollup_projected()
         with tabs[3]:
             _rollup_reorder()
+        with tabs[4]:
+            _rollup_threpl_costs()
 
 
 def _render_combined_inventory(ctx):

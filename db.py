@@ -235,10 +235,13 @@ def read_sql(
         with get_db() as conn:
             df = read_sql("SELECT ... WHERE sale_date >= date('now', '-30 days')", conn)
     """
+    import warnings
     import pandas as pd
     translated = _translate_sql(sql)
     try:
-        return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='.*pandas only supports SQLAlchemy.*')
+            return pd.read_sql_query(translated, conn_wrapper.raw, params=params)
     except Exception as exc:
         logger.error('read_sql failed: %s | SQL: %.200s', exc, translated)
         raise DatabaseError(f'read_sql failed: {exc}') from exc
@@ -448,6 +451,17 @@ _SCHEMA_SQL = [
         computed_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
         model_name TEXT,
         duration_seconds REAL
+    )""",
+
+    """CREATE TABLE IF NOT EXISTS threpl_invoices (
+        invoice_number TEXT NOT NULL,
+        week_start TEXT NOT NULL,
+        week_end TEXT NOT NULL,
+        invoice_date TEXT,
+        total_amount REAL NOT NULL DEFAULT 0,
+        line_items TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
+        PRIMARY KEY (invoice_number)
     )""",
 
     # Indexes
@@ -1226,6 +1240,36 @@ def upsert_klaviyo_list(
     except Exception as exc:
         logger.error('upsert_klaviyo_list failed for id=%s: %s', lst.get("id"), exc)
         raise DatabaseError(f'upsert_klaviyo_list failed: {exc}') from exc
+
+
+def upsert_threpl_invoice(
+    conn: ConnectionWrapper,
+    invoice_number: str,
+    week_start: str,
+    week_end: str,
+    invoice_date: str,
+    total_amount: float,
+    line_items_json: str,
+) -> None:
+    try:
+        conn.execute("""
+            INSERT INTO threpl_invoices
+                (invoice_number, week_start, week_end, invoice_date, total_amount, line_items, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP::text)
+            ON CONFLICT(invoice_number) DO UPDATE SET
+                week_start = excluded.week_start,
+                week_end = excluded.week_end,
+                invoice_date = excluded.invoice_date,
+                total_amount = excluded.total_amount,
+                line_items = excluded.line_items,
+                created_at = CURRENT_TIMESTAMP::text
+        """, (invoice_number, week_start, week_end, invoice_date,
+              total_amount, line_items_json))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_threpl_invoice failed for #%s: %s', invoice_number, exc)
+        raise DatabaseError(f'upsert_threpl_invoice failed: {exc}') from exc
 
 
 def get_klaviyo_campaigns(conn: ConnectionWrapper) -> list[dict[str, Any]]:
