@@ -418,6 +418,8 @@ def _save_revenue_model(live, months):
             upsert_media_spend(conn, m, amz_spend, 0.0, source='Amazon')
             upsert_amazon_revenue_forecast(conn, m, amz_total_rev)
 
+    # Clear all Streamlit caches so pacing/forecast pages pick up new goals
+    st.cache_data.clear()
     st.success('Revenue model saved!')
 
 
