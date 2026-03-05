@@ -284,7 +284,7 @@ def render(ctx):
         _nc_is_est = d.get('amz_nc_projected', False) and _source_filter != 'shopify'
         _nc_label = 'New Customers MTD (est)' if _nc_is_est else 'New Customers MTD'
 
-        h1, h2, h3, h4 = st.columns(4)
+        h1, h2, h3, h4, h5 = st.columns(5)
         h1.metric('Rev MTD', f"${_hero_rev:,.0f}",
                    delta=f"Pace: ${_rev_pace_goal:,.0f}" if _rev_pace_goal > 0 else None,
                    delta_color='off')
@@ -296,6 +296,11 @@ def render(ctx):
                    delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
                    delta_color='off',
                    help='Includes projected Amazon NC for yesterday (est)' if _nc_is_est else None)
+        _nc_roas_val = d.get('total_nc_roas', 0)
+        _nc_roas_goal = d.get('goal_nc_roas_ratio', 0)
+        h4.metric('NC-ROAS', f"{_nc_roas_val:.2f}x",
+                   delta=f"Goal: {_nc_roas_goal:.2f}x" if _nc_roas_goal > 0 else None,
+                   delta_color='off')
 
         # CAC Payback — pull cost assumptions from revenue model (Variables page)
         from analytics.revenue_model import DEFAULTS
@@ -387,7 +392,7 @@ def render(ctx):
                 net_to_gross=_net_to_gross,
                 retention_curve=_use_ret,
             )
-        h4.metric('CAC Payback',
+        h5.metric('CAC Payback',
                    f'{_cac_payback:.1f}mo' if _cac_payback > 0 else '\u2014',
                    delta=f"Target: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
                    delta_color='off',
