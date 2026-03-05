@@ -247,3 +247,72 @@ def _update_global_from_sku_indices(sku_indices):
             upsert_seasonal_index(conn, month_num, value)
 
     logger.info('[seasonal] Updated global seasonal indices from Shopify repeat revenue')
+
+
+def compute_channel_seasonal_indices(source='shopify'):
+    """
+    Compute seasonal indices for a specific channel from its own sales data.
+
+    For Shopify: uses repeat revenue from orders table (excludes first orders).
+    For Amazon: uses daily_sku_sales revenue (no customer-level data available).
+
+    Returns:
+        dict: {month_num(1-12): index_value} normalized so average = 1.0
+        Returns None if insufficient data.
+    """
+    with get_db() as conn:
+        # Both channels have customer-level data in orders table
+        # Use repeat revenue (excluding first orders) for seasonal signal
+        rows = conn.execute("""
+            WITH first_orders AS (
+                SELECT customer_id, MIN(order_date) AS first_date
+                FROM orders
+                WHERE source = %s AND total_amount > 0
+                GROUP BY customer_id
+            )
+            SELECT
+                EXTRACT(MONTH FROM o.order_date::date)::int AS cal_month,
+                COUNT(DISTINCT EXTRACT(YEAR FROM o.order_date::date)) AS num_years,
+                SUM(o.total_amount) AS total_rev
+            FROM orders o
+            JOIN first_orders fo ON o.customer_id = fo.customer_id
+            WHERE o.source = %s
+              AND o.total_amount > 0
+              AND substr(o.order_date, 1, 7) <> substr(fo.first_date, 1, 7)
+              AND o.order_date >= %s
+            GROUP BY EXTRACT(MONTH FROM o.order_date::date)
+            ORDER BY cal_month
+        """, (source, source, '2020-01-01')).fetchall()
+
+    if not rows or len(rows) < 6:
+        logger.warning('[seasonal] Not enough data for %s seasonal indices (%d months)',
+                       source, len(rows) if rows else 0)
+        return None
+
+    # Average yearly revenue per calendar month
+    monthly_avgs = {}
+    for r in rows:
+        m = int(r['cal_month'])
+        monthly_avgs[m] = float(r['total_rev']) / max(int(r['num_years']), 1)
+
+    if not monthly_avgs:
+        return None
+
+    grand_avg = sum(monthly_avgs.values()) / len(monthly_avgs)
+    if grand_avg <= 0:
+        return None
+
+    # Compute and normalize indices
+    indices = {}
+    for m in range(1, 13):
+        if m in monthly_avgs:
+            indices[m] = monthly_avgs[m] / grand_avg
+        else:
+            indices[m] = 1.0
+
+    avg = sum(indices.values()) / 12
+    if avg > 0:
+        indices = {m: round(v / avg, 4) for m, v in indices.items()}
+
+    logger.info('[seasonal] Computed %s seasonal indices', source)
+    return indices

@@ -41,7 +41,7 @@ Google Sheets ──────► google_sheets.py ───────► go
 Dashboard UI ───────► settings page ──────────► media_spend, amazon_revenue_forecast, planned_inbound, seasonal_indices
 ```
 
-**Key pattern**: Amazon data goes directly to `daily_sku_sales` (no customer-level detail). Shopify data goes through `orders` → `order_items` → rebuilt into `daily_sku_sales`.
+**Key pattern**: Both Amazon and Shopify have customer-level data (Amazon uses hashed emails as customer IDs). Both channels flow through `orders` → `order_items` → rebuilt into `daily_sku_sales`.
 
 ## Database
 
@@ -207,7 +207,7 @@ log = logging.getLogger(__name__)
 ### Gotchas
 
 - `daily_sku_sales` has composite PK `(sale_date, sku, source)` — always filter by source
-- Amazon has NO customer-level data — never join amazon rows to orders/customers
+- Amazon DOES have customer-level data (hashed emails) in orders/order_items tables
 - Shopify `order_id` is TEXT not INT (Shopify uses large numeric strings)
 - `seasonal_indices` `month_num` is 1–12, NOT 0–11
 - Prophet requires columns named exactly `ds` and `y`

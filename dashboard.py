@@ -259,6 +259,21 @@ def _load_seasonal_json():
 
 
 @st.cache_data(ttl=_CACHE_TTL)
+def _load_channel_seasonal_json(source):
+    """Load channel-specific seasonal indices computed from that channel's own data."""
+    import json as _json_s
+    from analytics.seasonal import compute_channel_seasonal_indices
+    with get_db() as conn:
+        enabled = get_setting(conn, "seasonality_enabled", "true")
+        if enabled != "true":
+            return None
+    indices = compute_channel_seasonal_indices(source=source)
+    if not indices:
+        return None
+    return _json_s.dumps(indices, sort_keys=True)
+
+
+@st.cache_data(ttl=_CACHE_TTL)
 def _load_sku_seasonal_json():
     """Load per-SKU seasonal indices from DB as JSON string for cache key, or None if empty."""
     import json as _json_s
@@ -781,6 +796,7 @@ _ctx = {
     'cached_customer_retention_curve': _cached_customer_retention_curve,
     'cached_aov_and_units': _cached_aov_and_units,
     'load_seasonal_json': _load_seasonal_json,
+    'load_channel_seasonal_json': _load_channel_seasonal_json,
     'load_sku_seasonal_json': _load_sku_seasonal_json,
     'cached_3pl_inventory': _cached_3pl_inventory,
     'cached_amazon_inventory': _cached_amazon_inventory,

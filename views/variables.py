@@ -128,8 +128,9 @@ def _inject_waterfall_repeat(live, months, ctx):
     import json as _json_wf
     try:
         cached_waterfall = ctx.get('cached_waterfall')
+        load_channel_seasonal = ctx.get('load_channel_seasonal_json')
         load_seasonal_json = ctx.get('load_seasonal_json')
-        if not cached_waterfall or not load_seasonal_json:
+        if not cached_waterfall:
             return
 
         with get_db() as conn:
@@ -138,10 +139,17 @@ def _inject_waterfall_repeat(live, months, ctx):
             return
 
         spend_json = _json_wf.dumps(media_spend, sort_keys=True)
-        seasonal_json = load_seasonal_json()
+
+        # Channel-specific seasonal indices; fall back to global
+        dtc_seasonal = (load_channel_seasonal('shopify')
+                        if load_channel_seasonal else None) or (
+                        load_seasonal_json() if load_seasonal_json else None)
+        amz_seasonal = (load_channel_seasonal('amazon')
+                        if load_channel_seasonal else None) or (
+                        load_seasonal_json() if load_seasonal_json else None)
 
         # DTC repeat from shopify waterfall
-        wf_dtc = cached_waterfall(spend_json, 'shopify', 12, seasonal_json)
+        wf_dtc = cached_waterfall(spend_json, 'shopify', 12, dtc_seasonal)
         if wf_dtc is not None and not wf_dtc.empty:
             for _, row in wf_dtc.iterrows():
                 m = str(row.get('month', ''))
@@ -149,7 +157,7 @@ def _inject_waterfall_repeat(live, months, ctx):
                     live['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
 
         # Amazon repeat from amazon waterfall
-        wf_amz = cached_waterfall(spend_json, 'amazon', 12, seasonal_json)
+        wf_amz = cached_waterfall(spend_json, 'amazon', 12, amz_seasonal)
         if wf_amz is not None and not wf_amz.empty:
             for _, row in wf_amz.iterrows():
                 m = str(row.get('month', ''))
