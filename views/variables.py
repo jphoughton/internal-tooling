@@ -42,7 +42,7 @@ def render(ctx):
 
     # ── Revenue Model (replaces old Media Spend Plan) ──
     st.divider()
-    _render_revenue_model(current)
+    _render_revenue_model(current, ctx)
 
     # ── Planned Inbound Orders ──
     if forecast_skus:
@@ -123,182 +123,146 @@ def _render_scalar_variables(current):
 # =====================================================================
 # Revenue Model
 # =====================================================================
-def _render_revenue_model(current):
+def _inject_waterfall_repeat(live, months, ctx):
+    """Replace repeat revenue with waterfall-computed cohort projections."""
+    import json as _json_wf
+    try:
+        cached_waterfall = ctx.get('cached_waterfall')
+        load_seasonal_json = ctx.get('load_seasonal_json')
+        if not cached_waterfall or not load_seasonal_json:
+            return
+
+        with get_db() as conn:
+            media_spend = get_media_spend(conn, source='All Sources')
+        if not media_spend:
+            return
+
+        spend_json = _json_wf.dumps(media_spend, sort_keys=True)
+        seasonal_json = load_seasonal_json()
+
+        # DTC repeat from shopify waterfall
+        wf_dtc = cached_waterfall(spend_json, 'shopify', 12, seasonal_json)
+        if wf_dtc is not None and not wf_dtc.empty:
+            for _, row in wf_dtc.iterrows():
+                m = str(row.get('month', ''))
+                if m in months:
+                    live['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
+
+        # Amazon repeat from amazon waterfall
+        wf_amz = cached_waterfall(spend_json, 'amazon', 12, seasonal_json)
+        if wf_amz is not None and not wf_amz.empty:
+            for _, row in wf_amz.iterrows():
+                m = str(row.get('month', ''))
+                if m in months:
+                    live['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
+    except Exception as e:
+        log.warning('_inject_waterfall_repeat failed: %s', e)
+
+
+def _render_revenue_model(current, ctx):
     st.subheader('Revenue Model')
-    st.caption('Green sections are editable inputs. Calculated rows update live. '
-               'Click **Save Revenue Model** at the bottom to persist changes.')
+    st.caption('One unified P&L view. Green rows are editable inputs — '
+               'expand **Edit Inputs** below the table to change them.')
 
     horizon = current.get('forecast_horizon', 12)
     months = _month_list(horizon)
-    ml = [_month_label(m) for m in months]  # month labels for columns
+    ml = [_month_label(m) for m in months]
 
     # Load from DB + merge with defaults
     with get_db() as conn:
         db_data = get_revenue_model(conn)
     inputs = rm.merge_with_defaults(db_data, months)
-
-    # Mutable copy for live edits
     live = {var: dict(inputs.get(var, {})) for var in rm.EDITABLE_VARS}
 
-    # ── MEDIA SPEND (editable) ──────────────────────────────────────
-    _section_header('MEDIA SPEND', editable=True)
-    spend_df = _build_df({
-        'DTC Spend': 'dtc_spend',
-        'Amazon Spend': 'amazon_spend',
-    }, live, months, ml)
-    edited_spend = st.data_editor(
-        spend_df, key='rm_spend', use_container_width=True, height=110,
-        column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=1000) for c in ml},
-    )
-    _apply_edits(live, edited_spend, months, ml, {
-        'DTC Spend': 'dtc_spend', 'Amazon Spend': 'amazon_spend',
-    })
-    calc = rm.compute(live, months)
-    _render_calc_rows(calc, months, ml, [
-        ('total_media_spend', 'Total Media Spend', '$', True),
-    ])
+    # ── Edit Inputs (expander, processed first so edits apply before display) ──
+    with st.expander('Edit Inputs', expanded=False):
+        st.caption('Edit values below and click **Save Revenue Model** to persist.')
 
-    # ── UNIT ECONOMICS (editable) ───────────────────────────────────
-    _section_header('UNIT ECONOMICS', editable=True)
-    econ_df = _build_df({
-        'DTC NC-AOV': 'dtc_nc_aov',
-        'DTC NC-ROAS': 'dtc_nc_roas',
-        'Amazon NC-AOV': 'amazon_nc_aov',
-        'DTC / Amazon NC Multiplier': 'nc_multiplier',
-    }, live, months, ml)
-    edited_econ = st.data_editor(
-        econ_df, key='rm_econ', use_container_width=True, height=180,
-        column_config={c: st.column_config.NumberColumn(c, format='%.2f', step=0.01) for c in ml},
-    )
-    _apply_edits(live, edited_econ, months, ml, {
-        'DTC NC-AOV': 'dtc_nc_aov', 'DTC NC-ROAS': 'dtc_nc_roas',
-        'Amazon NC-AOV': 'amazon_nc_aov', 'DTC / Amazon NC Multiplier': 'nc_multiplier',
-    })
-    calc = rm.compute(live, months)
+        st.markdown('**Media Spend**')
+        spend_df = _build_df({
+            'DTC Spend': 'dtc_spend', 'Amazon Spend': 'amazon_spend',
+        }, live, months, ml)
+        edited_spend = st.data_editor(
+            spend_df, key='rm_spend', use_container_width=True, height=110,
+            column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=1000) for c in ml},
+        )
+        _apply_edits(live, edited_spend, months, ml, {
+            'DTC Spend': 'dtc_spend', 'Amazon Spend': 'amazon_spend',
+        })
 
-    # ── BLENDED METRICS (calculated) ────────────────────────────────
-    _section_header('BLENDED METRICS')
-    _render_calc_rows(calc, months, ml, [
-        ('blended_nc_roas', 'Blended NC-ROAS', 'x', False),
-        ('blended_cpa', 'Blended CPA', '$s', False),
-    ])
+        st.markdown('**Unit Economics**')
+        econ_df = _build_df({
+            'DTC NC-AOV': 'dtc_nc_aov', 'DTC NC-ROAS': 'dtc_nc_roas',
+            'Amazon NC-AOV': 'amazon_nc_aov', 'NC Multiplier': 'nc_multiplier',
+        }, live, months, ml)
+        edited_econ = st.data_editor(
+            econ_df, key='rm_econ', use_container_width=True, height=180,
+            column_config={c: st.column_config.NumberColumn(c, format='%.2f', step=0.01) for c in ml},
+        )
+        _apply_edits(live, edited_econ, months, ml, {
+            'DTC NC-AOV': 'dtc_nc_aov', 'DTC NC-ROAS': 'dtc_nc_roas',
+            'Amazon NC-AOV': 'amazon_nc_aov', 'NC Multiplier': 'nc_multiplier',
+        })
 
-    # ── NEW CUSTOMER REVENUE (calculated) ───────────────────────────
-    _section_header('NEW CUSTOMER REVENUE')
-    _render_calc_rows(calc, months, ml, [
-        ('dtc_new', 'DTC New', '$', False),
-        ('amazon_new', 'Amazon New', '$', False),
-        ('total_new', 'Total New', '$', True),
-        ('dtc_nc_orders', 'DTC NC Orders', '#', False),
-        ('dtc_nc_cpa', 'DTC NC-CPA', '$s', False),
-        ('amazon_nc_orders', 'Amazon NC Orders', '#', False),
-        ('total_nc', 'Total NC', '#', True),
-    ])
+        st.markdown('**Cost Assumptions**')
+        cost_data = {}
+        cost_data['DTC Net \u2192 Gross'] = [live['dtc_net_to_gross'][m] for m in months]
+        cost_data['DTC Processing Fee (%)'] = [live['dtc_processing_pct'][m] * 100 for m in months]
+        cost_data['DTC Fulfillment (%)'] = [live['dtc_fulfillment_pct'][m] * 100 for m in months]
+        cost_data['Amazon Fulfillment (%)'] = [live['amazon_fulfillment_pct'][m] * 100 for m in months]
+        cost_data['COGS % Gross'] = [live['cogs_pct'][m] * 100 for m in months]
+        cost_df = pd.DataFrame(cost_data, index=ml).T
+        edited_cost = st.data_editor(
+            cost_df, key='rm_cost', use_container_width=True, height=215,
+            column_config={c: st.column_config.NumberColumn(c, format='%.2f', step=0.1) for c in ml},
+        )
+        _apply_edits_pct(live, edited_cost, months, ml, {
+            'DTC Net \u2192 Gross': ('dtc_net_to_gross', False),
+            'DTC Processing Fee (%)': ('dtc_processing_pct', True),
+            'DTC Fulfillment (%)': ('dtc_fulfillment_pct', True),
+            'Amazon Fulfillment (%)': ('amazon_fulfillment_pct', True),
+            'COGS % Gross': ('cogs_pct', True),
+        })
 
-    # ── REPEAT REVENUE (editable) ───────────────────────────────────
-    _section_header('REPEAT REVENUE', editable=True)
-    repeat_df = _build_df({
-        'DTC Repeat': 'dtc_repeat',
-        'Amazon Repeat': 'amazon_repeat',
-    }, live, months, ml)
-    edited_repeat = st.data_editor(
-        repeat_df, key='rm_repeat', use_container_width=True, height=110,
-        column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=1000) for c in ml},
-    )
-    _apply_edits(live, edited_repeat, months, ml, {
-        'DTC Repeat': 'dtc_repeat', 'Amazon Repeat': 'amazon_repeat',
-    })
-    calc = rm.compute(live, months)
-    _render_calc_rows(calc, months, ml, [
-        ('total_repeat', 'Total Repeat', '$', True),
-    ])
+        st.markdown('**Other Inputs**')
+        other_df = _build_df({
+            'Wholesale Rev': 'wholesale_rev', 'Fixed Expenses': 'fixed_expenses',
+        }, live, months, ml)
+        edited_other = st.data_editor(
+            other_df, key='rm_other', use_container_width=True, height=110,
+            column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=1000) for c in ml},
+        )
+        _apply_edits(live, edited_other, months, ml, {
+            'Wholesale Rev': 'wholesale_rev', 'Fixed Expenses': 'fixed_expenses',
+        })
 
-    # ── REVENUE SUMMARY (calculated + Wholesale editable) ───────────
-    _section_header('REVENUE SUMMARY')
-    _render_calc_rows(calc, months, ml, [
-        ('dtc_gross_sales', 'DTC Gross Sales', '$', False),
-        ('dtc_rev', 'DTC Rev (Total Sales)', '$', False),
-        ('amazon_rev', 'Amazon Rev', '$', False),
-    ])
-    # Wholesale Rev: small inline editor
-    ws_df = _build_df({'Wholesale Rev': 'wholesale_rev'}, live, months, ml)
-    edited_ws = st.data_editor(
-        ws_df, key='rm_wholesale', use_container_width=True, height=75,
-        column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=100) for c in ml},
-    )
-    _apply_edits(live, edited_ws, months, ml, {'Wholesale Rev': 'wholesale_rev'})
-    calc = rm.compute(live, months)
-    _render_calc_rows(calc, months, ml, [
-        ('net_sales', 'Net Sales', '$', True),
-        ('business_mer', 'Business MER', 'x', False),
-    ])
+        # Save button inside expander
+        if st.button('Save Revenue Model', type='primary',
+                      use_container_width=True, key='rm_save'):
+            _save_revenue_model(live, months)
+            st.session_state['_bv_revmodel_saved'] = True
+            st.rerun()
 
-    # ── COST ASSUMPTIONS (editable) ─────────────────────────────────
-    _section_header('COST ASSUMPTIONS', editable=True)
-    # Display percentages as whole numbers (4.0 not 0.04) for readability
-    cost_data = {}
-    cost_data['DTC Net \u2192 Gross'] = [live['dtc_net_to_gross'][m] for m in months]
-    cost_data['DTC Processing Fee (%)'] = [live['dtc_processing_pct'][m] * 100 for m in months]
-    cost_data['DTC Fulfillment (%)'] = [live['dtc_fulfillment_pct'][m] * 100 for m in months]
-    cost_data['Amazon Fulfillment (%)'] = [live['amazon_fulfillment_pct'][m] * 100 for m in months]
-    cost_data['COGS % Gross'] = [live['cogs_pct'][m] * 100 for m in months]
-    cost_df = pd.DataFrame(cost_data, index=ml).T
+    # ── Inject waterfall repeat revenue (overrides manual values) ──
+    _inject_waterfall_repeat(live, months, ctx)
 
-    edited_cost = st.data_editor(
-        cost_df, key='rm_cost', use_container_width=True, height=215,
-        column_config={c: st.column_config.NumberColumn(c, format='%.2f', step=0.1) for c in ml},
-    )
-    # Convert display percentages back to decimals
-    _apply_edits_pct(live, edited_cost, months, ml, {
-        'DTC Net \u2192 Gross': ('dtc_net_to_gross', False),
-        'DTC Processing Fee (%)': ('dtc_processing_pct', True),
-        'DTC Fulfillment (%)': ('dtc_fulfillment_pct', True),
-        'Amazon Fulfillment (%)': ('amazon_fulfillment_pct', True),
-        'COGS % Gross': ('cogs_pct', True),
-    })
+    # ── Compute full model ──
     calc = rm.compute(live, months)
 
-    # ── COST BREAKDOWN (calculated) ─────────────────────────────────
-    _section_header('COST BREAKDOWN')
-    _render_calc_rows(calc, months, ml, [
-        ('dtc_processing_amt', 'DTC Processing Fee $', '$', False),
-        ('dtc_fulfillment_amt', 'DTC Fulfillment $', '$', False),
-        ('amazon_fulfillment_amt', 'Amazon Fulfillment $', '$', False),
-        ('amazon_cogs_amt', 'Amazon COGS $', '$', False),
-        ('dtc_cogs_amt', 'DTC COGS $', '$', False),
-        ('total_cos', 'Total Cost Of Sale', '$', True),
-        ('gross_profit', 'Gross Profit', '$', True),
-        ('gross_profit_pct', 'Gross Profit %', '%raw', False),
-    ])
-
-    # ── P&L BOTTOM LINE (Fixed Expenses editable) ───────────────────
-    _section_header('P&L BOTTOM LINE', editable=True)
-    fixed_df = _build_df({'Fixed Expenses': 'fixed_expenses'}, live, months, ml)
-    edited_fixed = st.data_editor(
-        fixed_df, key='rm_fixed', use_container_width=True, height=75,
-        column_config={c: st.column_config.NumberColumn(c, format='$%,.0f', step=1000) for c in ml},
-    )
-    _apply_edits(live, edited_fixed, months, ml, {'Fixed Expenses': 'fixed_expenses'})
-    calc = rm.compute(live, months)
-    _render_calc_rows(calc, months, ml, [
-        ('total_expenses', 'Total Expenses', '$', True),
-        ('net_profit', 'Net Profit', '$', True),
-        ('net_profit_pct', 'Net Profit %', '%raw', False),
-    ])
+    # ── Render unified P&L table ──
+    _render_full_pnl(live, calc, months, ml)
 
     # ── TTM Summary ──
     _render_ttm(calc)
 
-    # ── FUNNEL GOALS (in expander) ──────────────────────────────────
+    # ── Funnel Goals (separate expander) ──
     with st.expander('Funnel Goals', expanded=False):
-        _section_header('FUNNEL GOALS', editable=True)
         funnel_data = {}
         funnel_data['CPMs ($)'] = [live['funnel_cpms'][m] for m in months]
         funnel_data['Cost Per New Visitor ($)'] = [live['funnel_cost_per_visitor'][m] for m in months]
         funnel_data['Conversion Rate (%)'] = [live['funnel_conv_rate'][m] * 100 for m in months]
         funnel_data['AOV ($)'] = [live['funnel_aov'][m] for m in months]
         funnel_df = pd.DataFrame(funnel_data, index=ml).T
-
         edited_funnel = st.data_editor(
             funnel_df, key='rm_funnel', use_container_width=True, height=180,
             column_config={c: st.column_config.NumberColumn(c, format='%.2f', step=0.1) for c in ml},
@@ -309,25 +273,13 @@ def _render_revenue_model(current):
             'Conversion Rate (%)': ('funnel_conv_rate', True),
             'AOV ($)': ('funnel_aov', False),
         })
-        calc = rm.compute(live, months)
-
-        # Funnel spend mirrors DTC Spend
-        _render_calc_rows(calc, months, ml, [
+        funnel_calc = rm.compute(live, months)
+        _render_calc_rows(funnel_calc, months, ml, [
             ('funnel_new_visitors', 'New Visitors', '#', False),
             ('funnel_new_customers', 'New Customers', '#', False),
             ('funnel_nc_rev', 'NC-Rev', '$', False),
             ('funnel_nc_roas', 'NC-ROAS', 'x', False),
         ])
-
-    # ── Save Button ──
-    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        if st.button('\U0001f4be  Save Revenue Model', type='primary',
-                      use_container_width=True, key='rm_save'):
-            _save_revenue_model(live, months)
-            st.session_state['_bv_revmodel_saved'] = True
-            st.rerun()
 
 
 # =====================================================================
@@ -460,20 +412,197 @@ def _save_revenue_model(live, months):
 # Rendering helpers
 # =====================================================================
 
+def _render_full_pnl(live, calc, months, ml):
+    """Render the full P&L as one unified HTML table."""
+    n_cols = len(ml)
+
+    # Define all sections and their rows
+    # Row format: (type, label, key, format)
+    #   type: 'input' = from live (green), 'input_pct' = from live as pct,
+    #         'calc' = from calc, 'total' = from calc (bold)
+    sections = [
+        ('MEDIA SPEND', True, [
+            ('input', 'DTC Spend', 'dtc_spend', '$'),
+            ('input', 'Amazon Spend', 'amazon_spend', '$'),
+            ('total', 'Total Media Spend', 'total_media_spend', '$'),
+        ]),
+        ('UNIT ECONOMICS', True, [
+            ('input', 'DTC NC-ROAS', 'dtc_nc_roas', 'x'),
+            ('input', 'DTC NC-AOV', 'dtc_nc_aov', '$s'),
+            ('input', 'Amazon NC-AOV', 'amazon_nc_aov', '$s'),
+            ('input', 'NC Multiplier', 'nc_multiplier', 'x'),
+        ]),
+        ('BLENDED METRICS', False, [
+            ('calc', 'Blended NC-ROAS', 'blended_nc_roas', 'x'),
+            ('calc', 'Blended CPA', 'blended_cpa', '$s'),
+        ]),
+        ('NEW CUSTOMER REVENUE', False, [
+            ('calc', 'DTC New', 'dtc_new', '$'),
+            ('calc', 'Amazon New', 'amazon_new', '$'),
+            ('total', 'Total New', 'total_new', '$'),
+            ('calc', 'DTC NC Orders', 'dtc_nc_orders', '#'),
+            ('calc', 'DTC NC-CPA', 'dtc_nc_cpa', '$s'),
+            ('calc', 'Amazon NC Orders', 'amazon_nc_orders', '#'),
+            ('total', 'Total NC', 'total_nc', '#'),
+        ]),
+        ('REPEAT REVENUE', False, [
+            ('input_ro', 'DTC Repeat', 'dtc_repeat', '$'),
+            ('input_ro', 'Amazon Repeat', 'amazon_repeat', '$'),
+            ('total', 'Total Repeat', 'total_repeat', '$'),
+        ]),
+        ('REVENUE SUMMARY', False, [
+            ('calc', 'DTC Gross Sales', 'dtc_gross_sales', '$'),
+            ('calc', 'DTC Rev (Net Sales)', 'dtc_rev', '$'),
+            ('calc', 'Amazon Rev', 'amazon_rev', '$'),
+            ('input', 'Wholesale Rev', 'wholesale_rev', '$'),
+            ('total', 'Net Sales', 'net_sales', '$'),
+            ('calc', 'Business MER', 'business_mer', 'x'),
+        ]),
+        ('COST ASSUMPTIONS', True, [
+            ('input_raw', 'DTC Net \u2192 Gross', 'dtc_net_to_gross', 'x4'),
+            ('input_pct', 'DTC Processing Fee', 'dtc_processing_pct', '%'),
+            ('input_pct', 'DTC Fulfillment', 'dtc_fulfillment_pct', '%'),
+            ('input_pct', 'Amazon Fulfillment', 'amazon_fulfillment_pct', '%'),
+            ('input_pct', 'COGS % Gross', 'cogs_pct', '%'),
+        ]),
+        ('COST BREAKDOWN', False, [
+            ('calc', 'DTC Processing $', 'dtc_processing_amt', '$'),
+            ('calc', 'DTC Fulfillment $', 'dtc_fulfillment_amt', '$'),
+            ('calc', 'Amazon Fulfillment $', 'amazon_fulfillment_amt', '$'),
+            ('calc', 'Amazon COGS $', 'amazon_cogs_amt', '$'),
+            ('calc', 'DTC COGS $', 'dtc_cogs_amt', '$'),
+            ('total', 'Total Cost Of Sale', 'total_cos', '$'),
+            ('total', 'Gross Profit', 'gross_profit', '$'),
+            ('calc', 'Gross Profit %', 'gross_profit_pct', '%raw'),
+        ]),
+        ('P&L BOTTOM LINE', True, [
+            ('input', 'Fixed Expenses', 'fixed_expenses', '$'),
+            ('total', 'Total Expenses', 'total_expenses', '$'),
+            ('total', 'Net Profit', 'net_profit', '$'),
+            ('calc', 'Net Profit %', 'net_profit_pct', '%raw'),
+        ]),
+    ]
+
+    h = []
+    h.append('<div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;'
+             'margin:8px 0 16px;">')
+    h.append('<table style="width:100%;border-collapse:collapse;font-size:0.82rem;'
+             'font-family:\'DM Sans\',-apple-system,sans-serif;">')
+
+    # Header row
+    h.append('<thead><tr>')
+    h.append('<th style="position:sticky;left:0;z-index:4;background:#f8fafc;'
+             'padding:8px 12px;text-align:left;font-size:0.7rem;color:#94a3b8;'
+             'min-width:190px;border-bottom:2px solid #e2e8f0;"></th>')
+    for ml_val in ml:
+        h.append(f'<th style="padding:8px 8px;text-align:right;font-size:0.7rem;'
+                  f'color:#94a3b8;min-width:88px;white-space:nowrap;'
+                  f'border-bottom:2px solid #e2e8f0;background:#f8fafc;">'
+                  f'{ml_val}</th>')
+    h.append('</tr></thead><tbody>')
+
+    for section_name, is_editable, rows in sections:
+        # Section header row
+        if is_editable:
+            badge = ('<span style="background:#dcfce7;color:#16a34a;font-size:0.55rem;'
+                     'padding:1px 6px;border-radius:3px;margin-left:8px;font-weight:600;'
+                     'letter-spacing:0.04em;">EDITABLE</span>')
+        else:
+            badge = ('<span style="color:#94a3b8;font-size:0.55rem;margin-left:8px;'
+                     'font-weight:500;letter-spacing:0.04em;">CALCULATED</span>')
+
+        h.append(f'<tr><td colspan="{n_cols + 1}" style="background:#f1f5f9;'
+                  f'padding:8px 12px;font-size:0.7rem;font-weight:700;'
+                  f'color:#475569;text-transform:uppercase;letter-spacing:0.06em;'
+                  f'border-top:2px solid #e2e8f0;">'
+                  f'{section_name} {badge}</td></tr>')
+
+        for row_type, label, key, fmt in rows:
+            is_input = row_type.startswith('input')
+            is_total = row_type == 'total'
+
+            # Get values: inputs from live, calculated from calc
+            if is_input:
+                values = {m: live.get(key, {}).get(m, 0) for m in months}
+            else:
+                values = {m: calc.get(key, {}).get(m, 0) for m in months}
+
+            # Styling
+            if is_total:
+                row_bg = '#f8fafc'
+                cell_bg = '#f8fafc'
+                weight = 'font-weight:700;'
+                label_color = '#0f172a'
+                top_border = 'border-top:1.5px solid #cbd5e1;'
+            elif is_input:
+                row_bg = '#f0fdf4'
+                cell_bg = '#f0fdf4'
+                weight = 'font-weight:500;'
+                label_color = '#15803d'
+                top_border = ''
+            else:
+                row_bg = '#ffffff'
+                cell_bg = '#ffffff'
+                weight = 'font-weight:400;'
+                label_color = '#334155'
+                top_border = ''
+
+            h.append(f'<tr style="{top_border}">')
+
+            # Label
+            from_wf = ''
+            if row_type == 'input_ro':
+                from_wf = (' <span style="color:#94a3b8;font-size:0.6rem;'
+                           'font-weight:400;font-style:italic;">cohort</span>')
+            elif is_input and row_type != 'input_ro':
+                from_wf = (' <span style="color:#22c55e;font-size:0.55rem;'
+                           'font-weight:600;">\u270e</span>')
+
+            h.append(f'<td style="position:sticky;left:0;z-index:2;background:{row_bg};'
+                      f'padding:6px 12px;{weight}color:{label_color};white-space:nowrap;'
+                      f'font-size:0.8rem;border-bottom:1px solid #f1f5f9;">'
+                      f'{label}{from_wf}</td>')
+
+            # Value cells
+            for m in months:
+                v = values.get(m, 0)
+                if row_type == 'input_pct':
+                    txt = f'{v * 100:.1f}%'
+                elif row_type == 'input_raw':
+                    txt = rm.format_value(v, fmt)
+                else:
+                    txt = rm.format_value(v, fmt)
+
+                val_color = '#dc2626' if isinstance(v, (int, float)) and v < 0 else (
+                    '#0f172a' if is_total else '#334155')
+
+                h.append(f'<td style="padding:6px 8px;text-align:right;{weight}'
+                          f'color:{val_color};white-space:nowrap;font-size:0.8rem;'
+                          f'background:{cell_bg};border-bottom:1px solid #f1f5f9;">'
+                          f'{txt}</td>')
+            h.append('</tr>')
+
+    h.append('</tbody></table></div>')
+    st.markdown(''.join(h), unsafe_allow_html=True)
+
+
 _HDR_EDITABLE = (
-    '<div style="background:rgba(76,175,80,0.12);padding:6px 14px;'
-    'border-radius:6px;margin:20px 0 6px;border-left:4px solid #66bb6a;">'
-    '<span style="color:#66bb6a;font-weight:700;font-size:0.78rem;'
+    '<div style="background:#f0fdf4;padding:8px 14px;'
+    'border-radius:6px;margin:24px 0 8px;border-left:4px solid #22c55e;">'
+    '<span style="color:#16a34a;font-weight:700;font-size:0.78rem;'
     'text-transform:uppercase;letter-spacing:0.06em;">{}</span>'
-    '<span style="color:rgba(102,187,106,0.5);font-size:0.65rem;'
-    'margin-left:8px;font-weight:500;">EDITABLE</span></div>'
+    '<span style="background:#dcfce7;color:#16a34a;font-size:0.6rem;'
+    'margin-left:10px;font-weight:600;padding:2px 8px;border-radius:3px;'
+    'letter-spacing:0.04em;">EDITABLE</span></div>'
 )
 
 _HDR_CALC = (
-    '<div style="background:rgba(255,255,255,0.03);padding:6px 14px;'
-    'border-radius:6px;margin:20px 0 6px;border-left:4px solid rgba(255,255,255,0.15);">'
-    '<span style="color:rgba(255,255,255,0.55);font-weight:700;font-size:0.78rem;'
-    'text-transform:uppercase;letter-spacing:0.06em;">{}</span></div>'
+    '<div style="background:#f8fafc;padding:8px 14px;'
+    'border-radius:6px;margin:24px 0 8px;border-left:4px solid #94a3b8;">'
+    '<span style="color:#475569;font-weight:700;font-size:0.78rem;'
+    'text-transform:uppercase;letter-spacing:0.06em;">{}</span>'
+    '<span style="color:#94a3b8;font-size:0.6rem;'
+    'margin-left:10px;font-weight:500;letter-spacing:0.04em;">CALCULATED</span></div>'
 )
 
 
@@ -490,28 +619,30 @@ def _render_calc_rows(calc, months, month_labels, rows):
 
     # Column header
     h.append('<tr>')
-    h.append('<th style="position:sticky;left:0;z-index:2;background:#0e1117;'
-             'padding:5px 12px;text-align:left;font-size:0.7rem;color:rgba(255,255,255,0.4);'
-             'min-width:200px;border-bottom:1px solid rgba(255,255,255,0.06);"></th>')
+    h.append('<th style="position:sticky;left:0;z-index:2;background:#f8fafc;'
+             'padding:6px 12px;text-align:left;font-size:0.7rem;color:#94a3b8;'
+             'min-width:200px;border-bottom:1px solid #e2e8f0;"></th>')
     for ml_val in month_labels:
-        h.append(f'<th style="padding:5px 10px;text-align:right;font-size:0.7rem;'
-                  f'color:rgba(255,255,255,0.4);min-width:85px;white-space:nowrap;'
-                  f'border-bottom:1px solid rgba(255,255,255,0.06);">{ml_val}</th>')
+        h.append(f'<th style="padding:6px 10px;text-align:right;font-size:0.7rem;'
+                  f'color:#94a3b8;min-width:85px;white-space:nowrap;'
+                  f'border-bottom:1px solid #e2e8f0;">{ml_val}</th>')
     h.append('</tr>')
 
     for key, label, fmt, is_bold in rows:
-        w = 'font-weight:700;' if is_bold else ''
-        bt = 'border-top:1.5px solid rgba(255,255,255,0.12);' if is_bold else ''
-        h.append(f'<tr style="{bt}">')
-        h.append(f'<td style="position:sticky;left:0;z-index:2;background:#0e1117;'
-                  f'padding:5px 12px;{w}color:rgba(255,255,255,0.82);white-space:nowrap;'
-                  f'font-size:0.8rem;">{label}</td>')
+        w = 'font-weight:700;' if is_bold else 'font-weight:500;'
+        bg = 'background:#f1f5f9;' if is_bold else ''
+        bt = 'border-top:1.5px solid #cbd5e1;' if is_bold else ''
+        h.append(f'<tr style="{bt}{bg}">')
+        h.append(f'<td style="position:sticky;left:0;z-index:2;background:{("#f1f5f9" if is_bold else "#f8fafc")};'
+                  f'padding:6px 12px;{w}color:#1e293b;white-space:nowrap;'
+                  f'font-size:0.8rem;border-bottom:1px solid #f1f5f9;">{label}</td>')
         for m in months:
             v = calc.get(key, {}).get(m, 0)
             txt = rm.format_value(v, fmt)
-            clr = '#ef5350' if isinstance(v, (int, float)) and v < 0 else 'rgba(255,255,255,0.82)'
-            h.append(f'<td style="padding:5px 10px;text-align:right;{w}'
-                      f'color:{clr};white-space:nowrap;font-size:0.8rem;">{txt}</td>')
+            clr = '#dc2626' if isinstance(v, (int, float)) and v < 0 else '#1e293b'
+            h.append(f'<td style="padding:6px 10px;text-align:right;{w}'
+                      f'color:{clr};white-space:nowrap;font-size:0.8rem;'
+                      f'border-bottom:1px solid #f1f5f9;">{txt}</td>')
         h.append('</tr>')
 
     h.append('</table></div>')
@@ -524,17 +655,17 @@ def _render_ttm(calc):
     te = calc.get('_ttm_ebitda', 0)
     tp = calc.get('_ttm_ebitda_pct', 0)
     st.markdown(
-        f'<div style="margin:14px 0 4px;padding:12px 18px;background:rgba(255,255,255,0.04);'
-        f'border-radius:8px;border:1px solid rgba(255,255,255,0.08);">'
-        f'<div style="font-size:0.7rem;color:rgba(255,255,255,0.4);text-transform:uppercase;'
+        f'<div style="margin:14px 0 4px;padding:12px 18px;background:#f8fafc;'
+        f'border-radius:8px;border:1px solid #e2e8f0;">'
+        f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
         f'letter-spacing:0.06em;margin-bottom:8px;">TTM Summary</div>'
         f'<div style="display:flex;gap:40px;flex-wrap:wrap;">'
-        f'<div><div style="font-size:0.65rem;color:rgba(255,255,255,0.35);">TTM Sales</div>'
-        f'<div style="font-size:1.05rem;font-weight:700;color:#fff;">${ts:,.0f}</div></div>'
-        f'<div><div style="font-size:0.65rem;color:rgba(255,255,255,0.35);">TTM EBITDA</div>'
-        f'<div style="font-size:1.05rem;font-weight:700;color:#fff;">${te:,.0f}</div></div>'
-        f'<div><div style="font-size:0.65rem;color:rgba(255,255,255,0.35);">EBITDA %</div>'
-        f'<div style="font-size:1.05rem;font-weight:700;color:#fff;">{tp * 100:.1f}%</div></div>'
+        f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM Sales</div>'
+        f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">${ts:,.0f}</div></div>'
+        f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM EBITDA</div>'
+        f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">${te:,.0f}</div></div>'
+        f'<div><div style="font-size:0.65rem;color:#94a3b8;">EBITDA %</div>'
+        f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">{tp * 100:.1f}%</div></div>'
         f'</div></div>',
         unsafe_allow_html=True,
     )
