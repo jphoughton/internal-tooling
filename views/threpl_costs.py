@@ -13,6 +13,14 @@ log = logging.getLogger(__name__)
 
 def render(ctx, embedded=False):
     """Render the 3PL Costs view with invoice upload and WoW analysis."""
+    try:
+        _render_inner(ctx, embedded)
+    except Exception as e:
+        log.error('3PL Costs render failed: %s', e, exc_info=True)
+        st.error(f'Error loading 3PL Costs: {e}')
+
+
+def _render_inner(ctx, embedded):
     if not embedded:
         st.header('3PL Costs')
 
@@ -90,27 +98,35 @@ def _handle_upload(uploaded):
 @st.cache_data(ttl=300)
 def _load_invoice_data():
     """Load all 3PL invoices from DB."""
-    with get_db() as conn:
-        return read_sql(
-            'SELECT invoice_number, week_start, week_end, invoice_date, '
-            'total_amount, line_items FROM threpl_invoices ORDER BY week_start',
-            conn,
-        )
+    try:
+        with get_db() as conn:
+            return read_sql(
+                'SELECT invoice_number, week_start, week_end, invoice_date, '
+                'total_amount, line_items FROM threpl_invoices ORDER BY week_start',
+                conn,
+            )
+    except Exception as e:
+        log.warning('Failed to load invoices (table may not exist yet): %s', e)
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
 def _load_dtc_weekly_revenue():
     """Load DTC revenue aggregated by week (Mon-Sun)."""
-    with get_db() as conn:
-        return read_sql("""
-            SELECT
-                DATE_TRUNC('week', sale_date::date)::date::text AS week_start,
-                SUM(revenue) AS dtc_revenue
-            FROM daily_sku_sales
-            WHERE source = 'shopify'
-            GROUP BY DATE_TRUNC('week', sale_date::date)
-            ORDER BY week_start
-        """, conn)
+    try:
+        with get_db() as conn:
+            return read_sql("""
+                SELECT
+                    DATE_TRUNC('week', sale_date::date)::date::text AS week_start,
+                    SUM(revenue) AS dtc_revenue
+                FROM daily_sku_sales
+                WHERE source = 'shopify'
+                GROUP BY DATE_TRUNC('week', sale_date::date)
+                ORDER BY week_start
+            """, conn)
+    except Exception as e:
+        log.warning('Failed to load DTC weekly revenue: %s', e)
+        return pd.DataFrame()
 
 
 def _render_wow_analysis():
