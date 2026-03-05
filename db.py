@@ -268,6 +268,7 @@ _SCHEMA_SQL = [
         total_amount REAL DEFAULT 0,
         currency TEXT DEFAULT 'USD',
         status TEXT DEFAULT 'completed',
+        financial_status TEXT DEFAULT 'paid',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP::text,
         FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
     )""",
@@ -481,6 +482,9 @@ _SCHEMA_SQL = [
     "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS revenue_per_recipient REAL DEFAULT 0",
     "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS average_order_value REAL DEFAULT 0",
     "ALTER TABLE klaviyo_flows ADD COLUMN IF NOT EXISTS conversion_rate REAL DEFAULT 0",
+
+    # Orders: financial_status for filtering refunds/cancellations
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS financial_status TEXT DEFAULT 'paid'",
 ]
 
 
@@ -582,15 +586,17 @@ def upsert_order(
     order_date: str,
     total_amount: float,
     currency: str = "USD",
+    financial_status: str = "paid",
 ) -> None:
     try:
         conn.execute("""
-            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, currency, financial_status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(order_id) DO UPDATE SET
                 total_amount = excluded.total_amount,
+                financial_status = excluded.financial_status,
                 status = 'completed'
-        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency))
+        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, currency, financial_status))
     except DatabaseError:
         raise
     except Exception as exc:
@@ -713,6 +719,7 @@ def rebuild_daily_sales(conn: ConnectionWrapper) -> None:
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
             WHERE o.status = 'completed' AND o.source = 'shopify'
+              AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided')
             GROUP BY o.order_date::date, oi.sku, o.source
         """)
     except DatabaseError:

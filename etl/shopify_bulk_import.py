@@ -125,8 +125,15 @@ def download_and_import(url, on_progress=None):
             shopify_order_id = order_gid.split("/")[-1]
             order_id = f"shp-{shopify_order_id}"
 
+            # Map GraphQL displayFinancialStatus to REST financial_status format
+            _gql_fin = (order.get("displayFinancialStatus") or "PAID").lower()
+            _fin_map = {"paid": "paid", "partially_paid": "partially_paid",
+                        "refunded": "refunded", "partially_refunded": "partially_refunded",
+                        "voided": "voided", "pending": "pending", "authorized": "authorized"}
+            fin_status = _fin_map.get(_gql_fin, _gql_fin)
             upsert_order(conn, order_id, "shopify", shopify_order_id,
-                         customer_id, order_date, total, currency)
+                         customer_id, order_date, total, currency,
+                         financial_status=fin_status)
             imported += 1
 
             if imported % 10000 == 0:

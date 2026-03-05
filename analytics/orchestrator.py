@@ -588,23 +588,42 @@ def run_page_stats(triggered_by='scheduler'):
         t0 = time.time()
         try:
             with get_db() as conn:
+                # Use orders.total_amount for revenue (matches Shopify total_price
+                # incl. shipping + tax), exclude refunded/voided orders
                 rev_df = read_sql(
-                    "SELECT sale_date, SUM(revenue) AS revenue, SUM(units_sold) AS units "
-                    "FROM daily_sku_sales WHERE source = %s "
-                    "GROUP BY sale_date ORDER BY sale_date",
+                    "SELECT DATE(o.order_date) AS sale_date, "
+                    "SUM(o.total_amount) AS revenue, "
+                    "SUM(oi_agg.units) AS units "
+                    "FROM orders o "
+                    "LEFT JOIN ("
+                    "  SELECT order_id, SUM(quantity) AS units "
+                    "  FROM order_items GROUP BY order_id"
+                    ") oi_agg ON o.order_id = oi_agg.order_id "
+                    "WHERE o.source = %s "
+                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
+                    "GROUP BY DATE(o.order_date) ORDER BY sale_date",
                     conn, params=('shopify',),
                 )
                 cust_df = read_sql(
                     "SELECT DATE(o.order_date) AS sale_date, "
                     "COUNT(DISTINCT o.order_id) AS total_orders, "
                     "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                    "COUNT(DISTINCT CASE WHEN o.order_date = fc.first_date THEN o.customer_id END) AS new_customers, "
-                    "COUNT(DISTINCT CASE WHEN o.order_date = fc.first_date THEN o.order_id END) AS nc_orders "
+                    "COUNT(DISTINCT CASE WHEN DATE(fc.first_date) = DATE(o.order_date) "
+                    "  THEN o.customer_id END) AS new_customers, "
+                    "SUM(oi.total_price) AS oi_total_rev, "
+                    "SUM(CASE WHEN DATE(fc.first_date) = DATE(o.order_date) "
+                    "  THEN oi.total_price ELSE 0 END) AS oi_new_rev "
                     "FROM orders o "
-                    "JOIN (SELECT customer_id, MIN(order_date) AS first_date FROM orders GROUP BY customer_id) fc "
+                    "JOIN (SELECT customer_id, MIN(order_date) AS first_date "
+                    "      FROM orders WHERE source = %s "
+                    "        AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
+                    "      GROUP BY customer_id) fc "
                     "ON o.customer_id = fc.customer_id "
+                    "JOIN order_items oi ON o.order_id = oi.order_id "
+                    "WHERE o.source = %s "
+                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
                     "GROUP BY DATE(o.order_date) ORDER BY sale_date",
-                    conn,
+                    conn, params=('shopify', 'shopify'),
                 )
             if not rev_df.empty:
                 _save_result(

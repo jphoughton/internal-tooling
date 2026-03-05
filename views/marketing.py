@@ -70,11 +70,21 @@ def _load_shopify_daily_metrics():
         pass
 
     # Fall back to live DB queries
+    # Use orders.total_amount for revenue (matches Shopify's total_price
+    # which includes shipping + tax) and exclude refunded/voided orders
     with get_db() as conn:
         rev_df = read_sql(
-            "SELECT sale_date, SUM(revenue) AS revenue, SUM(units_sold) AS units "
-            "FROM daily_sku_sales WHERE source = %s "
-            "GROUP BY sale_date ORDER BY sale_date",
+            "SELECT DATE(o.order_date) AS sale_date, "
+            "SUM(o.total_amount) AS revenue, "
+            "SUM(oi_agg.units) AS units "
+            "FROM orders o "
+            "LEFT JOIN ("
+            "  SELECT order_id, SUM(quantity) AS units "
+            "  FROM order_items GROUP BY order_id"
+            ") oi_agg ON o.order_id = oi_agg.order_id "
+            "WHERE o.source = %s "
+            "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
+            "GROUP BY DATE(o.order_date) ORDER BY sale_date",
             conn, params=('shopify',),
         )
         cust_df = read_sql(
@@ -88,12 +98,15 @@ def _load_shopify_daily_metrics():
             "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
             "FROM orders o "
             "JOIN (SELECT customer_id, MIN(order_date) AS actual_first "
-            "      FROM orders WHERE source = %s GROUP BY customer_id) cf "
+            "      FROM orders WHERE source = %s "
+            "        AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
+            "      GROUP BY customer_id) cf "
             "  ON o.customer_id = cf.customer_id "
             "JOIN order_items oi ON o.order_id = oi.order_id "
             "WHERE o.source = %s "
+            "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
             "GROUP BY DATE(o.order_date)",
-            conn, params=('shopify', 'shopify'),
+            conn, params=('shopify', 'shopify', 'shopify'),
         )
     if rev_df.empty:
         return pd.DataFrame()

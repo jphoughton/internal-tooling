@@ -13,6 +13,22 @@ from etl.customer_id import generate_customer_id
 
 logger = logging.getLogger(__name__)
 
+# Shopify store timezone offset (US Eastern = -05:00 / -04:00 DST)
+# Used for query boundaries so orders near midnight don't shift dates
+_STORE_TZ_OFFSET = "-05:00"
+
+
+def _parse_shopify_date(ts_str):
+    """Extract YYYY-MM-DD from a Shopify ISO timestamp.
+
+    Shopify REST API returns timestamps in the store's timezone,
+    so the first 10 chars are already the correct local date.
+    Falls back gracefully for empty/malformed strings.
+    """
+    if not ts_str or len(ts_str) < 10:
+        return None
+    return ts_str[:10]
+
 
 def get_base_url():
     store = cfg.SHOPIFY_STORE_URL.rstrip("/")
@@ -134,20 +150,22 @@ def _get_orders_page(url, headers, params):
 def _replay_order(conn, order):
     """Re-execute upserts for a single order (used after deadlock rollback)."""
     shopify_order_id = str(order["id"])
-    order_date = order["created_at"][:10]
+    order_date = _parse_shopify_date(order["created_at"])
     total = float(order.get("total_price", 0))
     currency = order.get("currency", "USD")
+    fin_status = order.get("financial_status", "paid") or "paid"
     customer_data = order.get("customer")
     customer_id = generate_customer_id(customer_data)
     customer_email = customer_data.get("email") if customer_data else None
     customer_first_date = (
-        customer_data.get("created_at", "")[:10] if customer_data else None
+        _parse_shopify_date(customer_data.get("created_at", "")) if customer_data else None
     ) or order_date
     if customer_id:
         upsert_customer(conn, customer_id, customer_email, "shopify", customer_first_date)
     order_id = f"shp-{shopify_order_id}"
     upsert_order(conn, order_id, "shopify", shopify_order_id,
-                 customer_id, order_date, total, currency)
+                 customer_id, order_date, total, currency,
+                 financial_status=fin_status)
     for item in order.get("line_items", []):
         sku = str(item.get("sku") or item.get("variant_id") or "UNKNOWN")
         product_name = item.get("title", "")
@@ -196,8 +214,8 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
     # Shopify uses cursor-based pagination via Link headers
     url = f"{base_url}/orders.json"
     params = {
-        "created_at_min": f"{since_date}T00:00:00-00:00",
-        "created_at_max": f"{until_date}T23:59:59-00:00",
+        "created_at_min": f"{since_date}T00:00:00{_STORE_TZ_OFFSET}",
+        "created_at_max": f"{until_date}T23:59:59{_STORE_TZ_OFFSET}",
         "status": "any",
         "limit": 250,
         "fields": "id,created_at,total_price,currency,customer,line_items,financial_status",
@@ -221,9 +239,10 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
 
         for order in orders:
             shopify_order_id = str(order["id"])
-            order_date = order["created_at"][:10]
+            order_date = _parse_shopify_date(order["created_at"])
             total = float(order.get("total_price", 0))
             currency = order.get("currency", "USD")
+            fin_status = order.get("financial_status", "paid") or "paid"
 
             # Customer — use Shopify's customer created_at as first_order_date
             # so returning customers are attributed to their true cohort, not
@@ -232,7 +251,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             customer_id = generate_customer_id(customer_data)
             customer_email = customer_data.get("email") if customer_data else None
             customer_first_date = (
-                customer_data.get("created_at", "")[:10] if customer_data else None
+                _parse_shopify_date(customer_data.get("created_at", "")) if customer_data else None
             ) or order_date
 
             if customer_id:
@@ -241,7 +260,8 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             # Order
             order_id = f"shp-{shopify_order_id}"
             upsert_order(conn, order_id, "shopify", shopify_order_id,
-                         customer_id, order_date, total, currency)
+                         customer_id, order_date, total, currency,
+                         financial_status=fin_status)
 
             # Line items
             for item in order.get("line_items", []):
