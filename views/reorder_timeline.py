@@ -215,7 +215,7 @@ def render(ctx, embedded=False):
         font=dict(size=11, color='#E05252'),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key='reorder_timeline_gantt')
 
     # Summary table below the chart
     summary_rows = []
