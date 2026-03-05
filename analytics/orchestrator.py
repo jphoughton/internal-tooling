@@ -592,7 +592,7 @@ def run_page_stats(triggered_by='scheduler'):
                 # incl. shipping + tax), exclude refunded/voided orders
                 rev_df = read_sql(
                     "SELECT DATE(o.order_date) AS sale_date, "
-                    "SUM(o.total_amount) AS revenue, "
+                    "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
                     "SUM(oi_agg.units) AS units "
                     "FROM orders o "
                     "LEFT JOIN ("

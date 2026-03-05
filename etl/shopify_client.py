@@ -152,6 +152,7 @@ def _replay_order(conn, order):
     shopify_order_id = str(order["id"])
     order_date = _parse_shopify_date(order["created_at"])
     total = float(order.get("total_price", 0))
+    tax = float(order.get("total_tax", 0))
     currency = order.get("currency", "USD")
     fin_status = order.get("financial_status", "paid") or "paid"
     customer_data = order.get("customer")
@@ -165,7 +166,7 @@ def _replay_order(conn, order):
     order_id = f"shp-{shopify_order_id}"
     upsert_order(conn, order_id, "shopify", shopify_order_id,
                  customer_id, order_date, total, currency,
-                 financial_status=fin_status)
+                 financial_status=fin_status, total_tax=tax)
     for item in order.get("line_items", []):
         sku = str(item.get("sku") or item.get("variant_id") or "UNKNOWN")
         product_name = item.get("title", "")
@@ -218,7 +219,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         "created_at_max": f"{until_date}T23:59:59{_STORE_TZ_OFFSET}",
         "status": "any",
         "limit": 250,
-        "fields": "id,created_at,total_price,currency,customer,line_items,financial_status",
+        "fields": "id,created_at,total_price,total_tax,currency,customer,line_items,financial_status",
     }
 
     page_number = 0
@@ -241,6 +242,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             shopify_order_id = str(order["id"])
             order_date = _parse_shopify_date(order["created_at"])
             total = float(order.get("total_price", 0))
+            tax = float(order.get("total_tax", 0))
             currency = order.get("currency", "USD")
             fin_status = order.get("financial_status", "paid") or "paid"
 
@@ -261,7 +263,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             order_id = f"shp-{shopify_order_id}"
             upsert_order(conn, order_id, "shopify", shopify_order_id,
                          customer_id, order_date, total, currency,
-                         financial_status=fin_status)
+                         financial_status=fin_status, total_tax=tax)
 
             # Line items
             for item in order.get("line_items", []):
