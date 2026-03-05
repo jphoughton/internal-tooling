@@ -1,5 +1,8 @@
 """Ops page -- channel-aware sub-tabs for inventory, forecast, and reorder/transfers."""
+import logging
 import streamlit as st
+
+log = logging.getLogger(__name__)
 
 
 def render(ctx):
@@ -81,11 +84,13 @@ def render(ctx):
             from views.reorder_alerts import render as render_reorder
             render_reorder(ctx, embedded=True)
 
+        @st.fragment
         def _rollup_threpl_costs():
             try:
                 from views.threpl_costs import render as render_costs
                 render_costs(ctx, embedded=True)
             except Exception as e:
+                log.error('3PL Costs tab failed: %s', e, exc_info=True)
                 st.error(f'3PL Costs tab failed: {e}')
 
         with tabs[0]:

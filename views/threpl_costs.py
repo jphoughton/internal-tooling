@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 def render(ctx, embedded=False):
     """Render the 3PL Costs view with invoice upload and WoW analysis."""
+    st.caption('3PL Costs module loaded')  # DEBUG — remove after fix
     try:
         _render_inner(ctx, embedded)
     except Exception as e:
