@@ -31,12 +31,28 @@ def _parse_shopify_date(ts_str):
 
 
 def _total_refund_amount(order):
-    """Sum refund transaction amounts for an order."""
+    """Sum refund amounts for an order.
+
+    Tries transaction amounts first (most accurate — includes shipping/tax adjustments).
+    Falls back to refund_line_items subtotal + tax if transactions are missing
+    (Shopify may omit nested transactions when using the fields filter).
+    """
     total = 0.0
     for refund in order.get("refunds", []):
+        txn_total = 0.0
         for txn in refund.get("transactions", []):
             if txn.get("kind") == "refund" and txn.get("status") == "success":
-                total += float(txn.get("amount", 0))
+                txn_total += float(txn.get("amount", 0))
+        if txn_total > 0:
+            total += txn_total
+        else:
+            # Fallback: sum refund line items
+            for item in refund.get("refund_line_items", []):
+                total += float(item.get("subtotal", 0))
+                total += float(item.get("total_tax", 0))
+    if total > 0:
+        logger.info('Order %s: refund_amount=%.2f (refunds=%d)',
+                     order.get("id"), total, len(order.get("refunds", [])))
     return total
 
 
@@ -231,7 +247,8 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         "created_at_max": f"{until_date}T23:59:59{_STORE_TZ_OFFSET}",
         "status": "any",
         "limit": 250,
-        "fields": "id,created_at,total_price,total_tax,currency,customer,line_items,financial_status,refunds",
+        # No fields filter — full payload needed so refunds include transactions
+        # and refund_line_items sub-resources.
     }
 
     page_number = 0
@@ -249,6 +266,16 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         data = response.json()
         orders = data.get("orders", [])
         page_number += 1
+
+        # Log refund data structure from first order with refunds (debug)
+        if page_number == 1:
+            for o in orders[:50]:
+                if o.get("refunds"):
+                    import json
+                    logger.info('Sample refund data for order %s (status=%s): %s',
+                                o.get("id"), o.get("financial_status"),
+                                json.dumps(o["refunds"])[:500])
+                    break
 
         for order in orders:
             shopify_order_id = str(order["id"])
