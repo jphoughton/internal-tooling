@@ -264,18 +264,19 @@ def render(ctx):
                    delta_color='off')
 
         # CAC Payback
-        _cogs_pct = 0.17  # 17% of gross sales
+        _cogs_pct = 0.17  # 17% of gross sales (both channels)
+        _dtc_fulfill_pct = 0.18  # DTC fulfillment fee
+        _amz_fulfill_pct = 0.31  # Amazon fee on sales
         try:
             with get_db() as _cf_conn:
-                _fulfill_pct = float(get_cashflow_setting(_cf_conn, 'fulfillment_pct', '0.18'))
-                # net_to_gross from revenue model (DTC ratio)
+                # net_to_gross from revenue model (DTC ratio; Amazon = 1.0)
                 from db import get_revenue_model
                 _rm = get_revenue_model(_cf_conn)
                 _ntg_vals = _rm.get('dtc_net_to_gross', [1.3859589838])
-                _net_to_gross = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
+                _dtc_ntg = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
         except Exception:
-            _fulfill_pct = 0.18
-            _net_to_gross = 1.3859589838
+            _dtc_ntg = 1.3859589838
+        _amz_ntg = 1.0  # Amazon revenue is already gross
 
         _dtc_ret = None
         _amz_ret = None
@@ -288,7 +289,7 @@ def render(ctx):
         except Exception:
             pass
 
-        # Choose retention curve based on channel
+        # Choose retention curve and channel-specific cost params
         if _source_filter == 'shopify':
             _use_ret = _dtc_ret
             _dtc_w, _amz_w = 1.0, 0.0
@@ -313,6 +314,10 @@ def render(ctx):
                     _ar = (_amz_ret or {}).get(_mk, 0)
                     _use_ret[_mk] = _dr * _dtc_w + _ar * _amz_w
             _use_ret = _use_ret or _dtc_ret
+
+        # Blend fulfillment % and net_to_gross by channel weight
+        _fulfill_pct = _dtc_w * _dtc_fulfill_pct + _amz_w * _amz_fulfill_pct
+        _net_to_gross = _dtc_w * _dtc_ntg + _amz_w * _amz_ntg
 
         _cac_payback = compute_cac_payback(
             _hero_spend, _hero_nc, _hero_nc_rev,
@@ -346,9 +351,15 @@ def render(ctx):
                 v1.metric('New Customers', f'{_hero_nc:,}')
                 v2.metric('NC Revenue (M0)', f'${_hero_nc_rev:,.0f}')
                 v3.metric('Total Media Spend', f'${_hero_spend:,.0f}')
-                v4.metric('COGS % of Gross', f'{_cogs_pct:.1%}')
-                v5.metric('Net \u2192 Gross', f'{_net_to_gross:.2f}x')
-                v6.metric('Fulfillment %', f'{_fulfill_pct:.0%}')
+                v4.metric('COGS % of Gross', f'{_cogs_pct:.0%}')
+                if _source_filter == 'amazon':
+                    v5.metric('Amazon Fee %', f'{_amz_fulfill_pct:.0%}')
+                elif _source_filter == 'shopify':
+                    v5.metric('DTC Fulfillment %', f'{_dtc_fulfill_pct:.0%}')
+                else:
+                    v5.metric('Blended Fee %', f'{_fulfill_pct:.0%}',
+                              help=f'DTC {_dtc_fulfill_pct:.0%} \u00d7 {_dtc_w:.0%} + Amazon {_amz_fulfill_pct:.0%} \u00d7 {_amz_w:.0%}')
+                v6.metric('Net \u2192 Gross', f'{_net_to_gross:.2f}x')
 
                 if _source_filter == 'shopify':
                     _ret_label = 'DTC only'
@@ -358,8 +369,9 @@ def render(ctx):
                     _ret_label = f'Blended (DTC {_dtc_w:.0%} + Amazon {_amz_w:.0%} by NC count)'
                 else:
                     _ret_label = 'DTC only'
+                _fee_label = f'{_fulfill_pct:.0%} Fee' if _source_filter else f'{_fulfill_pct:.0%} Fee (DTC {_dtc_fulfill_pct:.0%} / Amz {_amz_fulfill_pct:.0%})'
                 st.caption(f'Total media to recover: **${_hero_spend:,.0f}** | '
-                           f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.1%} COGS \u00d7 {_net_to_gross:.2f}x gross \u2212 {_fulfill_pct:.0%} Fulfill) | '
+                           f'Margin rate: **{_pb_margin:.0%}** (1 \u2212 {_cogs_pct:.0%} COGS \u00d7 {_net_to_gross:.2f}x gross \u2212 {_fee_label}) | '
                            f'Retention: **{_ret_label}**')
                 st.caption('*Revenue retention rate = incremental revenue in month N \u00f7 first-order revenue '
                            '(captures both repurchase probability and order value changes). '
@@ -405,7 +417,8 @@ def render(ctx):
                         _row_data[_curve_label] = '\u2014' if _m == 0 else f'{_blend_r:.1%}'
                     _row_data['NC Revenue'] = f'${_rev_total:,.0f}'
                     _row_data[f'COGS ({_cogs_pct:.1%} of Gross)'] = f'(${_cogs_total:,.0f})'
-                    _row_data[f'Fulfillment ({_fulfill_pct:.0%})'] = f'(${_ful_total:,.0f})'
+                    _fee_col = 'Amazon Fee' if _source_filter == 'amazon' else 'Fulfillment' if _source_filter == 'shopify' else 'Channel Fees'
+                    _row_data[f'{_fee_col} ({_fulfill_pct:.0%})'] = f'(${_ful_total:,.0f})'
                     _row_data['Media Spend'] = f'(${_media_hit:,.0f})' if _m == 0 else '\u2014'
                     _row_data['Net'] = _fmt(_net_total)
                     _row_data['Cumulative'] = _fmt(_cumul)
