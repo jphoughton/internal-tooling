@@ -106,7 +106,7 @@ def _load_shopify_daily_metrics():
             "WHERE o.source = %s "
             "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
             "GROUP BY DATE(o.order_date)",
-            conn, params=('shopify', 'shopify', 'shopify'),
+            conn, params=('shopify', 'shopify'),
         )
     if rev_df.empty:
         return pd.DataFrame()
