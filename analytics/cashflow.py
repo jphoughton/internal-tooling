@@ -7,6 +7,7 @@ CFO perspective: This module powers the 52-week cash flow forecast by:
 3. Computing auto-calibrated payout ratios from actuals
 4. Building weekly cash flow projections with confidence intervals
 """
+import calendar
 import logging
 import re
 from datetime import date, timedelta
@@ -533,12 +534,14 @@ def _project_expense_week(
     # COGS — sourced from P&L revenue model, hits at EOM.
     if method == 'revenue_pct':
         month_key = week_start.strftime('%Y-%m')
+
+        _, last_day = calendar.monthrange(week_start.year, week_start.month)
+        eom = date(week_start.year, week_start.month, last_day)
+        is_eom_week = week_start <= eom <= week_end
+
         rm_cogs = ctx.get('_rm_monthly_cogs', {}).get(month_key, 0)
         if rm_cogs > 0:
-            # COGS hits at end of month (like media)
-            if week_end.day >= 25 or week_start.day >= 25:
-                return rm_cogs
-            return 0.0
+            return rm_cogs if is_eom_week else 0.0
 
         # Fallback when revenue model has no data for this month
         cogs_pct = ctx.get('cogs_pct', 0.25)
@@ -547,9 +550,7 @@ def _project_expense_week(
         amz_monthly = ctx.get('amazon_monthly_revenue', {})
         amz_month_total = amz_monthly.get(month_key, 0)
         total = (dtc_month_total + amz_month_total) * cogs_pct
-        if week_end.day >= 25 or week_start.day >= 25:
-            return total
-        return 0.0
+        return total if is_eom_week else 0.0
 
     # --- Method-based projection FIRST for categories with explicit timing ---
     # These methods encode business-specific timing (biweekly payroll, monthly
@@ -560,8 +561,11 @@ def _project_expense_week(
         month_key = week_start.strftime('%Y-%m')
         monthly_media = ctx.get('monthly_media_spend', {})
         monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
-        # Media typically bills monthly near end of month
-        if week_end.day >= 25 or week_start.day >= 25:
+        # Media bills once at EOM — assign to the week containing the last day of the month
+
+        _, last_day = calendar.monthrange(week_start.year, week_start.month)
+        eom = date(week_start.year, week_start.month, last_day)
+        if week_start <= eom <= week_end:
             return monthly
         return 0.0
 
@@ -635,8 +639,11 @@ def _project_expense_week(
         avg = compute_trailing_avg(conn, category, lookback_weeks=8)
         seed = CASHFLOW_SEED_DEFAULTS.get(category, 0)
         val = avg if avg > 0 else seed
-        # Loan payments typically monthly near end of month
-        if week_end.day >= 25 or week_start.day >= 25:
+        # Loan payments typically monthly — assign to week containing last day of month
+
+        _, last_day = calendar.monthrange(week_start.year, week_start.month)
+        eom = date(week_start.year, week_start.month, last_day)
+        if week_start <= eom <= week_end:
             return val * 4.33  # monthly lump
         return 0.0
 
