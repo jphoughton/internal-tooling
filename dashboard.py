@@ -118,6 +118,25 @@ def _cached_last_sync_ts():
     except Exception:
         return None
 
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _cached_model_runs():
+    """Cache model run metadata for freshness badges."""
+    from db import get_model_runs
+    with get_db() as conn:
+        return get_model_runs(conn)
+
+
+@st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
+def _cached_freshness_badge(sources_key):
+    """Cache freshness badge data (last sync ts, new rows, synced sources) for a set of sources."""
+    sources = sources_key.split(',') if sources_key else []
+    with get_db() as conn:
+        ts = get_last_sync_timestamp(conn, sources)
+        new = get_new_rows_since_yesterday(conn, sources)
+        srcs = get_synced_sources(conn, sources)
+    return {'ts': ts, 'new': new, 'srcs': srcs}
+
 # ---------------------------------------------------------------------------
 # Startup validation — runs once per process on first Streamlit boot
 # ---------------------------------------------------------------------------
@@ -362,11 +381,16 @@ inject_global_styles()
 
 # --- Sidebar ---
 import os as _os
-_logo_path = _os.path.join(_os.path.dirname(__file__), 'assets', 'hydrant-logo.svg')
-with open(_logo_path) as _f:
-    _logo_svg = _f.read()
+import functools as _functools
+
+@_functools.lru_cache(maxsize=1)
+def _read_logo():
+    _logo_path = _os.path.join(_os.path.dirname(__file__), 'assets', 'hydrant-logo.svg')
+    with open(_logo_path) as _f:
+        return _f.read()
+
 st.sidebar.markdown(
-    f'<div style="padding:8px 0 0;">{_logo_svg}</div>',
+    f'<div style="padding:8px 0 0;">{_read_logo()}</div>',
     unsafe_allow_html=True,
 )
 st.sidebar.caption("Command Center")
@@ -800,6 +824,8 @@ _ctx = {
     'load_sku_seasonal_json': _load_sku_seasonal_json,
     'cached_3pl_inventory': _cached_3pl_inventory,
     'cached_amazon_inventory': _cached_amazon_inventory,
+    'cached_freshness_badge': _cached_freshness_badge,
+    'cached_model_runs': _cached_model_runs,
     'active_sources': active_sources,
     'configured_sources': configured_sources,
     'biz_vars': _biz_vars,

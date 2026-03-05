@@ -34,7 +34,7 @@ def _get_precomputed(key):
     return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_sku_list():
     with get_db() as conn:
         rows = conn.execute(
@@ -137,15 +137,10 @@ def render(ctx, embedded=False):
         with _title_col:
             st.title('Demand Forecast')
         with _badge_col:
-            with get_db() as conn:
-                _ts = get_last_sync_timestamp(conn, ['shopify', 'amazon'])
-                _new = get_new_rows_since_yesterday(conn, ['shopify', 'amazon'])
-                _srcs = get_synced_sources(conn, ['shopify', 'amazon'])
-            _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-            render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-            with get_db() as _mr_conn:
-                _mr = get_model_runs(_mr_conn)
-            render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
+            _badge = ctx['cached_freshness_badge']('amazon,shopify')
+            _src_label = ' + '.join(s.title() for s in sorted(_badge['srcs'])) if _badge['srcs'] else None
+            render_freshness_badge(last_refreshed_str=_badge['ts'], new_rows=_badge['new'], source=_src_label)
+            render_model_freshness(ctx['cached_model_runs'](), ['retention_cohorts', 'repeat_forecast', 'waterfall', 'sku_sales_mix'])
         st.caption('Shopify retention-based + Amazon velocity-based demand with new/repeat breakdown.')
 
     # Seasonality status

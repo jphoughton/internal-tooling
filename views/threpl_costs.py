@@ -95,7 +95,7 @@ def _handle_upload(uploaded):
         st.error(f'Failed to save invoice: {e}')
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_invoice_data():
     """Load all 3PL invoices from DB."""
     try:
@@ -110,7 +110,7 @@ def _load_invoice_data():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_dtc_weekly_revenue():
     """Load DTC revenue aggregated by week (Mon-Sun)."""
     try:

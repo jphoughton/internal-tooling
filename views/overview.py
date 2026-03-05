@@ -5,10 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
-from db import (
-    get_db, read_sql, get_media_spend, get_cashflow_setting,
-    get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
-)
+from db import get_db, read_sql, get_media_spend, get_cashflow_setting
 from analytics.sku_flavors import get_flavor
 from analytics.metrics import compute_cac_payback, compute_nc_roas, compute_nc_cpa, project_daily_spend_gaps
 from analytics.amazon_nc_projector import project_amazon_nc
@@ -20,7 +17,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:
@@ -30,7 +27,7 @@ def _get_nc_projection():
         return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_amazon_daily():
     """Load Amazon daily data for trend tables (revenue, spend, new/repeat)."""
     try:
@@ -125,7 +122,7 @@ def _load_amazon_daily():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_overview_daily_trend(source_filter=None):
     """Load 90-day daily revenue trend by source for the stacked area chart."""
     with get_db() as conn:
@@ -144,7 +141,7 @@ def _load_overview_daily_trend(source_filter=None):
         )
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_top_skus(source_filter=None):
     """Load top 10 flavors by units sold, optionally filtered by source."""
     with get_db() as conn:
@@ -185,20 +182,24 @@ def render(ctx):
     with _title_col:
         st.title('Overview')
     with _badge_col:
-        with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, _badge_sources)
-            _new = get_new_rows_since_yesterday(conn, _badge_sources)
-            _srcs = get_synced_sources(conn, _badge_sources)
-        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-        render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+        _badge = ctx['cached_freshness_badge'](','.join(sorted(_badge_sources)))
+        _src_label = ' + '.join(s.title() for s in sorted(_badge['srcs'])) if _badge['srcs'] else None
+        render_freshness_badge(last_refreshed_str=_badge['ts'], new_rows=_badge['new'], source=_src_label)
 
-    # Empty state check
-    with get_db() as conn:
-        last_sync = conn.execute(
-            'SELECT source, sync_date, records_fetched, status, error_message, created_at '
-            'FROM sync_log ORDER BY created_at DESC LIMIT 1'
-        ).fetchone()
-        total_orders_check = conn.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
+    # Empty state check (cached — only changes after sync)
+    @st.cache_data(ttl=86400, show_spinner=False)
+    def _check_empty_state():
+        with get_db() as conn:
+            last_sync = conn.execute(
+                'SELECT source, sync_date, records_fetched, status, error_message, created_at '
+                'FROM sync_log ORDER BY created_at DESC LIMIT 1'
+            ).fetchone()
+            total_orders_check = conn.execute('SELECT COUNT(*) FROM orders').fetchone()[0]
+        return {'last_sync': dict(last_sync) if last_sync else None, 'total_orders': total_orders_check}
+
+    _empty = _check_empty_state()
+    last_sync = _empty['last_sync']
+    total_orders_check = _empty['total_orders']
 
     if total_orders_check == 0:
         st.warning('No sales data yet. Click **Refresh Data** in the sidebar, or connect a store in **Settings**.')
@@ -304,12 +305,17 @@ def render(ctx):
 
         # CAC Payback — pull cost assumptions from revenue model (Variables page)
         from analytics.revenue_model import DEFAULTS
-        try:
-            with get_db() as _cf_conn:
+
+        @st.cache_data(ttl=86400, show_spinner=False)
+        def _cached_revenue_model():
+            try:
                 from db import get_revenue_model
-                _rm = get_revenue_model(_cf_conn)
-        except Exception:
-            _rm = {}
+                with get_db() as conn:
+                    return get_revenue_model(conn)
+            except Exception:
+                return {}
+
+        _rm = _cached_revenue_model() or {}
 
         def _rm_val(key, default):
             """Get first value from revenue model — handles both {month:val} dicts and lists."""
@@ -721,8 +727,7 @@ def render(ctx):
     _load_seasonal_json = ctx['load_seasonal_json']
     try:
         import json as _json_ov
-        with get_db() as conn:
-            _ov_spend = get_media_spend(conn, source='All Sources')
+        _ov_spend = ctx.get('media_spend')
         if not _ov_spend:
             _ov_spend = [{'month': (datetime.utcnow() + relativedelta(months=i)).strftime('%Y-%m'),
                           'spend': 0, 'new_customer_roas': 0.7} for i in range(12)]

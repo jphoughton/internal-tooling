@@ -80,7 +80,7 @@ def _load_precomputed_matrices(source_val):
         return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _load_sku_list():
     with get_db() as conn:
         rows = conn.execute(
@@ -213,15 +213,10 @@ def render(ctx):
 
     with _badge_col:
         _badge_source = ['amazon'] if _is_amazon else ['shopify'] if source_filter == 'shopify' else ['shopify', 'amazon']
-        with get_db() as conn:
-            _ts = get_last_sync_timestamp(conn, _badge_source)
-            _new = get_new_rows_since_yesterday(conn, _badge_source)
-            _srcs = get_synced_sources(conn, _badge_source)
-        _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-        render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
-        with get_db() as _mr_conn:
-            _mr = get_model_runs(_mr_conn)
-        render_model_freshness(_mr, ['retention_cohorts', 'repeat_forecast'])
+        _badge = ctx['cached_freshness_badge'](','.join(sorted(_badge_source)))
+        _src_label = ' + '.join(s.title() for s in sorted(_badge['srcs'])) if _badge['srcs'] else None
+        render_freshness_badge(last_refreshed_str=_badge['ts'], new_rows=_badge['new'], source=_src_label)
+        render_model_freshness(ctx['cached_model_runs'](), ['retention_cohorts', 'repeat_forecast'])
 
     # --- SKU filter ---
     skus = _load_sku_list()

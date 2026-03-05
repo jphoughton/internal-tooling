@@ -22,7 +22,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:
@@ -30,6 +30,73 @@ def _get_nc_projection():
     except Exception as e:
         log.warning('NC projection failed: %s', e)
         return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_revenue_model_goals(cur_month):
+    """Cache revenue model blended NC goals for the current month."""
+    try:
+        from db import get_revenue_model
+        with get_db() as conn:
+            rm_data = get_revenue_model(conn)
+        if rm_data:
+            months = [cur_month]
+            inputs = rm.merge_with_defaults(rm_data, months)
+            calc = rm.compute(inputs, months)
+            return {
+                'nc_rev': round(calc.get('total_new', {}).get(cur_month, 0)),
+                'nc_roas': calc.get('blended_nc_roas', {}).get(cur_month, 0),
+            }
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cached_amazon_pacing_stats(cur_month, yesterday_str, l7d_start_str):
+    """Batch all Amazon DB queries for pacing into a single cached call.
+
+    Returns dict with MTD, L7D, and yesterday Amazon stats.
+    """
+    result = {
+        'cm_amz_rev': 0, 'cm_amz_spend': 0, 'cm_amz_nc': 0, 'cm_amz_nc_rev': 0,
+        'amz_spend_projected': 0, 'amz_spend_gap_days': 0,
+        'l7d_amz_rev': 0, 'l7d_amz_spend': 0, 'l7d_amz_nc': 0, 'l7d_amz_nc_rev': 0,
+        'yd_amz_rev': 0, 'yd_amz_spend': 0, 'yd_amz_nc': 0, 'yd_amz_nc_rev': 0,
+        'cm_dtc_total_cust': 0, 'cm_amz_total_cust': 0,
+    }
+    try:
+        with get_db() as conn:
+            # MTD
+            result['cm_amz_rev'] = get_channel_revenue(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+            result['cm_amz_spend'], result['amz_spend_projected'], result['amz_spend_gap_days'] = \
+                get_amazon_spend_projected(conn, f"{cur_month}-01", yesterday_str)
+            nc = get_nc_stats(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+            result['cm_amz_nc'] = nc['new_customers']
+            result['cm_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'], result['cm_amz_rev'])
+
+            # L7D
+            result['l7d_amz_rev'] = get_channel_revenue(conn, 'amazon', l7d_start_str, yesterday_str) / 7
+            l7d_spend_total, _, _ = get_amazon_spend_projected(conn, l7d_start_str, yesterday_str)
+            result['l7d_amz_spend'] = l7d_spend_total / 7
+            nc = get_nc_stats(conn, 'amazon', l7d_start_str, yesterday_str)
+            result['l7d_amz_nc'] = nc['new_customers'] / 7
+            result['l7d_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'], result['l7d_amz_rev'] * 7) / 7
+
+            # Yesterday
+            result['yd_amz_rev'] = get_channel_revenue(conn, 'amazon', yesterday_str, yesterday_str)
+            yd_spend_total, _, _ = get_amazon_spend_projected(conn, yesterday_str, yesterday_str)
+            result['yd_amz_spend'] = yd_spend_total
+            nc = get_nc_stats(conn, 'amazon', yesterday_str, yesterday_str)
+            result['yd_amz_nc'] = nc['new_customers']
+            result['yd_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'], result['yd_amz_rev'])
+
+            # Total customer counts
+            result['cm_dtc_total_cust'] = get_total_customers(conn, 'shopify', f"{cur_month}-01", yesterday_str)
+            result['cm_amz_total_cust'] = get_total_customers(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+    except Exception as e:
+        log.warning("Failed to load Amazon pacing stats: %s", e)
+    return result
 
 
 def compute_pacing_data(ctx):
@@ -133,24 +200,16 @@ def compute_pacing_data(ctx):
     _cm_orders = int(mkt_df.loc[_cm_mask, "_orders"].sum())
     _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
 
-    # Amazon MTD from DB
-    _cm_amz_rev = 0
-    _cm_amz_spend = 0
-    _cm_amz_nc = 0
-    _cm_amz_nc_rev = 0
-    _amz_spend_projected = 0
-    _amz_spend_gap_days = 0
+    # Amazon stats — all batched and cached in a single call
+    _l7d_start = _yesterday - pd.Timedelta(days=6)
+    _amz = _cached_amazon_pacing_stats(_cur_month, _yesterday_str, str(_l7d_start))
+    _cm_amz_rev = _amz['cm_amz_rev']
+    _cm_amz_spend = _amz['cm_amz_spend']
+    _cm_amz_nc = _amz['cm_amz_nc']
+    _cm_amz_nc_rev = _amz['cm_amz_nc_rev']
+    _amz_spend_projected = _amz['amz_spend_projected']
+    _amz_spend_gap_days = _amz['amz_spend_gap_days']
     _amz_nc_projected = False
-    try:
-        with get_db() as _amz_conn:
-            _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-            _cm_amz_spend, _amz_spend_projected, _amz_spend_gap_days = get_amazon_spend_projected(
-                _amz_conn, f"{_cur_month}-01", _yesterday_str)
-            _nc = get_nc_stats(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-            _cm_amz_nc = _nc['new_customers']
-            _cm_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _cm_amz_rev)
-    except Exception as e:
-        log.warning("Failed to load Amazon MTD metrics: %s", e)
 
     # Revenue GOALS from the forecast engine
     _goal_nc_rev = 0
@@ -169,15 +228,10 @@ def compute_pacing_data(ctx):
     _goal_blended_nc_rev = _goal_nc_rev  # fallback to DTC-only
     _goal_blended_nc_roas = 0
     try:
-        from db import get_revenue_model
-        with get_db() as _rm_conn:
-            _rm_data = get_revenue_model(_rm_conn)
-        if _rm_data:
-            _rm_months = [_cur_month]
-            _rm_inputs = rm.merge_with_defaults(_rm_data, _rm_months)
-            _rm_calc = rm.compute(_rm_inputs, _rm_months)
-            _goal_blended_nc_rev = round(_rm_calc.get('total_new', {}).get(_cur_month, _goal_nc_rev))
-            _goal_blended_nc_roas = _rm_calc.get('blended_nc_roas', {}).get(_cur_month, 0)
+        _rm_goals = _cached_revenue_model_goals(_cur_month)
+        if _rm_goals:
+            _goal_blended_nc_rev = _rm_goals['nc_rev'] if _rm_goals['nc_rev'] else _goal_nc_rev
+            _goal_blended_nc_roas = _rm_goals['nc_roas']
     except Exception as e:
         log.warning("Failed to load revenue model for blended NC goals: %s", e)
 
@@ -186,7 +240,6 @@ def compute_pacing_data(ctx):
     _remaining_days = max(_days_in_month - _day_of_month, 1)
 
     # Last 7 days averages
-    _l7d_start = _yesterday - pd.Timedelta(days=6)
     _l7d_mask = (mkt_df["_date"].dt.date >= _l7d_start) & (mkt_df["_date"].dt.date <= _yesterday)
     _l7d_rev = mkt_df.loc[_l7d_mask, "_revenue"].sum() / 7 if _l7d_mask.any() else 0
     _l7d_nc_rev = mkt_df.loc[_l7d_mask, "_nc_revenue"].sum() / 7 if _l7d_mask.any() else 0
@@ -194,22 +247,11 @@ def compute_pacing_data(ctx):
     _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
     _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-    # Amazon L7D
-    _l7d_amz_rev = 0
-    _l7d_amz_spend = 0
-    _l7d_amz_nc = 0
-    _l7d_amz_nc_rev = 0
-    try:
-        _l7d_start_str = str(_l7d_start)
-        with get_db() as _l7_conn:
-            _l7d_amz_rev = get_channel_revenue(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str) / 7
-            _l7d_amz_spend_total, _, _ = get_amazon_spend_projected(_l7_conn, _l7d_start_str, _yesterday_str)
-            _l7d_amz_spend = _l7d_amz_spend_total / 7
-            _nc = get_nc_stats(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str)
-            _l7d_amz_nc = _nc['new_customers'] / 7
-            _l7d_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _l7d_amz_rev * 7) / 7
-    except Exception as e:
-        log.warning("Failed to load Amazon L7D metrics: %s", e)
+    # Amazon L7D (from cached batch)
+    _l7d_amz_rev = _amz['l7d_amz_rev']
+    _l7d_amz_spend = _amz['l7d_amz_spend']
+    _l7d_amz_nc = _amz['l7d_amz_nc']
+    _l7d_amz_nc_rev = _amz['l7d_amz_nc_rev']
 
     # Yesterday actuals
     _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday_str
@@ -219,21 +261,11 @@ def compute_pacing_data(ctx):
     _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
     _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-    # Amazon yesterday
-    _yd_amz_rev = 0
-    _yd_amz_spend = 0
-    _yd_amz_nc = 0
-    _yd_amz_nc_rev = 0
-    try:
-        with get_db() as _yd_conn:
-            _yd_amz_rev = get_channel_revenue(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-            _yd_amz_spend_total, _, _ = get_amazon_spend_projected(_yd_conn, _yesterday_str, _yesterday_str)
-            _yd_amz_spend = _yd_amz_spend_total
-            _nc = get_nc_stats(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-            _yd_amz_nc = _nc['new_customers']
-            _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
-    except Exception as e:
-        log.warning("Failed to load Amazon yesterday metrics: %s", e)
+    # Amazon yesterday (from cached batch)
+    _yd_amz_rev = _amz['yd_amz_rev']
+    _yd_amz_spend = _amz['yd_amz_spend']
+    _yd_amz_nc = _amz['yd_amz_nc']
+    _yd_amz_nc_rev = _amz['yd_amz_nc_rev']
 
     # Inject NC projection for yesterday if actual NC data is missing
     if _yd_amz_nc == 0:
@@ -245,15 +277,9 @@ def compute_pacing_data(ctx):
             _cm_amz_nc_rev += _yd_amz_nc_rev
             _amz_nc_projected = True
 
-    # Repeat customer counts
-    _cm_dtc_total_cust = 0
-    _cm_amz_total_cust = 0
-    try:
-        with get_db() as _rc_conn:
-            _cm_dtc_total_cust = get_total_customers(_rc_conn, 'shopify', f"{_cur_month}-01", _yesterday_str)
-            _cm_amz_total_cust = get_total_customers(_rc_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-    except Exception as e:
-        log.warning("Failed to load repeat customer counts: %s", e)
+    # Repeat customer counts (from cached batch)
+    _cm_dtc_total_cust = _amz['cm_dtc_total_cust']
+    _cm_amz_total_cust = _amz['cm_amz_total_cust']
     _cm_dtc_repeat_cust = max(_cm_dtc_total_cust - _cm_nc, 0)
     _cm_amz_repeat_cust = max(_cm_amz_total_cust - _cm_amz_nc, 0)
 

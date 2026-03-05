@@ -23,12 +23,9 @@ def render(ctx, embedded=False):
         with _title_col:
             st.title("FBA Transfers")
         with _badge_col:
-            with get_db() as conn:
-                _ts = get_last_sync_timestamp(conn, ['amazon'])
-                _new = get_new_rows_since_yesterday(conn, ['amazon'])
-                _srcs = get_synced_sources(conn, ['amazon'])
-            _src_label = ' + '.join(s.title() for s in sorted(_srcs)) if _srcs else None
-            render_freshness_badge(last_refreshed_str=_ts, new_rows=_new, source=_src_label)
+            _badge = ctx['cached_freshness_badge']('amazon')
+            _src_label = ' + '.join(s.title() for s in sorted(_badge['srcs'])) if _badge['srcs'] else None
+            render_freshness_badge(last_refreshed_str=_badge['ts'], new_rows=_badge['new'], source=_src_label)
         st.caption("When to ship inventory from your 3PL (Packiyo) to Amazon FBA.")
 
     # --- Business Variables (from sidebar panel) ---
