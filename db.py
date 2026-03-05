@@ -487,6 +487,7 @@ _SCHEMA_SQL = [
     # Orders: financial_status for filtering refunds/cancellations
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS financial_status TEXT DEFAULT 'paid'",
     "ALTER TABLE orders ADD COLUMN IF NOT EXISTS total_tax REAL DEFAULT 0",
+    "ALTER TABLE orders ADD COLUMN IF NOT EXISTS refund_amount REAL DEFAULT 0",
 ]
 
 
@@ -590,17 +591,19 @@ def upsert_order(
     currency: str = "USD",
     financial_status: str = "paid",
     total_tax: float = 0.0,
+    refund_amount: float = 0.0,
 ) -> None:
     try:
         conn.execute("""
-            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, total_tax, currency, financial_status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO orders (order_id, source, source_order_id, customer_id, order_date, total_amount, total_tax, refund_amount, currency, financial_status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(order_id) DO UPDATE SET
                 total_amount = excluded.total_amount,
                 total_tax = excluded.total_tax,
+                refund_amount = excluded.refund_amount,
                 financial_status = excluded.financial_status,
                 status = 'completed'
-        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, total_tax, currency, financial_status))
+        """, (order_id, source, source_order_id, customer_id, order_date, total_amount, total_tax, refund_amount, currency, financial_status))
     except DatabaseError:
         raise
     except Exception as exc:

@@ -30,6 +30,16 @@ def _parse_shopify_date(ts_str):
     return ts_str[:10]
 
 
+def _total_refund_amount(order):
+    """Sum refund transaction amounts for an order."""
+    total = 0.0
+    for refund in order.get("refunds", []):
+        for txn in refund.get("transactions", []):
+            if txn.get("kind") == "refund" and txn.get("status") == "success":
+                total += float(txn.get("amount", 0))
+    return total
+
+
 def get_base_url():
     store = cfg.SHOPIFY_STORE_URL.rstrip("/")
     if not store.startswith("http"):
@@ -153,6 +163,7 @@ def _replay_order(conn, order):
     order_date = _parse_shopify_date(order["created_at"])
     total = float(order.get("total_price", 0))
     tax = float(order.get("total_tax", 0))
+    refund = _total_refund_amount(order)
     currency = order.get("currency", "USD")
     fin_status = order.get("financial_status", "paid") or "paid"
     customer_data = order.get("customer")
@@ -166,7 +177,8 @@ def _replay_order(conn, order):
     order_id = f"shp-{shopify_order_id}"
     upsert_order(conn, order_id, "shopify", shopify_order_id,
                  customer_id, order_date, total, currency,
-                 financial_status=fin_status, total_tax=tax)
+                 financial_status=fin_status, total_tax=tax,
+                 refund_amount=refund)
     for item in order.get("line_items", []):
         sku = str(item.get("sku") or item.get("variant_id") or "UNKNOWN")
         product_name = item.get("title", "")
@@ -219,7 +231,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
         "created_at_max": f"{until_date}T23:59:59{_STORE_TZ_OFFSET}",
         "status": "any",
         "limit": 250,
-        "fields": "id,created_at,total_price,total_tax,currency,customer,line_items,financial_status",
+        "fields": "id,created_at,total_price,total_tax,currency,customer,line_items,financial_status,refunds",
     }
 
     page_number = 0
@@ -243,6 +255,7 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             order_date = _parse_shopify_date(order["created_at"])
             total = float(order.get("total_price", 0))
             tax = float(order.get("total_tax", 0))
+            refund = _total_refund_amount(order)
             currency = order.get("currency", "USD")
             fin_status = order.get("financial_status", "paid") or "paid"
 
@@ -263,7 +276,8 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             order_id = f"shp-{shopify_order_id}"
             upsert_order(conn, order_id, "shopify", shopify_order_id,
                          customer_id, order_date, total, currency,
-                         financial_status=fin_status, total_tax=tax)
+                         financial_status=fin_status, total_tax=tax,
+                         refund_amount=refund)
 
             # Line items
             for item in order.get("line_items", []):
