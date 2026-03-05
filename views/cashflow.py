@@ -879,35 +879,30 @@ def _render_settings_section():
 
     try:
         with get_db() as conn:
-            dtc_ratio = get_cashflow_setting(conn, 'dtc_payout_ratio', '0.94')
-            amz_ratio = get_cashflow_setting(conn, 'amazon_payout_ratio', '0.62')
             cogs_pct = get_cashflow_setting(conn, 'cogs_pct', '0.25')
             fulfill_pct = get_cashflow_setting(conn, 'fulfillment_pct', '0.18')
             min_cash = get_cashflow_setting(conn, 'min_cash_threshold', '100000')
             loc_balance = get_cashflow_setting(conn, 'loc_balance', '510000')
             loc_apr = get_cashflow_setting(conn, 'loc_apr', '0.15')
+            po_cost = get_cashflow_setting(conn, 'production_cost_per_unit', '40.00')
     except Exception as e:
         log.warning('Failed to load cashflow settings, using defaults: %s', e)
-        dtc_ratio, amz_ratio, cogs_pct, fulfill_pct = '0.94', '0.62', '0.25', '0.18'
-        min_cash, loc_balance, loc_apr = '100000', '510000', '0.15'
+        cogs_pct, fulfill_pct = '0.25', '0.18'
+        min_cash, loc_balance, loc_apr, po_cost = '100000', '510000', '0.15', '40.00'
 
     with st.form('cf_settings_form'):
-        cols = st.columns(4)
-        new_dtc = cols[0].number_input(
-            'DTC Payout Ratio', value=float(dtc_ratio),
-            min_value=0.5, max_value=1.0, step=0.01, format='%.2f',
-        )
-        new_amz = cols[1].number_input(
-            'Amazon Payout Ratio', value=float(amz_ratio),
-            min_value=0.3, max_value=0.9, step=0.01, format='%.2f',
-        )
-        new_cogs = cols[2].number_input(
-            'COGS %', value=float(cogs_pct) * 100,
+        cols = st.columns(3)
+        new_cogs = cols[0].number_input(
+            'COGS % (fallback)', value=float(cogs_pct) * 100,
             min_value=5.0, max_value=60.0, step=1.0, format='%.0f',
         )
-        new_fulfill = cols[3].number_input(
-            'Fulfillment % of DTC', value=float(fulfill_pct) * 100,
+        new_fulfill = cols[1].number_input(
+            'Fulfillment % of DTC (fallback)', value=float(fulfill_pct) * 100,
             min_value=5.0, max_value=50.0, step=1.0, format='%.0f',
+        )
+        new_po_cost = cols[2].number_input(
+            'Production Cost / Unit ($)', value=float(po_cost),
+            min_value=1.0, max_value=200.0, step=1.0, format='%.2f',
         )
 
         cols2 = st.columns(3)
@@ -926,10 +921,9 @@ def _render_settings_section():
 
         if st.form_submit_button('Save Settings', type='primary'):
             with get_db() as conn:
-                set_cashflow_setting(conn, 'dtc_payout_ratio', str(new_dtc))
-                set_cashflow_setting(conn, 'amazon_payout_ratio', str(new_amz))
                 set_cashflow_setting(conn, 'cogs_pct', str(new_cogs / 100))
                 set_cashflow_setting(conn, 'fulfillment_pct', str(new_fulfill / 100))
+                set_cashflow_setting(conn, 'production_cost_per_unit', str(new_po_cost))
                 set_cashflow_setting(conn, 'min_cash_threshold', str(new_min))
                 set_cashflow_setting(conn, 'loc_balance', str(new_loc))
                 set_cashflow_setting(conn, 'loc_apr', str(new_apr / 100))

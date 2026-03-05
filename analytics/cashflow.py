@@ -531,26 +531,34 @@ def _project_expense_week(
     """
     method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
 
-    # COGS — sourced from P&L revenue model, hits at EOM.
+    # COGS / Production — planned POs take priority, then P&L COGS fallback.
+    # Hits at EOM.
     if method == 'revenue_pct':
         month_key = week_start.strftime('%Y-%m')
 
         _, last_day = calendar.monthrange(week_start.year, week_start.month)
         eom = date(week_start.year, week_start.month, last_day)
         is_eom_week = week_start <= eom <= week_end
+        if not is_eom_week:
+            return 0.0
 
+        # 1. Planned POs (units × $40/unit) — most accurate
+        po_cost = ctx.get('_po_monthly_production', {}).get(month_key, 0)
+        if po_cost > 0:
+            return po_cost
+
+        # 2. P&L COGS fallback
         rm_cogs = ctx.get('_rm_monthly_cogs', {}).get(month_key, 0)
         if rm_cogs > 0:
-            return rm_cogs if is_eom_week else 0.0
+            return rm_cogs
 
-        # Fallback when revenue model has no data for this month
+        # 3. Final fallback: % of revenue
         cogs_pct = ctx.get('cogs_pct', 0.25)
         dtc_monthly = ctx.get('dtc_monthly_revenue', {})
         dtc_month_total = dtc_monthly.get(month_key, 0)
         amz_monthly = ctx.get('amazon_monthly_revenue', {})
         amz_month_total = amz_monthly.get(month_key, 0)
-        total = (dtc_month_total + amz_month_total) * cogs_pct
-        return total if is_eom_week else 0.0
+        return (dtc_month_total + amz_month_total) * cogs_pct
 
     # --- Method-based projection FIRST for categories with explicit timing ---
     # These methods encode business-specific timing (biweekly payroll, monthly
@@ -732,14 +740,7 @@ def build_cashflow_forecast(
     # --- Build context dict with all the data the projectors need ---
     ctx = {}
 
-    # DTC payout ratio — user setting takes precedence over auto-calibration
     from db import get_cashflow_setting
-    dtc_ratio = float(get_cashflow_setting(conn, 'dtc_payout_ratio', '0.94'))
-    ctx['dtc_payout_ratio'] = dtc_ratio
-
-    # Amazon payout ratio — user setting takes precedence over auto-calibration
-    amz_ratio = float(get_cashflow_setting(conn, 'amazon_payout_ratio', '0.62'))
-    ctx['amazon_payout_ratio'] = amz_ratio
 
     # COGS percentage
     ctx['cogs_pct'] = float(get_cashflow_setting(conn, 'cogs_pct', '0.25'))
@@ -813,6 +814,26 @@ def build_cashflow_forecast(
         ctx['_rm_net_sales'] = {}
         ctx['_rm_monthly_fulfillment'] = {}
         ctx['_rm_monthly_cogs'] = {}
+
+    # Planned inbound POs → production cost outflows.
+    # When POs exist for a month, use units × cost_per_unit as the
+    # production outflow (replaces smooth P&L COGS for that month).
+    try:
+        from db import get_planned_inbound_dict
+        po_cost_per_unit = float(get_cashflow_setting(conn, 'production_cost_per_unit', '40.00'))
+        planned = get_planned_inbound_dict(conn)
+        po_monthly_cost = {}
+        for sku, months_dict in planned.items():
+            for month_key, units in months_dict.items():
+                if month_key >= '2026-02':
+                    po_monthly_cost[month_key] = po_monthly_cost.get(month_key, 0) + units * po_cost_per_unit
+        ctx['_po_monthly_production'] = po_monthly_cost
+        if po_monthly_cost:
+            log.info('Planned POs loaded: %d months, total $%,.0f',
+                     len(po_monthly_cost), sum(po_monthly_cost.values()))
+    except Exception as e:
+        log.warning('Could not load planned inbound for cash flow: %s', e)
+        ctx['_po_monthly_production'] = {}
 
     # Payroll detection
     try:
