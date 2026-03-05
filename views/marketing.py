@@ -1,4 +1,5 @@
 """Marketing page — Google Sheet analytics, pacing, DoD/WoW/MoM performance."""
+from datetime import date
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -671,6 +672,8 @@ def render(ctx):
                 _perf_df['_ad_spend'] = 0
             _perf_df = _perf_df.sort_values('_date')
             _perf_df['_ad_spend'] = _perf_df['_ad_spend'].fillna(0)
+            # Exclude today — always start with yesterday
+            _perf_df = _perf_df[_perf_df['_date'].dt.date < date.today()]
 
             # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup,
             # new/repeat customer counts and revenue from orders/customers/order_items
@@ -741,6 +744,8 @@ def render(ctx):
                     _new_frac = (_amz_daily["oi_new_rev"] / _oi_total).where(_oi_total > 0, 0)
                     _amz_daily["_amz_new_rev"] = _amz_daily["_amz_revenue"] * _new_frac
                     _amz_daily["_amz_repeat_rev"] = _amz_daily["_amz_revenue"] * (1 - _new_frac)
+                    # Exclude today — always start with yesterday
+                    _amz_daily = _amz_daily[_amz_daily['_date'].dt.date < date.today()]
             except Exception:
                 pass
 
