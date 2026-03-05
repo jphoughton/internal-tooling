@@ -179,6 +179,9 @@ def _render_revenue_model(current, ctx):
     inputs = rm.merge_with_defaults(db_data, months)
     live = {var: dict(inputs.get(var, {})) for var in rm.EDITABLE_VARS}
 
+    # Inject waterfall repeat revenue BEFORE editors/save so save uses correct values
+    _inject_waterfall_repeat(live, months, ctx)
+
     # ── Edit Inputs (expander, processed first so edits apply before display) ──
     with st.expander('Edit Inputs', expanded=False):
         st.caption('Edit values below and click **Save Revenue Model** to persist.')
@@ -247,9 +250,6 @@ def _render_revenue_model(current, ctx):
             _save_revenue_model(live, months)
             st.session_state['_bv_revmodel_saved'] = True
             st.rerun()
-
-    # ── Inject waterfall repeat revenue (overrides manual values) ──
-    _inject_waterfall_repeat(live, months, ctx)
 
     # ── Compute full model ──
     calc = rm.compute(live, months)
