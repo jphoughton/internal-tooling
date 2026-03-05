@@ -271,17 +271,29 @@ def render(ctx):
                 _rm = get_revenue_model(_cf_conn)
         except Exception:
             _rm = {}
-        # Current month index (0) for the first value in the monthly arrays
-        _cogs_vals = _rm.get('cogs_pct', DEFAULTS.get('cogs_pct', [0.165]))
-        _cogs_pct = float(_cogs_vals[0]) if _cogs_vals else 0.165
-        _dtc_ff_vals = _rm.get('dtc_fulfillment_pct', DEFAULTS.get('dtc_fulfillment_pct', [0.18]))
-        _dtc_fulfill_pct = float(_dtc_ff_vals[0]) if _dtc_ff_vals else 0.18
-        _amz_ff_vals = _rm.get('amazon_fulfillment_pct', DEFAULTS.get('amazon_fulfillment_pct', [0.305]))
-        _amz_fulfill_pct = float(_amz_ff_vals[0]) if _amz_ff_vals else 0.305
-        _ntg_vals = _rm.get('dtc_net_to_gross', DEFAULTS.get('dtc_net_to_gross', [1.3859589838]))
-        _dtc_ntg = float(_ntg_vals[0]) if _ntg_vals else 1.3859589838
-        _proc_vals = _rm.get('dtc_processing_pct', DEFAULTS.get('dtc_processing_pct', [0.04]))
-        _dtc_proc_pct = float(_proc_vals[0]) if _proc_vals else 0.04
+
+        def _rm_val(key, default):
+            """Get first value from revenue model — handles both {month:val} dicts and lists."""
+            vals = _rm.get(key)
+            if not vals:
+                d = DEFAULTS.get(key, [default])
+                return float(d[0]) if isinstance(d, list) and d else float(default)
+            if isinstance(vals, dict):
+                # {month_str: value} — pick current month or first available
+                _cm = datetime.now().strftime('%Y-%m')
+                if _cm in vals:
+                    return float(vals[_cm])
+                # Fall back to first value
+                return float(next(iter(vals.values())))
+            if isinstance(vals, list) and vals:
+                return float(vals[0])
+            return float(default)
+
+        _cogs_pct = _rm_val('cogs_pct', 0.165)
+        _dtc_fulfill_pct = _rm_val('dtc_fulfillment_pct', 0.18)
+        _amz_fulfill_pct = _rm_val('amazon_fulfillment_pct', 0.305)
+        _dtc_ntg = _rm_val('dtc_net_to_gross', 1.3859589838)
+        _dtc_proc_pct = _rm_val('dtc_processing_pct', 0.04)
         _amz_ntg = 1.0  # Amazon revenue is already gross
 
         _dtc_ret = None
