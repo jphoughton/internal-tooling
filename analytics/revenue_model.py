@@ -222,8 +222,13 @@ def compute(inputs, months):
 
     # ── TTM Totals ──
     ttm_sales = sum(calc.get('net_sales', {}).get(m, 0) for m in months)
+    ttm_gross = sum(calc.get('dtc_gross_sales', {}).get(m, 0)
+                    + calc.get('amazon_rev', {}).get(m, 0)
+                    + _v(inputs, 'wholesale_rev', m)
+                    for m in months)
     ttm_ebitda = sum(calc.get('net_profit', {}).get(m, 0) for m in months)
     ttm_ebitda_pct = ttm_ebitda / ttm_sales if ttm_sales else 0
+    calc['_ttm_gross'] = ttm_gross
     calc['_ttm_sales'] = ttm_sales
     calc['_ttm_ebitda'] = ttm_ebitda
     calc['_ttm_ebitda_pct'] = ttm_ebitda_pct

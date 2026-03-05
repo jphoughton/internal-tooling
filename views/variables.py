@@ -656,6 +656,7 @@ def _render_calc_rows(calc, months, month_labels, rows):
 
 def _render_ttm(calc):
     """Render the TTM summary metrics bar."""
+    tg = calc.get('_ttm_gross', 0)
     ts = calc.get('_ttm_sales', 0)
     te = calc.get('_ttm_ebitda', 0)
     tp = calc.get('_ttm_ebitda_pct', 0)
@@ -665,7 +666,9 @@ def _render_ttm(calc):
         f'<div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;'
         f'letter-spacing:0.06em;margin-bottom:8px;">TTM Summary</div>'
         f'<div style="display:flex;gap:40px;flex-wrap:wrap;">'
-        f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM Sales</div>'
+        f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM Gross Sales</div>'
+        f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">${tg:,.0f}</div></div>'
+        f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM Net Sales</div>'
         f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">${ts:,.0f}</div></div>'
         f'<div><div style="font-size:0.65rem;color:#94a3b8;">TTM EBITDA</div>'
         f'<div style="font-size:1.05rem;font-weight:700;color:#0f172a;">${te:,.0f}</div></div>'
