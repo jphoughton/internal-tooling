@@ -400,7 +400,7 @@ def render(ctx):
             _cogs_on_net = _cogs_pct * _net_to_gross
             _pb_margin = 1 - _cogs_on_net - _fulfill_pct
 
-            with st.expander('CAC Payback Breakdown', expanded=True):
+            with st.expander('CAC Payback Breakdown', expanded=False):
                 v1, v2, v3, v4, v5, v6 = st.columns(6)
                 v1.metric('New Customers', f'{_hero_nc:,}')
                 v2.metric('NC Revenue (M0)', f'${_hero_nc_rev:,.0f}')
