@@ -12,12 +12,23 @@ from analytics.metrics import (
     nc_revenue_fraction, get_total_customers,
     compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
 )
+from analytics.amazon_nc_projector import project_amazon_nc
 from ui.pacing_helpers import build_pace_row, style_pace_df, render_white_table
 from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday
 from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 
 log = logging.getLogger(__name__)
+
+
+@st.cache_data(ttl=300)
+def _get_nc_projection():
+    """Cached wrapper around project_amazon_nc() for yesterday."""
+    try:
+        return project_amazon_nc()
+    except Exception as e:
+        log.warning('NC projection failed: %s', e)
+        return None
 
 
 def compute_pacing_data(ctx):
@@ -128,6 +139,7 @@ def compute_pacing_data(ctx):
     _cm_amz_nc_rev = 0
     _amz_spend_projected = 0
     _amz_spend_gap_days = 0
+    _amz_nc_projected = False
     try:
         with get_db() as _amz_conn:
             _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
@@ -205,6 +217,16 @@ def compute_pacing_data(ctx):
             _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
     except Exception as e:
         log.warning("Failed to load Amazon yesterday metrics: %s", e)
+
+    # Inject NC projection for yesterday if actual NC data is missing
+    if _yd_amz_nc == 0:
+        _proj = _get_nc_projection()
+        if _proj and _proj.get('actual_nc_customers') is None and _proj.get('projected_nc_customers', 0) > 0:
+            _yd_amz_nc = int(round(_proj['projected_nc_customers']))
+            _yd_amz_nc_rev = _proj['projected_nc_revenue']
+            _cm_amz_nc += _yd_amz_nc
+            _cm_amz_nc_rev += _yd_amz_nc_rev
+            _amz_nc_projected = True
 
     # Repeat customer counts
     _cm_dtc_total_cust = 0
@@ -315,6 +337,7 @@ def compute_pacing_data(ctx):
         'cm_amz_nc_rev': _cm_amz_nc_rev,
         'amz_spend_projected': _amz_spend_projected,
         'amz_spend_gap_days': _amz_spend_gap_days,
+        'amz_nc_projected': _amz_nc_projected,
         # Goals
         'goal_nc_rev': _goal_nc_rev,
         'goal_repeat_rev': _goal_repeat_rev,
@@ -540,10 +563,13 @@ def render_pacing(ctx):
         eff2.metric("Total NC ROAS", f"{d['total_nc_roas']:.2f}x", help="Total NC Revenue / Total Spend")
         eff3.metric("Total NC CPA", f"${d['total_nc_cpa']:,.0f}", help="Total Spend / Total New Customers")
 
+        _nc_est = d.get('amz_nc_projected', False)
+        _nc_label_ru = "Total New Customers (est)" if _nc_est else "Total New Customers"
         rev1, rev2, rev3 = st.columns(3)
         rev1.metric("Total Spend", f"${d['cm_total_spend']:,.0f}")
         rev2.metric("Total Revenue", f"${d['total_actual_rev']:,.0f}")
-        rev3.metric("Total New Customers", f"{d['cm_total_nc']:,}")
+        rev3.metric(_nc_label_ru, f"{d['cm_total_nc']:,}",
+                    help='Includes projected Amazon NC for yesterday' if _nc_est else None)
 
         nr1, nr2, nr3 = st.columns(3)
         nr1.metric("Total NC Revenue", f"${d['cm_total_nc_rev']:,.0f}")
@@ -611,7 +637,8 @@ def render_pacing(ctx):
         if _chan_sel == "All":
             st.markdown("---")
         st.subheader("Amazon")
-        st.caption('Amazon-only pacing vs revenue goals from amazon_revenue_forecast.')
+        _amz_nc_est_note = ' NC data includes yesterday estimate.' if d.get('amz_nc_projected', False) else ''
+        st.caption(f'Amazon-only pacing vs revenue goals from amazon_revenue_forecast.{_amz_nc_est_note}')
 
         _amz_roas = d['cm_amz_rev'] / d['cm_amz_spend'] if d['cm_amz_spend'] > 0 else 0
         amz_k1, amz_k2, amz_k3 = st.columns(3)

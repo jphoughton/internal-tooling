@@ -329,6 +329,7 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         amz_nc = 0
         amz_spend = 0
         amz_nc_rev = 0
+        amz_has_projected = False
         if not amz_daily.empty and '_date' in amz_daily.columns:
             amz_d = amz_daily.copy()
             amz_d['_date'] = pd.to_datetime(amz_d['_date'])
@@ -337,6 +338,11 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
             amz_spend = amz_d.loc[mask_amz, '_amz_spend'].sum() if '_amz_spend' in amz_d.columns else 0
             amz_nc = int(amz_d.loc[mask_amz, '_amz_new_cust'].sum()) if '_amz_new_cust' in amz_d.columns else 0
             amz_nc_rev = amz_d.loc[mask_amz, '_amz_new_rev'].sum() if '_amz_new_rev' in amz_d.columns else 0
+            # Check if any day in the window has projected NC data
+            amz_has_projected = (
+                '_projected' in amz_d.columns
+                and amz_d.loc[mask_amz, '_projected'].any()
+            )
 
         # Rollup
         total_rev = dtc_rev + amz_rev
@@ -354,12 +360,18 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         dtc_contribution = ((dtc_rev - dtc_spend) / dtc_rev * 100) if dtc_rev > 0 else 0
 
         amz_mer = compute_mer(amz_rev, amz_spend)
+        amz_cpa = compute_nc_cpa(amz_spend, amz_nc)
         amz_nc_pct = (amz_nc_rev / amz_rev * 100) if amz_rev > 0 else 0
         amz_contribution = ((amz_rev - amz_spend) / amz_rev * 100) if amz_rev > 0 else 0
 
+        _est = ' (est)' if amz_has_projected else ''
+        _amz_nc_display = f'{amz_nc:,}{_est}' if amz_nc > 0 else '\u2014'
+        _amz_cpa_display = f'${amz_cpa:,.0f}{_est}' if amz_nc > 0 else '\u2014'
+        _rollup_nc_display = f'{total_nc:,}{_est}' if amz_has_projected else total_nc
+
         rows.append({
             'Period': label, 'Channel': 'Rollup',
-            'Revenue': f'${total_rev:,.0f}', 'New Customers': total_nc,
+            'Revenue': f'${total_rev:,.0f}', 'New Customers': _rollup_nc_display,
             'CPA': f'${total_cpa:,.0f}', 'MER': f'{total_mer:.2f}x',
             'NC Rev %': f'{nc_rev_pct:.0f}%', 'Contribution %': f'{contribution:.0f}%',
         })
@@ -371,8 +383,8 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         })
         rows.append({
             'Period': label, 'Channel': 'Amazon',
-            'Revenue': f'${amz_rev:,.0f}', 'New Customers': '\u2014',
-            'CPA': '\u2014', 'MER': f'{amz_mer:.2f}x',
+            'Revenue': f'${amz_rev:,.0f}', 'New Customers': _amz_nc_display,
+            'CPA': _amz_cpa_display, 'MER': f'{amz_mer:.2f}x',
             'NC Rev %': f'{amz_nc_pct:.0f}%', 'Contribution %': f'{amz_contribution:.0f}%',
         })
 

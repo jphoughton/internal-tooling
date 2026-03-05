@@ -3,7 +3,7 @@ import logging
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from db import (
     get_db, read_sql, get_media_spend, get_cashflow_setting,
@@ -11,12 +11,23 @@ from db import (
 )
 from analytics.sku_flavors import get_flavor
 from analytics.metrics import compute_cac_payback, compute_nc_roas, compute_nc_cpa, project_daily_spend_gaps
+from analytics.amazon_nc_projector import project_amazon_nc
 from ui.components import render_freshness_badge, render_html_table
 from ui.perf_tables import render_perf_table_colored, render_perf_table_transposed, build_overview_trend_rows
 from views.pacing import compute_pacing_data, render_hero_bars, render_pacing_detail_table
 from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 
 log = logging.getLogger(__name__)
+
+
+@st.cache_data(ttl=300)
+def _get_nc_projection():
+    """Cached wrapper around project_amazon_nc() for yesterday."""
+    try:
+        return project_amazon_nc()
+    except Exception as e:
+        log.warning('NC projection failed: %s', e)
+        return None
 
 
 @st.cache_data(ttl=300)
@@ -87,7 +98,27 @@ def _load_amazon_daily():
         _new_frac = (df['oi_new_rev'] / _oi_total).where(_oi_total > 0, 0)
         df['_amz_new_rev'] = df['_amz_revenue'] * _new_frac
         df['_amz_repeat_rev'] = df['_amz_revenue'] * (1 - _new_frac)
+        df['_projected'] = False
         df['_date'] = pd.to_datetime(df['sale_date'])
+
+        # Inject NC projection for yesterday if actual NC data is missing
+        yesterday_str = (date.today() - timedelta(days=1)).isoformat()
+        yd_rows = df[df['sale_date'] == yesterday_str]
+        yd_nc = int(yd_rows['new_customers'].sum()) if not yd_rows.empty else 0
+        if yd_nc == 0:
+            proj = _get_nc_projection()
+            if proj and proj.get('actual_nc_customers') is None and proj.get('projected_nc_customers', 0) > 0:
+                proj_nc = proj['projected_nc_customers']
+                proj_rev = proj['projected_nc_revenue']
+                if not yd_rows.empty:
+                    idx = yd_rows.index[0]
+                    yd_revenue = df.loc[idx, '_amz_revenue']
+                    df.loc[idx, 'new_customers'] = proj_nc
+                    df.loc[idx, '_amz_new_cust'] = int(round(proj_nc))
+                    df.loc[idx, '_amz_new_rev'] = proj_rev
+                    df.loc[idx, '_amz_repeat_rev'] = max(yd_revenue - proj_rev, 0)
+                    df.loc[idx, '_projected'] = True
+
         return df
     except Exception as e:
         log.warning('_load_amazon_daily failed: %s', e)
@@ -250,6 +281,8 @@ def render(ctx):
         _nc_pace_goal = d['goal_nc_count'] * _pct if d.get('goal_nc_count', 0) > 0 and not _source_filter else 0
         _spend_pace_goal = _hero_goal_spend * _pct if _hero_goal_spend > 0 else 0
         _spend_label = 'Spend MTD (est)' if _hero_spend_gap > 0 else 'Spend MTD'
+        _nc_is_est = d.get('amz_nc_projected', False) and _source_filter != 'shopify'
+        _nc_label = 'New Customers MTD (est)' if _nc_is_est else 'New Customers MTD'
 
         h1, h2, h3, h4 = st.columns(4)
         h1.metric('Rev MTD', f"${_hero_rev:,.0f}",
@@ -259,9 +292,10 @@ def render(ctx):
                    delta=f"Pace: ${_spend_pace_goal:,.0f}" if _spend_pace_goal > 0 else None,
                    delta_color='off',
                    help=f"Includes {_hero_spend_gap}d projected Amazon spend (L7D avg)" if _hero_spend_gap > 0 else None)
-        h3.metric('New Customers MTD', f"{_hero_nc:,}",
+        h3.metric(_nc_label, f"{_hero_nc:,}",
                    delta=f"Pace: {_nc_pace_goal:,.0f}" if _nc_pace_goal > 0 else None,
-                   delta_color='off')
+                   delta_color='off',
+                   help='Includes projected Amazon NC for yesterday (est)' if _nc_is_est else None)
 
         # CAC Payback — pull cost assumptions from revenue model (Variables page)
         from analytics.revenue_model import DEFAULTS
