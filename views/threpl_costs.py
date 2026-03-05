@@ -26,6 +26,7 @@ def _render_inner(ctx, embedded):
 
     # ── Upload section ──
     st.subheader('Upload Invoice')
+    log.info('3PL Costs: rendering upload section')
     uploaded = st.file_uploader(
         'Upload a Robo3PL invoice PDF',
         type=['pdf'],

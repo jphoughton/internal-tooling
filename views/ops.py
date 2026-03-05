@@ -81,10 +81,12 @@ def render(ctx):
             from views.reorder_alerts import render as render_reorder
             render_reorder(ctx, embedded=True)
 
-        @st.fragment
         def _rollup_threpl_costs():
-            from views.threpl_costs import render as render_costs
-            render_costs(ctx, embedded=True)
+            try:
+                from views.threpl_costs import render as render_costs
+                render_costs(ctx, embedded=True)
+            except Exception as e:
+                st.error(f'3PL Costs tab failed: {e}')
 
         with tabs[0]:
             _rollup_inventory()
