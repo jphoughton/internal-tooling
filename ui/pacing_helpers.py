@@ -51,11 +51,11 @@ def plus_minus_color(val, invert=False):
 
 def build_pace_row(label, mtd_actual, goal, l7d_avg, yd_actual,
                    pct_month, days_in_month, remaining_days,
-                   is_spend=False, fmt='dollar'):
+                   is_spend=False, fmt='dollar', section=''):
     """Build a single pacing row dict for the pacing table.
 
     Args:
-        label: Row label (e.g. "NC Revenue", "Total Spend")
+        label: Row label (e.g. "Total Revenue", "  DTC Spend")
         mtd_actual: Month-to-date actual value
         goal: End-of-month goal
         l7d_avg: Last 7 day daily average
@@ -65,6 +65,7 @@ def build_pace_row(label, mtd_actual, goal, l7d_avg, yd_actual,
         remaining_days: Days left in the month
         is_spend: True if this is a spend row (inverts color logic)
         fmt: 'dollar', 'count', or 'ratio'
+        section: 'revenue', 'spend', or 'efficiency' — used for section dividers
     """
     should_be = goal * pct_month
     pacing = (mtd_actual / should_be) if should_be > 0 else 0
@@ -102,6 +103,7 @@ def build_pace_row(label, mtd_actual, goal, l7d_avg, yd_actual,
     return {
         "_label": label,
         "_is_spend": is_spend,
+        "_section": section,
         "_pacing_raw": pacing,
         "_plus_minus_raw": plus_minus,
         "_eom_pacing_raw": eom_pacing,
@@ -133,13 +135,12 @@ def style_pace_df(df_raw):
     style_data = df_raw.copy()
     df_display = df_raw[display_cols].copy()
 
-    _type_colors = {
-        'Revenue': '#0a7a3e',
-        'New Rev': '#2563eb',
-        'Repeat Rev': '#7c3aed',
-        'Spend': '#b91c1c',
-        'NC-ROAS': '#0369a1',
-    }
+    # Detect section boundaries for divider borders
+    _sections = style_data["_section"].tolist() if "_section" in style_data.columns else []
+    _section_starts = set()
+    for i, sec in enumerate(_sections):
+        if i > 0 and sec != _sections[i - 1]:
+            _section_starts.add(style_data.index[i])
 
     def _apply_styles(row_styler):
         idx = row_styler.name
@@ -148,24 +149,35 @@ def style_pace_df(df_raw):
         plus_raw = style_data.loc[idx, "_plus_minus_raw"]
         eom_raw = style_data.loc[idx, "_eom_pacing_raw"]
         yd_raw = style_data.loc[idx, "_yd_pacing_raw"]
+        label = str(style_data.loc[idx, "_label"]) if "_label" in style_data.columns else ""
+        is_total = label.startswith("Total ") or label in ("NC-ROAS",)
+        is_indented = label.startswith("\u00a0")
         styles = [""] * len(row_styler)
         col_map = {c: i for i, c in enumerate(display_cols)}
+
+        # Section divider — thicker top border on first row of a new section
+        _border_top = "border-top: 2px solid #D6DEE8; " if idx in _section_starts else ""
+
         if "" in col_map:
-            styles[col_map[""]] = "font-weight: 600; color: #0F3557"
-        if "Type" in col_map:
-            _type_val = style_data.loc[idx, "Type"] if "Type" in style_data.columns else ""
-            _tc = _type_colors.get(_type_val, "#64748b")
-            styles[col_map["Type"]] = f"font-weight: 700; color: {_tc}; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.03em"
+            _weight = "700" if is_total else "500"
+            _color = "#0F3557" if is_total else "#475569"
+            styles[col_map[""]] = f"{_border_top}font-weight: {_weight}; color: {_color}; white-space: pre"
         if "Pacing" in col_map:
-            styles[col_map["Pacing"]] = pace_color(pacing_raw, invert=is_spend)
+            styles[col_map["Pacing"]] = _border_top + pace_color(pacing_raw, invert=is_spend)
         if "+/- Pacing" in col_map:
-            styles[col_map["+/- Pacing"]] = plus_minus_color(plus_raw, invert=is_spend)
+            styles[col_map["+/- Pacing"]] = _border_top + plus_minus_color(plus_raw, invert=is_spend)
         if "EOM Pacing" in col_map:
-            styles[col_map["EOM Pacing"]] = pace_color(eom_raw, invert=is_spend)
+            styles[col_map["EOM Pacing"]] = _border_top + pace_color(eom_raw, invert=is_spend)
         if "Yest. Pace" in col_map:
-            styles[col_map["Yest. Pace"]] = pace_color(yd_raw, invert=is_spend)
+            styles[col_map["Yest. Pace"]] = _border_top + pace_color(yd_raw, invert=is_spend)
         if "Projection" in col_map:
-            styles[col_map["Projection"]] = pace_color(eom_raw, invert=is_spend)
+            styles[col_map["Projection"]] = _border_top + pace_color(eom_raw, invert=is_spend)
+
+        # Apply border-top to remaining unstyled cells in section-start rows
+        if _border_top:
+            for ci in range(len(styles)):
+                if not styles[ci]:
+                    styles[ci] = _border_top.rstrip("; ")
         return styles
 
     styled = (
