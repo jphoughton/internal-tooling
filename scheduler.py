@@ -73,7 +73,15 @@ def run_daemon():
     print(f"Amazon catchup syncs at 11:00 and 17:00 {SYNC_TIMEZONE}.")
     print(f"Press Ctrl+C to stop.\n")
 
-    # On startup, run models if precomputed data is stale or missing
+    # On startup, snapshot inventory + run models if precomputed data is stale
+    try:
+        from etl.sync import _snapshot_inventory
+        print("Snapshotting live inventory on startup...")
+        _snapshot_inventory()
+        print("Inventory snapshot complete.")
+    except Exception as e:
+        print(f"Startup inventory snapshot failed: {e}")
+
     try:
         from db import get_db, get_precomputed
         with get_db() as conn:

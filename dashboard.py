@@ -13,7 +13,7 @@ from db import (
     get_seasonal_indices, get_sku_seasonal_indices,
     get_setting,
     get_last_sync_timestamp, get_new_rows_since_yesterday, get_synced_sources,
-    get_inventory_snapshot, save_inventory_snapshot,
+    get_inventory_snapshot,
     get_precomputed,
 )
 from analytics.waterfall import (
@@ -308,58 +308,22 @@ def _load_sku_seasonal_json():
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _cached_3pl_inventory():
-    """Cached wrapper for Packiyo 3PL inventory — reads DB snapshot first, falls back to live API."""
-    import config as _cfg
-    if not _cfg.PACKIYO_API_TOKEN:
-        return None
-    # Try DB snapshot first (written by 6AM scheduler)
+    """Cached wrapper for Packiyo 3PL inventory — reads DB snapshot (written by scheduler)."""
     try:
         with get_db() as conn:
-            snapshot = get_inventory_snapshot(conn, 'packiyo', max_age_hours=24)
-        if snapshot is not None:
-            return snapshot
+            return get_inventory_snapshot(conn, 'packiyo', max_age_hours=36)
     except Exception:
-        pass
-    # Fall back to live API
-    from etl.packiyo_client import get_inventory
-    result = get_inventory()
-    # Write back to snapshot for next caller
-    if result is not None:
-        try:
-            with get_db() as conn:
-                save_inventory_snapshot(conn, 'packiyo', result)
-        except Exception:
-            pass
-    return result
+        return None
 
 
 @st.cache_data(ttl=_CACHE_TTL, show_spinner=False)
 def _cached_amazon_inventory():
-    """Cached wrapper for Amazon FBA inventory — reads DB snapshot first, falls back to live API."""
-    import config as _cfg
-    if not all(getattr(_cfg, k, '') for k in [
-        'AMAZON_REFRESH_TOKEN', 'AMAZON_LWA_CLIENT_ID', 'AMAZON_LWA_CLIENT_SECRET',
-    ]):
-        return None
-    # Try DB snapshot first (written by 6AM scheduler)
+    """Cached wrapper for Amazon FBA inventory — reads DB snapshot (written by scheduler)."""
     try:
         with get_db() as conn:
-            snapshot = get_inventory_snapshot(conn, 'amazon', max_age_hours=24)
-        if snapshot is not None:
-            return snapshot
+            return get_inventory_snapshot(conn, 'amazon', max_age_hours=36)
     except Exception:
-        pass
-    # Fall back to live API
-    from etl.amazon_inventory import get_inventory
-    result = get_inventory()
-    # Write back to snapshot for next caller
-    if result is not None:
-        try:
-            with get_db() as conn:
-                save_inventory_snapshot(conn, 'amazon', result)
-        except Exception:
-            pass
-    return result
+        return None
 
 
 st.set_page_config(
