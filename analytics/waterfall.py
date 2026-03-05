@@ -434,12 +434,16 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
         [month, repeat_units, new_customer_units, total_units,
          new_customers_acquired, repeat_revenue, new_customer_revenue, total_revenue]
     """
-    # Revenue-based retention curve (always Shopify)
-    retention = _get_cached("retention_shopify", lambda: get_average_retention_curve())
+    # Use source_filter for channel-specific data; default to shopify
+    _sf = source_filter or 'shopify'
+    _sfk = _sf.replace(' ', '_')  # cache key safe
+
+    # Revenue-based retention curve
+    retention = _get_cached(f"retention_{_sfk}", lambda: get_average_retention_curve(source_filter=_sf))
     if not retention:
         return pd.DataFrame()
 
-    metrics = _get_cached("metrics_shopify", lambda: get_aov_and_units())
+    metrics = _get_cached(f"metrics_{_sfk}", lambda: get_aov_and_units(source_filter=_sf))
     new_upc = metrics["units_per_new_customer"]
     new_customer_aov = metrics.get("new_customer_aov") or metrics["aov"] or 25.0
     new_rev_per_unit = metrics.get("new_customer_rev_per_unit") or new_customer_aov
@@ -447,13 +451,13 @@ def build_waterfall(media_plan, source_filter=None, horizon_months=12,
 
     # Historical cohort data
     historical_customers = _get_cached(
-        "new_custs_shopify",
-        lambda: get_monthly_new_customers()
+        f"new_custs_{_sfk}",
+        lambda: get_monthly_new_customers(source_filter=_sf)
     )
 
     rev_data = _get_cached(
-        "rev_retention_shopify",
-        lambda: get_revenue_retention_data(source_filter='shopify')
+        f"rev_retention_{_sfk}",
+        lambda: get_revenue_retention_data(source_filter=_sf)
     )
     historical_first_order_rev = rev_data.get('first_order_revenue', pd.Series(dtype=float))
 
