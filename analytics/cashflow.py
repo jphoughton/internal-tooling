@@ -8,6 +8,7 @@ CFO perspective: This module powers the 52-week cash flow forecast by:
 4. Building weekly cash flow projections with confidence intervals
 """
 import calendar
+import json
 import logging
 import re
 from datetime import date, timedelta
@@ -96,6 +97,7 @@ _SUGGESTIONS = [
     (r'tones\s*digital|oddduck|gunell', 'agency', None),
     (r'launch\s*cpa|intuit|quickbooks', 'accounting', None),
     (r'insurance|hartford|next\s*insurance', 'insurance', None),
+    (r'consult', 'consulting', None),
     # Transfers
     (r'hydrant.*transfer|transfer.*hydrant|internal.*transfer', 'internal_transfer', None),
     (r'ramp.*payment|ramp.*autopay', 'duplicate', None),
@@ -247,6 +249,64 @@ def compute_trailing_avg(
 
     total = float(result['total'] or 0)
     return total / max(lookback_weeks, 1)
+
+
+# ---------------------------------------------------------------------------
+# Week-in-month helper functions
+# ---------------------------------------------------------------------------
+
+def which_week_in_month(d: date) -> int:
+    """Return 1-based week number within the month for date *d*.
+
+    Uses Monday-start weeks. Week 1 is the week of the first Monday
+    that falls on or after the 1st of the month. This matches the
+    Excel model where weekly columns start on Mondays within the month.
+    """
+    first_of_month = date(d.year, d.month, 1)
+    # First Monday on or after the 1st
+    days_until_monday = (7 - first_of_month.weekday()) % 7
+    first_monday = first_of_month + timedelta(days=days_until_monday)
+    # Monday of the week containing d
+    d_monday = d - timedelta(days=d.weekday())
+    if d_monday < first_monday:
+        return 1  # before the first full Monday — week 1
+    week_num = ((d_monday - first_monday).days // 7) + 1
+    return max(1, week_num)
+
+
+def is_last_week_of_month(ws: date, we: date) -> bool:
+    """True if the week [ws, we] contains the last day of ws's month."""
+    _, last_day = calendar.monthrange(ws.year, ws.month)
+    eom = date(ws.year, ws.month, last_day)
+    return ws <= eom <= we
+
+
+def is_first_week_of_month(ws: date, we: date) -> bool:
+    """True if this is the first Monday-start week of ws's month.
+
+    Uses a simple rule: the week is "first" if ws.day <= 7 (i.e. the Monday
+    falls within the first 7 days of the month).  This avoids the
+    month-boundary overlap bug where a week spanning two months would fire
+    both last-week-of-month AND first-week-of-next-month expenses.
+    """
+    return ws.day <= 7
+
+
+def count_weeks_in_month(year: int, month: int) -> int:
+    """Count Monday-start weeks whose Monday falls within the month. Returns 4 or 5."""
+    _, last_day = calendar.monthrange(year, month)
+    first = date(year, month, 1)
+    last = date(year, month, last_day)
+    # First Monday on or after the 1st
+    days_until_monday = (7 - first.weekday()) % 7
+    first_monday = first + timedelta(days=days_until_monday)
+    # Count Mondays within the month
+    count = 0
+    m = first_monday
+    while m <= last:
+        count += 1
+        m += timedelta(days=7)
+    return max(count, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -514,141 +574,150 @@ def _project_next_payments(
     return total
 
 
-def _project_expense_week(
-    conn: ConnectionWrapper,
-    category: str,
-    week_start: date,
-    week_end: date,
-    ctx: dict,
-) -> float:
-    """Project expense for a single future week.
+# ---------------------------------------------------------------------------
+# Individual expense projector functions
+# ---------------------------------------------------------------------------
+# Each projector has signature: (conn, category, week_start, week_end, ctx) -> float
 
-    Priority order:
-    1. COGS (revenue_pct) — always a % of gross revenue
-    2. Method-based timing (media_plan, biweekly_schedule, quarterly_detect)
-    3. Schedule detection from bank actuals (trailing_avg, schedule methods)
-    4. Final fallback to trailing average or seed defaults
+def _project_media_split(conn, category, week_start, week_end, ctx):
+    """Split monthly P&L media into 2 payments: week 2 (40%) + last week (60%)."""
+    month_key = week_start.strftime('%Y-%m')
+    monthly_media = ctx.get('monthly_media_spend', {})
+    monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
+
+    early_pct = ctx.get('media_split_early_pct', 0.40)
+    early_week = ctx.get('media_early_week', 2)
+    wk = which_week_in_month(week_start)
+
+    if wk == early_week:
+        return monthly * early_pct
+    elif is_last_week_of_month(week_start, week_end):
+        return monthly * (1.0 - early_pct)
+    return 0.0
+
+
+def _project_payroll_alternating(conn, category, week_start, week_end, ctx):
+    """Biweekly payroll with alternating amounts A and B.
+
+    Hits on weeks 2 and 4 of the month. Alternates between A (smaller)
+    and B (larger) using a running toggle stored in ctx.
     """
-    method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
+    payroll_a = ctx.get('payroll_amount_a', 13000)
+    payroll_b = ctx.get('payroll_amount_b', 15500)
 
-    # COGS / Production — planned POs hit as EOM lump; P&L COGS spread weekly.
-    if method == 'revenue_pct':
-        month_key = week_start.strftime('%Y-%m')
-
-        _, last_day = calendar.monthrange(week_start.year, week_start.month)
-        eom = date(week_start.year, week_start.month, last_day)
-        is_eom_week = week_start <= eom <= week_end
-
-        # 1. Planned POs (units × $40/unit) — discrete cash event at EOM
-        po_cost = ctx.get('_po_monthly_production', {}).get(month_key, 0)
-        if po_cost > 0:
-            return po_cost if is_eom_week else 0.0
-
-        # 2. P&L COGS — spread weekly (COGS accrues with sales, not a lump)
-        rm_cogs = ctx.get('_rm_monthly_cogs', {}).get(month_key, 0)
-        if rm_cogs > 0:
-            return rm_cogs / 4.33
-
-        # 3. Final fallback: % of revenue, spread weekly
-        cogs_pct = ctx.get('cogs_pct', 0.25)
-        dtc_monthly = ctx.get('dtc_monthly_revenue', {})
-        dtc_month_total = dtc_monthly.get(month_key, 0)
-        amz_monthly = ctx.get('amazon_monthly_revenue', {})
-        amz_month_total = amz_monthly.get(month_key, 0)
-        return (dtc_month_total + amz_month_total) * cogs_pct / 4.33
-
-    # --- Method-based projection FIRST for categories with explicit timing ---
-    # These methods encode business-specific timing (biweekly payroll, monthly
-    # media bills, quarterly tax) and must NOT be overridden by schedule
-    # detection from trailing bank data averages.
-
-    if method == 'media_plan':
-        month_key = week_start.strftime('%Y-%m')
-        monthly_media = ctx.get('monthly_media_spend', {})
-        monthly = monthly_media.get(month_key, CASHFLOW_SEED_DEFAULTS.get(category, 0) * 4.33)
-        # Media bills once at EOM — assign to the week containing the last day of the month
-        _, last_day = calendar.monthrange(week_start.year, week_start.month)
-        eom = date(week_start.year, week_start.month, last_day)
-        if week_start <= eom <= week_end:
-            return monthly
+    wk = which_week_in_month(week_start)
+    if wk not in (2, 4):
         return 0.0
 
-    elif method == 'monthly_lump':
-        # Fixed monthly expenses (software, agency, accounting, insurance).
-        # Hits once per month in the week containing the 1st.
-        # Uses trailing monthly total from bank data, or seed default.
-        first_of_month = date(week_start.year, week_start.month, 1)
-        if not (week_start <= first_of_month <= week_end):
-            return 0.0
-        # Use trailing monthly total if we have bank data
-        sched_key = f'_schedule_{category}'
-        schedule = ctx.get(sched_key)
-        if schedule and schedule.get('has_data') and schedule.get('monthly_total', 0) > 0:
-            return schedule['monthly_total']
-        return CASHFLOW_SEED_DEFAULTS.get(category, 0)
+    # Alternate A/B using a running toggle in ctx
+    next_is_a = ctx.get('_payroll_next_is_a', True)
+    if next_is_a:
+        amount = payroll_a
+    else:
+        amount = payroll_b
+    ctx['_payroll_next_is_a'] = not next_is_a
+    return amount
 
-    elif method == 'biweekly_schedule':
-        last_amount = ctx.get('last_payroll_amount', CASHFLOW_SEED_DEFAULTS.get('payroll', 8000))
-        # Payroll hits ~10th and ~25th of month
-        for d_offset in range(7):
-            d = week_start + timedelta(days=d_offset)
-            if d <= week_end and d.day in (9, 10, 11, 24, 25, 26):
-                return last_amount
+
+def _project_fulfillment_spread(conn, category, week_start, week_end, ctx):
+    """P&L fulfillment spread over actual weeks in the month."""
+    month_key = week_start.strftime('%Y-%m')
+    rm_fulfill = ctx.get('_rm_monthly_fulfillment', {}).get(month_key, 0)
+    if rm_fulfill > 0:
+        weeks_in_month = count_weeks_in_month(week_start.year, week_start.month)
+        return rm_fulfill / weeks_in_month
+
+    # Fallback: use seed default (weekly amount)
+    return CASHFLOW_SEED_DEFAULTS.get(category, 5000)
+
+
+def _project_monthly_lump(conn, category, week_start, week_end, ctx):
+    """Monthly lump on the 1st week of month (accounting, insurance, sales_tax, consulting).
+
+    For sales_tax: uses trailing average from bank data if available, else seed default.
+    For others: uses trailing monthly total from bank data, or seed default.
+    """
+    if not is_first_week_of_month(week_start, week_end):
         return 0.0
 
-    elif method == 'monthly_sales_tax':
-        # Sales tax ~4.3% of net sales, paid monthly (EOM).
-        # Sourced from P&L net_sales if available.
-        month_key = week_start.strftime('%Y-%m')
-        _, last_day = calendar.monthrange(week_start.year, week_start.month)
-        eom = date(week_start.year, week_start.month, last_day)
-        if not (week_start <= eom <= week_end):
-            return 0.0
-        rm_net_sales = ctx.get('_rm_net_sales', {}).get(month_key, 0)
-        if rm_net_sales > 0:
-            return rm_net_sales * 0.043  # ~4.3% sales tax rate
-        # Fallback to trailing average
-        avg = compute_trailing_avg(conn, category, lookback_weeks=8)
-        return avg * 4.33 if avg > 0 else 0.0
+    # For sales tax, prefer trailing average from actuals
+    if category == 'sales_tax':
+        avg = compute_trailing_avg(conn, category, lookback_weeks=12)
+        # trailing_avg returns weekly avg; sales tax is monthly, so multiply
+        if avg > 0:
+            return avg * 4.33
+        return ctx.get('sales_tax_default', CASHFLOW_SEED_DEFAULTS.get('sales_tax', 13000))
 
-    elif method == 'quarterly_detect':
-        avg = compute_trailing_avg(conn, category, lookback_weeks=13)
-        month = week_start.month
-        # Quarterly tax payments in Jan, Apr, Jul, Oct — mid-month
-        if month in (1, 4, 7, 10) and 10 <= week_start.day <= 20:
-            return avg * 13  # full quarter in one week
+    # For consulting, use the setting
+    if category == 'consulting':
+        return ctx.get('consulting_monthly', CASHFLOW_SEED_DEFAULTS.get('consulting', 2000))
+
+    # For other monthly lumps, try bank data trailing monthly total
+    sched_key = f'_schedule_{category}'
+    schedule = ctx.get(sched_key)
+    if schedule and schedule.get('has_data') and schedule.get('monthly_total', 0) > 0:
+        return schedule['monthly_total']
+    return CASHFLOW_SEED_DEFAULTS.get(category, 0)
+
+
+def _project_monthly_week2(conn, category, week_start, week_end, ctx):
+    """Monthly lump on the 2nd week of month (software)."""
+    wk = which_week_in_month(week_start)
+    if wk != 2:
         return 0.0
+    # Use trailing monthly total from bank data, or seed default
+    sched_key = f'_schedule_{category}'
+    schedule = ctx.get(sched_key)
+    if schedule and schedule.get('has_data') and schedule.get('monthly_total', 0) > 0:
+        return schedule['monthly_total']
+    return CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
-    # --- Loan interest: monthly payment based on outstanding LOC balance ---
-    if method == 'loc_interest':
-        loc_bal = ctx.get('_running_loc_balance', 0)
-        if loc_bal <= 0:
-            return 0.0
-        apr = ctx.get('loc_apr', 0.15)
-        monthly_interest = loc_bal * apr / 12
-        # Interest hits mid-month (~15th)
-        for d_offset in range(7):
-            d = week_start + timedelta(days=d_offset)
-            if d <= week_end and 13 <= d.day <= 17:
-                return monthly_interest
+
+def _project_mktg_opex(conn, category, week_start, week_end, ctx):
+    """Marketing OpEx split: retainer on week 1, other on last week."""
+    retainer = ctx.get('mktg_opex_retainer', 7000)
+    other = ctx.get('mktg_opex_other', 6300)
+
+    wk = which_week_in_month(week_start)
+    if wk == 1:
+        return retainer
+    elif is_last_week_of_month(week_start, week_end):
+        return other
+    return 0.0
+
+
+def _project_production_po(conn, category, week_start, week_end, ctx):
+    """PO-based production: last week of month only. No COGS fallback."""
+    if not is_last_week_of_month(week_start, week_end):
         return 0.0
+    month_key = week_start.strftime('%Y-%m')
+    return ctx.get('_po_monthly_production', {}).get(month_key, 0)
 
-    # --- Fulfillment / 3PL: sourced from P&L, spread evenly across weeks ---
-    if method == 'dtc_revenue_pct':
-        month_key = week_start.strftime('%Y-%m')
-        rm_fulfill = ctx.get('_rm_monthly_fulfillment', {}).get(month_key, 0)
-        if rm_fulfill > 0:
-            return rm_fulfill / 4.33
 
-        # Fallback when revenue model has no data for this month
-        fulfill_pct = ctx.get('fulfillment_pct', 0.18)
-        projected_dtc = _project_revenue_week(conn, 'dtc_revenue', week_start, week_end, ctx)
-        val = projected_dtc * fulfill_pct
-        return val if val > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+def _project_loan_principal(conn, category, week_start, week_end, ctx):
+    """Loan principal from user-entered schedule, last week of month."""
+    if not is_last_week_of_month(week_start, week_end):
+        return 0.0
+    month_key = week_start.strftime('%Y-%m')
+    schedule = ctx.get('loan_principal_schedule', {})
+    default = ctx.get('loan_default_principal', 30000)
+    return schedule.get(month_key, default)
 
-    # --- Schedule detection for trailing_avg and schedule methods ---
-    # Only use pre-detected schedule from bank actuals for categories that
-    # don't have an explicit timing method above.
+
+def _project_loan_interest_eom(conn, category, week_start, week_end, ctx):
+    """LOC interest on last week of month. Interest = balance * APR / 12."""
+    if not is_last_week_of_month(week_start, week_end):
+        return 0.0
+    loc_bal = ctx.get('_running_loc_balance', 0)
+    if loc_bal <= 0:
+        return 0.0
+    apr = ctx.get('loc_apr', 0.1164)
+    return loc_bal * apr / 12
+
+
+def _project_trailing_avg(conn, category, week_start, week_end, ctx):
+    """Trailing average from bank actuals (shipping, other_expense)."""
+    # Use pre-detected schedule if available
     sched_key = f'_schedule_{category}'
     schedule = ctx.get(sched_key)
 
@@ -657,33 +726,43 @@ def _project_expense_week(
         if projected > 0:
             return projected
 
-        # For weekly/daily frequency, use monthly average / 4.33
         freq = schedule.get('frequency', '')
         if freq in ('daily', 'weekly'):
             return schedule['monthly_total'] / 4.33
 
-        # No payment this week for biweekly/monthly/quarterly — return 0
-        # This is intentional: payments show when they hit
         if freq in ('biweekly', 'monthly', 'quarterly'):
             return 0.0
 
-    # --- Final fallback ---
-    if method == 'schedule':
-        avg = compute_trailing_avg(conn, category, lookback_weeks=8)
-        seed = CASHFLOW_SEED_DEFAULTS.get(category, 0)
-        val = avg if avg > 0 else seed
-        # Loan payments typically monthly — assign to week containing last day of month
+    avg = compute_trailing_avg(conn, category, lookback_weeks=8)
+    return avg if avg > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
 
-        _, last_day = calendar.monthrange(week_start.year, week_start.month)
-        eom = date(week_start.year, week_start.month, last_day)
-        if week_start <= eom <= week_end:
-            return val * 4.33  # monthly lump
-        return 0.0
 
-    else:
-        # trailing_avg (default) — spread evenly
-        avg = compute_trailing_avg(conn, category, lookback_weeks=8)
-        return avg if avg > 0 else CASHFLOW_SEED_DEFAULTS.get(category, 0)
+# Dispatch table mapping method names to projector functions
+_EXPENSE_PROJECTORS = {
+    'media_split': _project_media_split,
+    'biweekly_alternating': _project_payroll_alternating,
+    'monthly_spread': _project_fulfillment_spread,
+    'monthly_lump': _project_monthly_lump,
+    'monthly_week2': _project_monthly_week2,
+    'mktg_opex_split': _project_mktg_opex,
+    'po_based': _project_production_po,
+    'loan_schedule': _project_loan_principal,
+    'loc_interest_eom': _project_loan_interest_eom,
+    'trailing_avg': _project_trailing_avg,
+}
+
+
+def _project_expense_week(
+    conn: ConnectionWrapper,
+    category: str,
+    week_start: date,
+    week_end: date,
+    ctx: dict,
+) -> float:
+    """Project expense for a single future week using dispatch table."""
+    method = CASHFLOW_CATEGORIES.get(category, {}).get('method', 'trailing_avg')
+    projector = _EXPENSE_PROJECTORS.get(method, _project_trailing_avg)
+    return projector(conn, category, week_start, week_end, ctx)
 
 
 def _apply_scenario(amount: float, category_group: str, scenario: str) -> float:
@@ -746,8 +825,34 @@ def build_cashflow_forecast(
     ctx['fulfillment_pct'] = float(get_cashflow_setting(conn, 'fulfillment_pct', '0.18'))
 
     # LOC (line of credit) parameters
-    ctx['loc_apr'] = float(get_cashflow_setting(conn, 'loc_apr', '0.15'))
+    ctx['loc_apr'] = float(get_cashflow_setting(conn, 'loc_apr', '0.1164'))
     loc_current = float(get_cashflow_setting(conn, 'loc_balance', '510000'))
+
+    # Payroll alternating amounts
+    ctx['payroll_amount_a'] = float(get_cashflow_setting(conn, 'payroll_amount_a', '13000'))
+    ctx['payroll_amount_b'] = float(get_cashflow_setting(conn, 'payroll_amount_b', '15500'))
+
+    # Loan principal schedule (JSON from app_settings)
+    ctx['loan_default_principal'] = float(get_cashflow_setting(conn, 'loan_default_principal', '30000'))
+    try:
+        _lps_raw = get_cashflow_setting(conn, 'loan_principal_schedule', '{}')
+        ctx['loan_principal_schedule'] = json.loads(_lps_raw) if _lps_raw else {}
+    except Exception:
+        ctx['loan_principal_schedule'] = {}
+
+    # Media split timing
+    ctx['media_split_early_pct'] = float(get_cashflow_setting(conn, 'media_split_early_pct', '0.40'))
+    ctx['media_early_week'] = int(float(get_cashflow_setting(conn, 'media_early_week', '2')))
+
+    # Sales tax default
+    ctx['sales_tax_default'] = float(get_cashflow_setting(conn, 'sales_tax_default', '13000'))
+
+    # Consulting monthly
+    ctx['consulting_monthly'] = float(get_cashflow_setting(conn, 'consulting_monthly', '0'))
+
+    # Marketing OpEx split
+    ctx['mktg_opex_retainer'] = float(get_cashflow_setting(conn, 'mktg_opex_retainer', '7000'))
+    ctx['mktg_opex_other'] = float(get_cashflow_setting(conn, 'mktg_opex_other', '6300'))
 
     # Revenue + mapped costs — sourced from the revenue model (variables page P&L).
     # Revenue: DTC and Amazon monthly totals.
@@ -792,16 +897,11 @@ def build_cashflow_forecast(
         ctx['_rm_net_sales'] = rm_calc.get('net_sales', {})
 
         # Monthly fulfillment (DTC 3PL only — Amazon fees already deducted
-        # from revenue above) and COGS from P&L for cashflow timing
+        # from revenue above).
         ctx['_rm_monthly_fulfillment'] = {}
-        ctx['_rm_monthly_cogs'] = {}
         for _mk in _rm_months:
             ctx['_rm_monthly_fulfillment'][_mk] = (
                 rm_calc.get('dtc_fulfillment_amt', {}).get(_mk, 0)
-            )
-            ctx['_rm_monthly_cogs'][_mk] = (
-                rm_calc.get('dtc_cogs_amt', {}).get(_mk, 0)
-                + rm_calc.get('amazon_cogs_amt', {}).get(_mk, 0)
             )
     except Exception as exc:
         log.warning('Could not load revenue model for cash flow: %s', exc)
@@ -810,7 +910,6 @@ def build_cashflow_forecast(
         ctx['monthly_media_spend'] = {}
         ctx['_rm_net_sales'] = {}
         ctx['_rm_monthly_fulfillment'] = {}
-        ctx['_rm_monthly_cogs'] = {}
 
     # Planned inbound POs → production cost outflows.
     # When POs exist for a month, use units × cost_per_unit as the
@@ -832,17 +931,17 @@ def build_cashflow_forecast(
         log.warning('Could not load planned inbound for cash flow: %s', e)
         ctx['_po_monthly_production'] = {}
 
-    # Payroll detection
+    # Payroll detection — detect last amount for alternation logic
     try:
         last_payroll = conn.execute("""
             SELECT amount FROM cashflow_transactions
             WHERE category = 'payroll' AND direction = 'debit'
             ORDER BY tx_date DESC LIMIT 1
         """).fetchone()
-        ctx['last_payroll_amount'] = float(last_payroll['amount']) if last_payroll else 8000
+        ctx['last_payroll_amount'] = float(last_payroll['amount']) if last_payroll else ctx['payroll_amount_a']
     except Exception as e:
         log.warning('Payroll schedule detection failed: %s', e)
-        ctx['last_payroll_amount'] = 8000
+        ctx['last_payroll_amount'] = ctx['payroll_amount_a']
 
     # --- Pre-compute Amazon disbursement schedule (once, not per-week) ---
     ctx['_amazon_disbursements'] = _build_amazon_disbursement_schedule(week_list)
@@ -1022,21 +1121,13 @@ def build_cashflow_forecast(
                 days_total = 7
                 if days_elapsed < days_total:
                     projected_full = _project_expense_week(conn, cat, ws, we, ctx)
-                    cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                    if cat_method in ('revenue_pct', 'dtc_revenue_pct'):
-                        projected_full = _apply_scenario(projected_full, 'revenue', scenario)
-                    else:
-                        projected_full = _apply_scenario(projected_full, 'expense', scenario)
+                    projected_full = _apply_scenario(projected_full, 'expense', scenario)
                     val = actual + projected_full * (days_total - days_elapsed) / days_total
                 else:
                     val = actual
             else:
                 val = _project_expense_week(conn, cat, ws, we, ctx)
-                cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                if cat_method in ('revenue_pct', 'dtc_revenue_pct'):
-                    val = _apply_scenario(val, 'revenue', scenario)
-                else:
-                    val = _apply_scenario(val, 'expense', scenario)
+                val = _apply_scenario(val, 'expense', scenario)
 
             row[cat] = round(val, 2)
             total_expenses += val
@@ -1044,7 +1135,10 @@ def build_cashflow_forecast(
         row['total_expenses'] = round(total_expenses, 2)
 
         # COGS & Debt
+        # Process loan_interest BEFORE loan so interest uses pre-payment balance.
+        # Then decrement LOC balance after both are computed.
         total_cogs_debt = 0
+        loan_principal_this_week = 0
         for cat in cogs_debt_cats:
             override_key = (cat, ws_str)
             if not is_past and override_key in overrides:
@@ -1057,31 +1151,26 @@ def build_cashflow_forecast(
                 days_total = 7
                 if days_elapsed < days_total:
                     projected_full = _project_expense_week(conn, cat, ws, we, ctx)
-                    cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                    if cat_method == 'revenue_pct':
-                        projected_full = _apply_scenario(projected_full, 'revenue', scenario)
-                    else:
-                        projected_full = _apply_scenario(projected_full, 'expense', scenario)
+                    projected_full = _apply_scenario(projected_full, 'expense', scenario)
                     val = actual + projected_full * (days_total - days_elapsed) / days_total
                 else:
                     val = actual
             else:
                 val = _project_expense_week(conn, cat, ws, we, ctx)
-                cat_method = CASHFLOW_CATEGORIES.get(cat, {}).get('method', '')
-                if cat_method == 'revenue_pct':
-                    val = _apply_scenario(val, 'revenue', scenario)
-                else:
-                    val = _apply_scenario(val, 'expense', scenario)
+                val = _apply_scenario(val, 'expense', scenario)
 
             row[cat] = round(val, 2)
             total_cogs_debt += val
 
-            # After each loan payment, reduce the running LOC balance
-            # so subsequent interest calculations reflect the new principal.
+            # Track loan principal for deferred LOC balance update
             if cat == 'loan' and val > 0:
-                ctx['_running_loc_balance'] = max(
-                    ctx.get('_running_loc_balance', 0) - val, 0
-                )
+                loan_principal_this_week = val
+
+        # Decrement LOC balance AFTER both interest and principal are computed
+        if loan_principal_this_week > 0:
+            ctx['_running_loc_balance'] = max(
+                ctx.get('_running_loc_balance', 0) - loan_principal_this_week, 0
+            )
 
         row['total_cogs_debt'] = round(total_cogs_debt, 2)
         row['loc_balance'] = round(ctx.get('_running_loc_balance', 0), 2)

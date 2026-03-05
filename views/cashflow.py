@@ -883,14 +883,23 @@ def _render_settings_section():
             fulfill_pct = get_cashflow_setting(conn, 'fulfillment_pct', '0.18')
             min_cash = get_cashflow_setting(conn, 'min_cash_threshold', '100000')
             loc_balance = get_cashflow_setting(conn, 'loc_balance', '510000')
-            loc_apr = get_cashflow_setting(conn, 'loc_apr', '0.15')
+            loc_apr = get_cashflow_setting(conn, 'loc_apr', '0.1164')
             po_cost = get_cashflow_setting(conn, 'production_cost_per_unit', '40.00')
+            payroll_a = get_cashflow_setting(conn, 'payroll_amount_a', '13000')
+            payroll_b = get_cashflow_setting(conn, 'payroll_amount_b', '15500')
+            loan_principal = get_cashflow_setting(conn, 'loan_default_principal', '30000')
+            media_split = get_cashflow_setting(conn, 'media_split_early_pct', '0.40')
+            sales_tax_default = get_cashflow_setting(conn, 'sales_tax_default', '13000')
+            consulting = get_cashflow_setting(conn, 'consulting_monthly', '0')
     except Exception as e:
         log.warning('Failed to load cashflow settings, using defaults: %s', e)
         cogs_pct, fulfill_pct = '0.25', '0.18'
-        min_cash, loc_balance, loc_apr, po_cost = '100000', '510000', '0.15', '40.00'
+        min_cash, loc_balance, loc_apr, po_cost = '100000', '510000', '0.1164', '40.00'
+        payroll_a, payroll_b, loan_principal = '13000', '15500', '30000'
+        media_split, sales_tax_default, consulting = '0.40', '13000', '0'
 
     with st.form('cf_settings_form'):
+        # Row 1: COGS, Fulfillment, Production Cost
         cols = st.columns(3)
         new_cogs = cols[0].number_input(
             'COGS % (fallback)', value=float(cogs_pct) * 100,
@@ -905,6 +914,7 @@ def _render_settings_section():
             min_value=1.0, max_value=200.0, step=1.0, format='%.2f',
         )
 
+        # Row 2: Min Cash, LOC Balance, Loan APR
         cols2 = st.columns(3)
         new_min = cols2[0].number_input(
             'Min Cash Threshold ($)', value=float(min_cash),
@@ -919,6 +929,42 @@ def _render_settings_section():
             min_value=0.0, max_value=30.0, step=0.5, format='%.1f',
         )
 
+        # Row 3: Payroll A, Payroll B, Loan Principal
+        cols3 = st.columns(3)
+        new_payroll_a = cols3[0].number_input(
+            'Payroll A ($)', value=float(payroll_a),
+            min_value=0.0, step=500.0, format='%.0f',
+            help='Biweekly smaller payroll (e.g. Justworks base)',
+        )
+        new_payroll_b = cols3[1].number_input(
+            'Payroll B ($)', value=float(payroll_b),
+            min_value=0.0, step=500.0, format='%.0f',
+            help='Biweekly larger payroll (e.g. Justworks + VAs)',
+        )
+        new_loan_principal = cols3[2].number_input(
+            'Loan Principal Default ($)', value=float(loan_principal),
+            min_value=0.0, step=5000.0, format='%.0f',
+            help='Monthly loan principal when no specific amount is set',
+        )
+
+        # Row 4: Media Split, Sales Tax, Consulting
+        cols4 = st.columns(3)
+        new_media_split = cols4[0].number_input(
+            'Media Split Early %', value=float(media_split) * 100,
+            min_value=0.0, max_value=100.0, step=5.0, format='%.0f',
+            help='How much of monthly media spend hits early in month',
+        )
+        new_sales_tax = cols4[1].number_input(
+            'Sales Tax Default ($)', value=float(sales_tax_default),
+            min_value=0.0, step=1000.0, format='%.0f',
+            help='Monthly sales tax fallback when no bank data',
+        )
+        new_consulting = cols4[2].number_input(
+            'Consulting Monthly ($)', value=float(consulting),
+            min_value=0.0, step=500.0, format='%.0f',
+            help='Monthly consulting expense (set to 0 when not active)',
+        )
+
         if st.form_submit_button('Save Settings', type='primary'):
             with get_db() as conn:
                 set_cashflow_setting(conn, 'cogs_pct', str(new_cogs / 100))
@@ -927,6 +973,12 @@ def _render_settings_section():
                 set_cashflow_setting(conn, 'min_cash_threshold', str(new_min))
                 set_cashflow_setting(conn, 'loc_balance', str(new_loc))
                 set_cashflow_setting(conn, 'loc_apr', str(new_apr / 100))
+                set_cashflow_setting(conn, 'payroll_amount_a', str(new_payroll_a))
+                set_cashflow_setting(conn, 'payroll_amount_b', str(new_payroll_b))
+                set_cashflow_setting(conn, 'loan_default_principal', str(new_loan_principal))
+                set_cashflow_setting(conn, 'media_split_early_pct', str(new_media_split / 100))
+                set_cashflow_setting(conn, 'sales_tax_default', str(new_sales_tax))
+                set_cashflow_setting(conn, 'consulting_monthly', str(new_consulting))
             st.success('Settings saved!')
             st.rerun()
 

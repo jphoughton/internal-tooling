@@ -81,20 +81,21 @@ CASHFLOW_CATEGORIES = {
     'interest_income': {'label': 'Interest Income', 'group': 'revenue', 'method': 'trailing_avg'},
     'other_revenue': {'label': 'Other Revenue', 'group': 'revenue', 'method': 'trailing_avg'},
     # Expenses (operating)
-    'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_plan'},
-    'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_schedule'},
-    'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'dtc_revenue_pct'},
-    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'monthly_sales_tax'},
-    'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'monthly_lump'},
+    'media': {'label': 'Media / Ads', 'group': 'expense', 'method': 'media_split'},
+    'payroll': {'label': 'Payroll', 'group': 'expense', 'method': 'biweekly_alternating'},
+    'fulfillment': {'label': 'Fulfillment / 3PL', 'group': 'expense', 'method': 'monthly_spread'},
+    'sales_tax': {'label': 'Sales Tax', 'group': 'expense', 'method': 'monthly_lump'},
+    'software': {'label': 'Software / SaaS', 'group': 'expense', 'method': 'monthly_week2'},
     'shipping': {'label': 'Shipping', 'group': 'expense', 'method': 'trailing_avg'},
-    'agency': {'label': 'Agency Fees', 'group': 'expense', 'method': 'monthly_lump'},
+    'agency': {'label': 'Marketing OpEx', 'group': 'expense', 'method': 'mktg_opex_split'},
     'accounting': {'label': 'Accounting / CPA', 'group': 'expense', 'method': 'monthly_lump'},
     'insurance': {'label': 'Insurance', 'group': 'expense', 'method': 'monthly_lump'},
+    'consulting': {'label': 'Consulting', 'group': 'expense', 'method': 'monthly_lump'},
     'other_expense': {'label': 'Other Expense', 'group': 'expense', 'method': 'trailing_avg'},
     # COGS & Debt — outflows tracked separately from operating expenses
-    'production': {'label': 'Production / COGS', 'group': 'cogs_debt', 'method': 'revenue_pct'},
-    'loan': {'label': 'Loan Payments', 'group': 'cogs_debt', 'method': 'schedule'},
-    'loan_interest': {'label': 'Loan Interest', 'group': 'cogs_debt', 'method': 'loc_interest'},
+    'production': {'label': 'Production Runs', 'group': 'cogs_debt', 'method': 'po_based'},
+    'loan': {'label': 'Loan Principal', 'group': 'cogs_debt', 'method': 'loan_schedule'},
+    'loan_interest': {'label': 'Loan Interest', 'group': 'cogs_debt', 'method': 'loc_interest_eom'},
     # Special
     'internal_transfer': {'label': 'Internal Transfer', 'group': 'transfer', 'method': None},
     'duplicate': {'label': 'Duplicate', 'group': 'duplicate', 'method': None},
@@ -104,18 +105,19 @@ CASHFLOW_CATEGORIES = {
 # Seed defaults for expense projections when no actuals exist.
 # monthly_lump categories: monthly amount. Others: weekly amount.
 CASHFLOW_SEED_DEFAULTS = {
-    'media': 12500,        # ~$50K/mo (weekly avg, but hits EOM)
-    'payroll': 8000,       # $16K biweekly = $8K/wk avg
-    'loan': 7500,          # ~$30K/mo (weekly avg, but hits EOM)
-    'loan_interest': 0,    # calculated from LOC balance × APR
-    'fulfillment': 5000,   # $5K/wk
-    'production': 0,       # from P&L COGS
-    'sales_tax': 1500,     # ~$18K/qtr = ~$1.5K/wk
-    'software': 10541,     # $10,540.56/mo — monthly lump
-    'shipping': 2000,      # varies weekly
-    'agency': 7000,        # ~$7K/mo — monthly lump (agency + Quartile + creative)
-    'accounting': 2500,    # $2,500/mo — monthly lump (CPA)
-    'insurance': 1900,     # $1,900/mo — monthly lump (per Excel)
+    'media': 12500,        # ~$50K/mo weekly avg (used only as total fallback)
+    'payroll': 13000,      # payroll_a default
+    'loan': 30000,         # monthly principal default
+    'loan_interest': 0,    # calculated from LOC balance
+    'fulfillment': 7500,   # weekly fallback (~$32K/mo)
+    'production': 0,       # PO-based only, no default
+    'sales_tax': 13000,    # monthly lump from actuals avg
+    'software': 10541,     # $10,540.56/mo
+    'shipping': 2000,
+    'agency': 13300,       # total marketing opex ($7K + $6.3K)
+    'accounting': 2500,
+    'insurance': 1900,
+    'consulting': 0,       # consulting ended after Feb 2026
     'other_expense': 500,
 }
 
