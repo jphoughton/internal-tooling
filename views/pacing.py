@@ -22,7 +22,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:
@@ -105,6 +105,17 @@ def compute_pacing_data(ctx):
     Returns a dict with all computed MTD/L7D/yesterday values, goals, and
     derived metrics. Returns None if Shopify data is unavailable.
     """
+    # Try precomputed pacing data first
+    try:
+        import json as _json_pace
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'pacing_data', max_age_hours=25)
+        if cached:
+            return _json_pace.loads(cached)
+    except Exception:
+        pass
+
     _cached_waterfall = ctx['cached_waterfall']
     _cached_sku_forecast = ctx['cached_sku_forecast']
     _load_seasonal_json = ctx['load_seasonal_json']

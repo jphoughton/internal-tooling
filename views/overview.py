@@ -18,7 +18,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:
@@ -28,9 +28,20 @@ def _get_nc_projection():
         return None
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _load_amazon_daily():
     """Load Amazon daily data for trend tables (revenue, spend, new/repeat)."""
+    # Try precomputed data first
+    try:
+        import json as _json_pre
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'amazon_daily_merged', max_age_hours=25)
+        if cached:
+            return pd.DataFrame(_json_pre.loads(cached))
+    except Exception:
+        pass
+
     try:
         with get_db() as conn:
             rev = read_sql(
@@ -123,9 +134,21 @@ def _load_amazon_daily():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _load_overview_daily_trend(source_filter=None):
     """Load 90-day daily revenue trend by source for the stacked area chart."""
+    # Try precomputed data first
+    try:
+        import json as _json_pre
+        from db import get_precomputed
+        _key = f'overview_daily_trend_{source_filter or "rollup"}'
+        with get_db() as conn:
+            cached = get_precomputed(conn, _key, max_age_hours=25)
+        if cached:
+            return pd.DataFrame(_json_pre.loads(cached))
+    except Exception:
+        pass
+
     with get_db() as conn:
         if source_filter:
             return read_sql(
@@ -142,9 +165,21 @@ def _load_overview_daily_trend(source_filter=None):
         )
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _load_top_skus(source_filter=None):
     """Load top 10 flavors by units sold, optionally filtered by source."""
+    # Try precomputed data first
+    try:
+        import json as _json_pre
+        from db import get_precomputed
+        _key = f'top_skus_{source_filter or "rollup"}'
+        with get_db() as conn:
+            cached = get_precomputed(conn, _key, max_age_hours=25)
+        if cached:
+            return pd.DataFrame(_json_pre.loads(cached))
+    except Exception:
+        pass
+
     with get_db() as conn:
         if source_filter:
             df = read_sql(

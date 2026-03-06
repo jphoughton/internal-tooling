@@ -46,7 +46,7 @@ def _merge_shopify_daily(rev_df, cust_df):
     return df
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _load_shopify_daily_metrics():
     """Load daily DTC metrics from Shopify DB (revenue, orders, new/repeat customers).
 
@@ -115,9 +115,20 @@ def _load_shopify_daily_metrics():
     return _merge_shopify_daily(rev_df, cust_df)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def _load_gs_spend():
     """Load ad spend and subscription data from Google Sheet."""
+    # Try precomputed data first
+    try:
+        import json as _json_pre
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
+        if cached:
+            return pd.DataFrame(_json_pre.loads(cached))
+    except Exception:
+        pass
+
     with get_db() as conn:
         try:
             cols = [d["column_name"] for d in conn.execute(

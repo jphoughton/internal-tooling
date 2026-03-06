@@ -16,6 +16,8 @@ Models:
     waterfall           — full waterfall build (event-driven on new repeat data)
     cashflow_forecast   — cash flow projection refresh and KPI health logging
     global_alerts       — reorder + FBA transfer urgency alerts for notification bar
+    pacing_precompute   — all pacing data (MTD/L7D/yesterday actuals + goals)
+    overview_data       — amazon daily merged, 90-day trends, top SKUs per channel
 """
 import json
 import logging
@@ -35,6 +37,8 @@ MODEL_GLOBAL_ALERTS = 'global_alerts'
 MODEL_RETENTION_PAGE = 'retention_page_data'
 MODEL_PAGE_STATS = 'page_stats'
 MODEL_OPS_PAGE = 'ops_page_data'
+MODEL_PACING = 'pacing_precompute'
+MODEL_OVERVIEW_DATA = 'overview_data_precompute'
 
 ALL_DAILY_MODELS = [
     MODEL_RETENTION,
@@ -47,6 +51,8 @@ ALL_DAILY_MODELS = [
     MODEL_RETENTION_PAGE,
     MODEL_PAGE_STATS,
     MODEL_OPS_PAGE,
+    MODEL_PACING,
+    MODEL_OVERVIEW_DATA,
 ]
 
 
@@ -862,6 +868,736 @@ def run_ops_page_data(triggered_by='scheduler'):
     return _run_model(MODEL_OPS_PAGE, _compute, triggered_by)
 
 
+def run_pacing_precompute(triggered_by='scheduler'):
+    """Pre-compute pacing data used by overview, marketing, and pacing pages.
+
+    Replicates the data loading that compute_pacing_data() normally does via
+    Streamlit-cached functions, but without any Streamlit dependency.
+    Saves result as 'pacing_data' in precomputed_analytics.
+    """
+    def _compute():
+        import pandas as pd
+        import calendar
+        from datetime import date, timedelta
+        from analytics.waterfall import build_waterfall, build_sku_forecast_table
+        from analytics.dtc_demand import build_master_dtc_forecast
+        from analytics.metrics import (
+            get_channel_revenue, get_amazon_spend, get_amazon_spend_projected,
+            get_nc_stats, nc_revenue_fraction, get_total_customers,
+            compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
+            project_daily_spend_gaps,
+        )
+        from analytics.amazon_nc_projector import project_amazon_nc
+        from db import (
+            get_media_spend, get_seasonal_indices, get_sku_seasonal_indices,
+            get_setting, get_amazon_revenue_forecast, get_precomputed,
+            read_sql,
+        )
+        from utils.constants import FORECAST_SKUS
+        from utils.date_helpers import business_today, business_yesterday
+
+        t0 = time.time()
+
+        # ---- Build ctx-equivalent functions for waterfall/forecast ----
+        def _waterfall_for_pacing(media_json, source_filter, horizon, seasonal_json=None):
+            media = json.loads(media_json)
+            seasonal = json.loads(seasonal_json) if seasonal_json else None
+            if seasonal:
+                seasonal = {int(k): v for k, v in seasonal.items()}
+            return build_waterfall(media, source_filter=source_filter,
+                                   horizon_months=horizon, seasonal_indices=seasonal)
+
+        def _sku_forecast_for_pacing(wf_json, source_filter, sku_seasonal_json=None,
+                                     global_seasonal_json=None):
+            df = pd.read_json(wf_json) if wf_json else pd.DataFrame()
+            sku_seasonal = None
+            global_seasonal = None
+            if sku_seasonal_json:
+                raw = json.loads(sku_seasonal_json)
+                sku_seasonal = {sku: {int(k): v for k, v in months.items()}
+                                for sku, months in raw.items()}
+            if global_seasonal_json:
+                raw = json.loads(global_seasonal_json)
+                global_seasonal = {int(k): v for k, v in raw.items()}
+            return build_sku_forecast_table(df, source_filter=source_filter,
+                                            sku_seasonal_indices=sku_seasonal,
+                                            global_seasonal_indices=global_seasonal)
+
+        def _load_seasonal_for_pacing():
+            with get_db() as conn:
+                enabled = get_setting(conn, 'seasonality_enabled', 'true')
+                if enabled != 'true':
+                    return None
+                indices = get_seasonal_indices(conn)
+            if not indices:
+                return None
+            return json.dumps(indices, sort_keys=True)
+
+        def _load_sku_seasonal_for_pacing():
+            with get_db() as conn:
+                enabled = get_setting(conn, 'seasonality_enabled', 'true')
+                if enabled != 'true':
+                    return None
+                indices = get_sku_seasonal_indices(conn)
+            if not indices:
+                return None
+            return json.dumps(indices, sort_keys=True)
+
+        # ---- Load Shopify daily metrics (without Streamlit cache) ----
+        def _load_shopify_daily_no_cache():
+            """Replicate _load_shopify_daily_metrics without st.cache_data."""
+            try:
+                with get_db() as conn:
+                    rev_cached = get_precomputed(conn, 'shopify_daily_revenue', max_age_hours=25)
+                    cust_cached = get_precomputed(conn, 'shopify_daily_customers', max_age_hours=25)
+                if rev_cached and cust_cached:
+                    rev_df = pd.DataFrame(json.loads(rev_cached))
+                    cust_df = pd.DataFrame(json.loads(cust_cached))
+                    if not rev_df.empty and not cust_df.empty:
+                        return _merge_dfs(rev_df, cust_df)
+            except Exception:
+                pass
+
+            with get_db() as conn:
+                rev_df = read_sql(
+                    "SELECT o.order_date AS sale_date, "
+                    "SUM(o.total_amount - COALESCE(o.total_tax, 0) - COALESCE(o.refund_amount, 0)) AS revenue, "
+                    "SUM(oi_agg.units) AS units "
+                    "FROM orders o "
+                    "LEFT JOIN ("
+                    "  SELECT order_id, SUM(quantity) AS units "
+                    "  FROM order_items GROUP BY order_id"
+                    ") oi_agg ON o.order_id = oi_agg.order_id "
+                    "WHERE o.source = %s "
+                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
+                    "GROUP BY o.order_date ORDER BY sale_date",
+                    conn, params=('shopify',),
+                )
+                cust_df = read_sql(
+                    "SELECT o.order_date AS sale_date, "
+                    "COUNT(DISTINCT o.order_id) AS total_orders, "
+                    "COUNT(DISTINCT o.customer_id) AS total_customers, "
+                    "COUNT(DISTINCT CASE WHEN cf.actual_first = o.order_date "
+                    "THEN o.customer_id END) AS new_customers, "
+                    "SUM(oi.total_price) AS oi_total_rev, "
+                    "SUM(CASE WHEN cf.actual_first = o.order_date "
+                    "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+                    "FROM orders o "
+                    "JOIN (SELECT customer_id, MIN(order_date) AS actual_first "
+                    "      FROM orders WHERE source = %s "
+                    "        AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
+                    "      GROUP BY customer_id) cf "
+                    "  ON o.customer_id = cf.customer_id "
+                    "JOIN order_items oi ON o.order_id = oi.order_id "
+                    "WHERE o.source = %s "
+                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
+                    "GROUP BY o.order_date",
+                    conn, params=('shopify', 'shopify'),
+                )
+            if rev_df.empty:
+                return pd.DataFrame()
+            return _merge_dfs(rev_df, cust_df)
+
+        def _merge_dfs(rev_df, cust_df):
+            """Merge revenue and customer DFs — mirrors marketing._merge_shopify_daily."""
+            rev_df['sale_date'] = pd.to_datetime(rev_df['sale_date'])
+            cust_df['sale_date'] = pd.to_datetime(cust_df['sale_date'])
+            df = rev_df.merge(cust_df, on='sale_date', how='left')
+            df['total_orders'] = df['total_orders'].fillna(0).astype(int)
+            df['new_customers'] = df['new_customers'].fillna(0).astype(int)
+            df['total_customers'] = df['total_customers'].fillna(0).astype(int)
+            oi_total = df['oi_total_rev'].fillna(0)
+            oi_new = df['oi_new_rev'].fillna(0)
+            frac_new = (oi_new / oi_total).fillna(0).clip(0, 1)
+            df['_revenue'] = df['revenue']
+            df['_units'] = df['units']
+            df['_orders'] = df['total_orders']
+            df['_nc_orders'] = df['new_customers']
+            df['_ret_orders'] = df['_orders'] - df['_nc_orders']
+            df['_nc_revenue'] = df['_revenue'] * frac_new
+            df['_ret_revenue'] = df['_revenue'] * (1 - frac_new)
+            df['_date'] = df['sale_date']
+            return df
+
+        def _load_gs_spend_no_cache():
+            """Replicate _load_gs_spend without st.cache_data."""
+            with get_db() as conn:
+                try:
+                    cols = [d['column_name'] for d in conn.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'google_sheet_data'"
+                    ).fetchall()]
+                    if 'date' not in cols:
+                        return pd.DataFrame()
+                except Exception:
+                    return pd.DataFrame()
+                df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
+            if df.empty:
+                return df
+
+            def _clean_num(val):
+                if pd.isna(val):
+                    return 0.0
+                s = str(val).replace('$', '').replace(',', '').replace('%', '').strip()
+                try:
+                    return float(s)
+                except (ValueError, TypeError):
+                    return 0.0
+
+            df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
+            df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
+            sub_cols = []
+            for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions',
+                            'total_active_subscriptions', 'total_new_subscriptions',
+                            'total_cancelled_subscriptions', 'total_subscription_order_revenue']:
+                if sub_col in df.columns:
+                    df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
+                    sub_cols.append(f'_{sub_col}')
+            return df[['_date', '_ad_spend'] + sub_cols].copy()
+
+        # ---- Amazon pacing stats (without Streamlit cache) ----
+        def _amazon_pacing_stats(cur_month, yesterday_str, l7d_start_str):
+            """Replicate _cached_amazon_pacing_stats without st.cache_data."""
+            result = {
+                'cm_amz_rev': 0, 'cm_amz_spend': 0, 'cm_amz_nc': 0, 'cm_amz_nc_rev': 0,
+                'amz_spend_projected': 0, 'amz_spend_gap_days': 0,
+                'l7d_amz_rev': 0, 'l7d_amz_spend': 0, 'l7d_amz_nc': 0, 'l7d_amz_nc_rev': 0,
+                'yd_amz_rev': 0, 'yd_amz_spend': 0, 'yd_amz_nc': 0, 'yd_amz_nc_rev': 0,
+                'cm_dtc_total_cust': 0, 'cm_amz_total_cust': 0,
+            }
+            try:
+                with get_db() as conn:
+                    result['cm_amz_rev'] = get_channel_revenue(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+                    result['cm_amz_spend'], result['amz_spend_projected'], result['amz_spend_gap_days'] = \
+                        get_amazon_spend_projected(conn, f"{cur_month}-01", yesterday_str)
+                    nc = get_nc_stats(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+                    result['cm_amz_nc'] = nc['new_customers']
+                    result['cm_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'], result['cm_amz_rev'])
+                    result['l7d_amz_rev'] = get_channel_revenue(conn, 'amazon', l7d_start_str, yesterday_str) / 7
+                    l7d_spend_total, _, _ = get_amazon_spend_projected(conn, l7d_start_str, yesterday_str)
+                    result['l7d_amz_spend'] = l7d_spend_total / 7
+                    nc = get_nc_stats(conn, 'amazon', l7d_start_str, yesterday_str)
+                    result['l7d_amz_nc'] = nc['new_customers'] / 7
+                    result['l7d_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'],
+                                                                    result['l7d_amz_rev'] * 7) / 7
+                    result['yd_amz_rev'] = get_channel_revenue(conn, 'amazon', yesterday_str, yesterday_str)
+                    yd_spend_total, _, _ = get_amazon_spend_projected(conn, yesterday_str, yesterday_str)
+                    result['yd_amz_spend'] = yd_spend_total
+                    nc = get_nc_stats(conn, 'amazon', yesterday_str, yesterday_str)
+                    result['yd_amz_nc'] = nc['new_customers']
+                    result['yd_amz_nc_rev'] = nc_revenue_fraction(nc['oi_total_rev'], nc['oi_new_rev'], result['yd_amz_rev'])
+                    result['cm_dtc_total_cust'] = get_total_customers(conn, 'shopify', f"{cur_month}-01", yesterday_str)
+                    result['cm_amz_total_cust'] = get_total_customers(conn, 'amazon', f"{cur_month}-01", yesterday_str)
+            except Exception as e:
+                logger.warning('[orchestrator] Amazon pacing stats failed: %s', e)
+            return result
+
+        # ---- Revenue model goals (without Streamlit cache) ----
+        def _revenue_model_goals(cur_month):
+            try:
+                import analytics.revenue_model as rm
+                from db import get_revenue_model
+                with get_db() as conn:
+                    rm_data = get_revenue_model(conn)
+                if rm_data:
+                    months = [cur_month]
+                    inputs = rm.merge_with_defaults(rm_data, months)
+                    calc = rm.compute(inputs, months)
+                    return {
+                        'nc_rev': round(calc.get('total_new', {}).get(cur_month, 0)),
+                        'nc_roas': calc.get('blended_nc_roas', {}).get(cur_month, 0),
+                    }
+            except Exception:
+                pass
+            return None
+
+        # ---- NC projection (without Streamlit cache) ----
+        def _get_nc_proj():
+            try:
+                return project_amazon_nc()
+            except Exception:
+                return None
+
+        # ============================================================
+        # Now replicate compute_pacing_data logic
+        # ============================================================
+        _shopify_daily = _load_shopify_daily_no_cache()
+        if _shopify_daily.empty:
+            logger.warning('[orchestrator] Pacing precompute: no Shopify daily data')
+            return
+
+        mkt_df = _shopify_daily.copy()
+        _gs_spend = _load_gs_spend_no_cache()
+        if not _gs_spend.empty:
+            mkt_df = mkt_df.merge(
+                _gs_spend[['_date', '_ad_spend']], on='_date', how='left', suffixes=('', '_gs')
+            )
+        else:
+            mkt_df['_ad_spend'] = 0
+        mkt_df = mkt_df.sort_values('_date')
+
+        # Load revenue goals from precomputed master forecast
+        _mkt_summary = None
+        _mkt_amz_media = []
+        _wf = None
+        _mkt_media = []
+
+        try:
+            with get_db() as _pc_conn:
+                _fc_cached = get_precomputed(_pc_conn, 'master_dtc_forecast', max_age_hours=25)
+            if _fc_cached:
+                _precomputed_fc = json.loads(_fc_cached)
+                if 'summary' in _precomputed_fc:
+                    _mkt_summary = pd.DataFrame(_precomputed_fc['summary'])
+        except Exception:
+            pass
+
+        try:
+            with get_db() as _goals_conn:
+                _mkt_media = get_media_spend(_goals_conn, source='All Sources')
+                _mkt_amz_media = get_media_spend(_goals_conn, source='Amazon')
+        except Exception:
+            pass
+
+        if _mkt_summary is None:
+            try:
+                _seasonal_json = _load_seasonal_for_pacing()
+                with get_db() as _goals_conn2:
+                    _amz_rev_f = get_amazon_revenue_forecast(_goals_conn2)
+                _wf = _waterfall_for_pacing(
+                    json.dumps(_mkt_media, sort_keys=True), 'shopify', 12, _seasonal_json
+                )
+                if _wf is not None and not _wf.empty:
+                    _sku_table = _sku_forecast_for_pacing(
+                        _wf.to_json(), None,
+                        _load_sku_seasonal_for_pacing(), _seasonal_json,
+                    )
+                    _amz_rev_dict = {r['month']: r['revenue'] for r in _amz_rev_f
+                                     if r.get('revenue', 0) > 0}
+                    _dtc_fc = build_master_dtc_forecast(
+                        shopify_waterfall_df=_wf,
+                        shopify_sku_forecast_df=_sku_table,
+                        horizon_months=12,
+                        forecast_skus=FORECAST_SKUS,
+                        media_plan=_mkt_media,
+                        amazon_revenue_forecast=_amz_rev_dict if _amz_rev_dict else None,
+                    )
+                    _mkt_summary = _dtc_fc['summary']
+            except Exception:
+                pass
+
+        _today = business_today()
+        _yesterday = business_yesterday()
+        _yesterday_str = str(_yesterday)
+        _cur_month = _today.strftime('%Y-%m')
+        _cur_month_name = _today.strftime('%B %Y')
+        _days_in_month = calendar.monthrange(_today.year, _today.month)[1]
+        _day_of_month = _yesterday.day if _yesterday.month == _today.month else 0
+        _pct_month = _day_of_month / _days_in_month if _days_in_month > 0 else 0
+
+        _cm_mask = (mkt_df['_date'].dt.strftime('%Y-%m') == _cur_month) & (mkt_df['_date'].dt.date <= _yesterday)
+        _cm_nc_rev = mkt_df.loc[_cm_mask, '_nc_revenue'].sum()
+        _cm_ret_rev = mkt_df.loc[_cm_mask, '_ret_revenue'].sum()
+        _cm_spend = mkt_df.loc[_cm_mask, '_ad_spend'].sum()
+        _cm_rev = mkt_df.loc[_cm_mask, '_revenue'].sum()
+        _cm_orders = int(mkt_df.loc[_cm_mask, '_orders'].sum())
+        _cm_nc = int(mkt_df.loc[_cm_mask, '_nc_orders'].sum())
+
+        _l7d_start = _yesterday - pd.Timedelta(days=6)
+        _amz = _amazon_pacing_stats(_cur_month, _yesterday_str, str(_l7d_start))
+        _cm_amz_rev = _amz['cm_amz_rev']
+        _cm_amz_spend = _amz['cm_amz_spend']
+        _cm_amz_nc = _amz['cm_amz_nc']
+        _cm_amz_nc_rev = _amz['cm_amz_nc_rev']
+        _amz_spend_projected = _amz['amz_spend_projected']
+        _amz_spend_gap_days = _amz['amz_spend_gap_days']
+        _amz_nc_projected = False
+
+        _goal_nc_rev = 0
+        _goal_repeat_rev = 0
+        _goal_amz_rev = 0
+        _has_goals = False
+        if _mkt_summary is not None and not _mkt_summary.empty:
+            _plan_row = _mkt_summary[_mkt_summary['month'] == _cur_month]
+            if not _plan_row.empty:
+                _goal_nc_rev = float(_plan_row.iloc[0].get('shopify_new_rev', 0))
+                _goal_repeat_rev = float(_plan_row.iloc[0].get('shopify_repeat_rev', 0))
+                _goal_amz_rev = float(_plan_row.iloc[0].get('amazon_rev', 0))
+                _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
+
+        _goal_blended_nc_rev = _goal_nc_rev
+        _goal_blended_nc_roas = 0
+        try:
+            _rm_goals = _revenue_model_goals(_cur_month)
+            if _rm_goals:
+                _goal_blended_nc_rev = _rm_goals['nc_rev'] if _rm_goals['nc_rev'] else _goal_nc_rev
+                _goal_blended_nc_roas = _rm_goals['nc_roas']
+        except Exception:
+            pass
+
+        _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
+        _goal_total_repeat_rev = max(_goal_total_rev - _goal_blended_nc_rev, 0)
+        _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
+        _remaining_days = max(_days_in_month - _day_of_month, 1)
+
+        _l7d_mask = (mkt_df['_date'].dt.date >= _l7d_start) & (mkt_df['_date'].dt.date <= _yesterday)
+        _l7d_rev = mkt_df.loc[_l7d_mask, '_revenue'].sum() / 7 if _l7d_mask.any() else 0
+        _l7d_nc_rev = mkt_df.loc[_l7d_mask, '_nc_revenue'].sum() / 7 if _l7d_mask.any() else 0
+        _l7d_ret_rev = mkt_df.loc[_l7d_mask, '_ret_revenue'].sum() / 7 if _l7d_mask.any() else 0
+        _l7d_spend = mkt_df.loc[_l7d_mask, '_ad_spend'].sum() / 7 if _l7d_mask.any() else 0
+        _l7d_nc = mkt_df.loc[_l7d_mask, '_nc_orders'].sum() / 7 if _l7d_mask.any() else 0
+
+        _l7d_amz_rev = _amz['l7d_amz_rev']
+        _l7d_amz_spend = _amz['l7d_amz_spend']
+        _l7d_amz_nc = _amz['l7d_amz_nc']
+        _l7d_amz_nc_rev = _amz['l7d_amz_nc_rev']
+
+        _yd_mask = mkt_df['_date'].dt.strftime('%Y-%m-%d') == _yesterday_str
+        _yd_rev = mkt_df.loc[_yd_mask, '_revenue'].sum()
+        _yd_nc_rev = mkt_df.loc[_yd_mask, '_nc_revenue'].sum()
+        _yd_ret_rev = mkt_df.loc[_yd_mask, '_ret_revenue'].sum()
+        _yd_spend = mkt_df.loc[_yd_mask, '_ad_spend'].sum()
+        _yd_nc = int(mkt_df.loc[_yd_mask, '_nc_orders'].sum())
+
+        _yd_amz_rev = _amz['yd_amz_rev']
+        _yd_amz_spend = _amz['yd_amz_spend']
+        _yd_amz_nc = _amz['yd_amz_nc']
+        _yd_amz_nc_rev = _amz['yd_amz_nc_rev']
+
+        # Inject NC projection for yesterday
+        if _yd_amz_nc == 0:
+            _proj = _get_nc_proj()
+            if _proj and _proj.get('actual_nc_customers') is None and _proj.get('projected_nc_customers', 0) > 0:
+                _yd_amz_nc = int(round(_proj['projected_nc_customers']))
+                _yd_amz_nc_rev = _proj['projected_nc_revenue']
+                _cm_amz_nc += _yd_amz_nc
+                _cm_amz_nc_rev += _yd_amz_nc_rev
+                _amz_nc_projected = True
+
+        _cm_dtc_total_cust = _amz['cm_dtc_total_cust']
+        _cm_amz_total_cust = _amz['cm_amz_total_cust']
+        _cm_dtc_repeat_cust = max(_cm_dtc_total_cust - _cm_nc, 0)
+        _cm_amz_repeat_cust = max(_cm_amz_total_cust - _cm_amz_nc, 0)
+
+        _goal_dtc_rev = _goal_nc_rev + _goal_repeat_rev
+        _cm_dtc_rev = _cm_nc_rev + _cm_ret_rev
+        _l7d_dtc_rev = _l7d_nc_rev + _l7d_ret_rev
+        _yd_dtc_rev = _yd_nc_rev + _yd_ret_rev
+        _cm_dtc_spend = _cm_spend
+        _l7d_dtc_spend = _l7d_spend
+        _yd_dtc_spend = _yd_spend
+
+        _cm_total_spend = _cm_dtc_spend + _cm_amz_spend
+        _l7d_total_spend = _l7d_dtc_spend + _l7d_amz_spend
+        _yd_total_spend = _yd_dtc_spend + _yd_amz_spend
+
+        _cm_total_nc = _cm_nc + _cm_amz_nc
+        _cm_total_nc_rev = _cm_nc_rev + _cm_amz_nc_rev
+        _l7d_total_nc = _l7d_nc + _l7d_amz_nc
+        _l7d_total_nc_rev = _l7d_nc_rev + _l7d_amz_nc_rev
+        _yd_total_nc = _yd_nc + _yd_amz_nc
+        _yd_total_nc_rev = _yd_nc_rev + _yd_amz_nc_rev
+
+        _cm_amz_repeat_rev = max(_cm_amz_rev - _cm_amz_nc_rev, 0)
+        _cm_total_repeat_rev = _cm_ret_rev + _cm_amz_repeat_rev
+        _l7d_amz_repeat_rev = max(_l7d_amz_rev - _l7d_amz_nc_rev, 0)
+        _l7d_total_repeat_rev = _l7d_ret_rev + _l7d_amz_repeat_rev
+        _yd_amz_repeat_rev = max(_yd_amz_rev - _yd_amz_nc_rev, 0)
+        _yd_total_repeat_rev = _yd_ret_rev + _yd_amz_repeat_rev
+
+        _cm_total_repeat_cust = _cm_dtc_repeat_cust + _cm_amz_repeat_cust
+
+        _business_mer = compute_mer(_total_actual_rev, _cm_total_spend)
+        _total_nc_roas = compute_nc_roas(_cm_total_nc_rev, _cm_total_spend)
+        _total_nc_cpa = compute_nc_cpa(_cm_total_spend, _cm_total_nc)
+        _dtc_nc_roas = compute_nc_roas(_cm_nc_rev, _cm_dtc_spend)
+        _dtc_nc_aov = compute_aov(_cm_nc_rev, _cm_nc)
+        _dtc_cpa = compute_nc_cpa(_cm_dtc_spend, _cm_nc)
+
+        _l7d_total_rev = _l7d_rev + _l7d_amz_rev
+        _l7d_mer = compute_mer(_l7d_total_rev, _l7d_total_spend)
+        _l7d_total_nc_roas = compute_nc_roas(_l7d_total_nc_rev, _l7d_total_spend)
+        _l7d_total_nc_cpa = compute_nc_cpa(_l7d_total_spend, _l7d_total_nc)
+        _yd_total_rev = _yd_rev + _yd_amz_rev
+        _yd_mer = compute_mer(_yd_total_rev, _yd_total_spend)
+        _yd_total_nc_roas = compute_nc_roas(_yd_total_nc_rev, _yd_total_spend)
+        _yd_total_nc_cpa = compute_nc_cpa(_yd_total_spend, _yd_total_nc)
+
+        _goal_spend = 0
+        _spend_plan = [m for m in _mkt_media if m.get('month') == _cur_month]
+        if _spend_plan:
+            _goal_spend = float(_spend_plan[0].get('spend', 0))
+
+        _goal_amz_spend = 0
+        _amz_spend_plan = [m for m in _mkt_amz_media if m.get('month') == _cur_month]
+        if _amz_spend_plan:
+            _goal_amz_spend = float(_amz_spend_plan[0].get('spend', 0))
+
+        _goal_total_spend = _goal_spend + _goal_amz_spend
+
+        _goal_nc_count = 0
+        if _wf is not None and not _wf.empty:
+            _wf_nc_row = _wf[_wf['month'] == _cur_month]
+            if not _wf_nc_row.empty:
+                _goal_nc_count = float(_wf_nc_row.iloc[0].get('new_customers_acquired', 0))
+        if _goal_nc_count == 0 and _mkt_summary is not None and not _mkt_summary.empty:
+            _sum_nc_row = _mkt_summary[_mkt_summary['month'] == _cur_month]
+            if not _sum_nc_row.empty and 'shopify_new_customers' in _sum_nc_row.columns:
+                _goal_nc_count = float(_sum_nc_row.iloc[0].get('shopify_new_customers', 0))
+
+        _goal_mer = _goal_total_rev / _goal_total_spend if _goal_total_spend > 0 else 0
+        _goal_nc_roas_ratio = _goal_blended_nc_roas if _goal_blended_nc_roas > 0 else (
+            _goal_nc_rev / _goal_spend if _goal_spend > 0 else 0)
+        _goal_nc_cpa_target = _goal_spend / _goal_nc_count if _goal_nc_count > 0 else 0
+
+        _cm_contribution = _total_actual_rev - _cm_total_spend
+        _goal_contribution = _goal_total_rev - _goal_total_spend
+
+        pacing_result = {
+            'cur_month_name': _cur_month_name,
+            'day_of_month': _day_of_month,
+            'days_in_month': _days_in_month,
+            'pct_month': _pct_month,
+            'remaining_days': _remaining_days,
+            'has_goals': _has_goals,
+            'total_actual_rev': _total_actual_rev,
+            'cm_nc_rev': _cm_nc_rev, 'cm_ret_rev': _cm_ret_rev,
+            'cm_spend': _cm_spend, 'cm_rev': _cm_rev,
+            'cm_orders': _cm_orders, 'cm_nc': _cm_nc,
+            'cm_amz_rev': _cm_amz_rev, 'cm_amz_spend': _cm_amz_spend,
+            'cm_amz_nc': _cm_amz_nc, 'cm_amz_nc_rev': _cm_amz_nc_rev,
+            'amz_spend_projected': _amz_spend_projected,
+            'amz_spend_gap_days': _amz_spend_gap_days,
+            'amz_nc_projected': _amz_nc_projected,
+            'goal_nc_rev': _goal_blended_nc_rev,
+            'goal_repeat_rev': _goal_repeat_rev,
+            'goal_total_repeat_rev': _goal_total_repeat_rev,
+            'goal_amz_rev': _goal_amz_rev,
+            'goal_total_rev': _goal_total_rev,
+            'goal_dtc_rev': _goal_dtc_rev,
+            'goal_spend': _goal_spend,
+            'goal_amz_spend': _goal_amz_spend,
+            'goal_total_spend': _goal_total_spend,
+            'goal_nc_count': _goal_nc_count,
+            'goal_mer': _goal_mer,
+            'goal_nc_roas_ratio': _goal_nc_roas_ratio,
+            'goal_nc_cpa_target': _goal_nc_cpa_target,
+            'cm_contribution': _cm_contribution,
+            'goal_contribution': _goal_contribution,
+            'cm_dtc_rev': _cm_dtc_rev, 'cm_dtc_spend': _cm_dtc_spend,
+            'l7d_dtc_rev': _l7d_dtc_rev, 'l7d_dtc_spend': _l7d_dtc_spend,
+            'yd_dtc_rev': _yd_dtc_rev, 'yd_dtc_spend': _yd_dtc_spend,
+            'cm_total_spend': _cm_total_spend,
+            'cm_total_nc': _cm_total_nc, 'cm_total_nc_rev': _cm_total_nc_rev,
+            'cm_total_repeat_rev': _cm_total_repeat_rev,
+            'cm_total_repeat_cust': _cm_total_repeat_cust,
+            'l7d_total_rev': _l7d_total_rev, 'l7d_total_spend': _l7d_total_spend,
+            'l7d_total_nc': _l7d_total_nc, 'l7d_total_nc_rev': _l7d_total_nc_rev,
+            'l7d_total_repeat_rev': _l7d_total_repeat_rev,
+            'l7d_nc_rev': _l7d_nc_rev, 'l7d_ret_rev': _l7d_ret_rev,
+            'l7d_nc': _l7d_nc, 'l7d_spend': _l7d_spend,
+            'l7d_amz_rev': _l7d_amz_rev, 'l7d_amz_spend': _l7d_amz_spend,
+            'l7d_amz_nc': _l7d_amz_nc, 'l7d_amz_nc_rev': _l7d_amz_nc_rev,
+            'yd_total_rev': _yd_total_rev, 'yd_total_spend': _yd_total_spend,
+            'yd_total_nc': _yd_total_nc, 'yd_total_nc_rev': _yd_total_nc_rev,
+            'yd_total_repeat_rev': _yd_total_repeat_rev,
+            'yd_nc_rev': _yd_nc_rev, 'yd_ret_rev': _yd_ret_rev,
+            'yd_nc': _yd_nc, 'yd_spend': _yd_spend,
+            'yd_amz_rev': _yd_amz_rev, 'yd_amz_spend': _yd_amz_spend,
+            'yd_amz_nc': _yd_amz_nc, 'yd_amz_nc_rev': _yd_amz_nc_rev,
+            'business_mer': _business_mer,
+            'total_nc_roas': _total_nc_roas, 'total_nc_cpa': _total_nc_cpa,
+            'dtc_nc_roas': _dtc_nc_roas, 'dtc_nc_aov': _dtc_nc_aov,
+            'dtc_cpa': _dtc_cpa,
+            'l7d_mer': _l7d_mer,
+            'l7d_total_nc_roas': _l7d_total_nc_roas,
+            'l7d_total_nc_cpa': _l7d_total_nc_cpa,
+            'yd_mer': _yd_mer,
+            'yd_total_nc_roas': _yd_total_nc_roas,
+            'yd_total_nc_cpa': _yd_total_nc_cpa,
+        }
+        _save_result('pacing_data', pacing_result, MODEL_PACING, time.time() - t0)
+
+        # Also save the cleaned GS spend data
+        try:
+            _gs = _load_gs_spend_no_cache()
+            if not _gs.empty:
+                _save_result('gs_spend_cleaned', json.loads(_gs.to_json()),
+                             MODEL_PACING)
+        except Exception as exc:
+            logger.warning('[orchestrator] gs_spend_cleaned failed: %s', exc)
+
+    return _run_model(MODEL_PACING, _compute, triggered_by)
+
+
+def run_overview_data_precompute(triggered_by='scheduler'):
+    """Pre-compute overview page data: Amazon daily merged, daily trends, top SKUs.
+
+    Saves:
+      - amazon_daily_merged
+      - overview_daily_trend_{rollup,shopify,amazon}
+      - top_skus_{rollup,shopify,amazon}
+    """
+    def _compute():
+        import pandas as pd
+        from datetime import date, timedelta
+        from analytics.sku_flavors import get_flavor
+        from analytics.metrics import project_daily_spend_gaps
+        from analytics.amazon_nc_projector import project_amazon_nc
+        from db import read_sql
+
+        # ---- 1. Amazon daily merged ----
+        t0 = time.time()
+        try:
+            with get_db() as conn:
+                rev = read_sql(
+                    "SELECT sale_date, SUM(revenue) as _amz_revenue "
+                    "FROM daily_sku_sales WHERE source = 'amazon' "
+                    "GROUP BY sale_date ORDER BY sale_date", conn,
+                )
+            if not rev.empty:
+                df = rev
+
+                # Spend
+                try:
+                    with get_db() as conn:
+                        spend = read_sql(
+                            "SELECT date as sale_date, spend as _amz_spend "
+                            "FROM amazon_daily_rollup ORDER BY date", conn,
+                        )
+                    if not spend.empty:
+                        spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
+                        df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
+                except Exception as e:
+                    logger.warning('[orchestrator] amazon_daily_merged spend failed: %s', e)
+                if '_amz_spend' not in df.columns:
+                    df['_amz_spend'] = 0
+                df['_amz_spend'] = df['_amz_spend'].fillna(0)
+
+                # Customer data
+                try:
+                    with get_db() as conn:
+                        cust = read_sql(
+                            "SELECT DATE(o.order_date) AS sale_date, "
+                            "COUNT(DISTINCT o.customer_id) AS total_customers, "
+                            "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                            "THEN o.customer_id END) AS new_customers, "
+                            "SUM(oi.total_price) AS oi_total_rev, "
+                            "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                            "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+                            "FROM orders o "
+                            "JOIN customers c ON o.customer_id = c.customer_id "
+                            "JOIN order_items oi ON o.order_id = oi.order_id "
+                            "WHERE o.source = %s "
+                            "GROUP BY DATE(o.order_date)", conn, params=('amazon',),
+                        )
+                    if not cust.empty:
+                        cust['sale_date'] = cust['sale_date'].astype(str)
+                        df = df.merge(
+                            cust[['sale_date', 'total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']],
+                            on='sale_date', how='left',
+                        )
+                except Exception as e:
+                    logger.warning('[orchestrator] amazon_daily_merged customer failed: %s', e)
+
+                for col in ['total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']:
+                    if col not in df.columns:
+                        df[col] = 0
+                    df[col] = df[col].fillna(0)
+
+                df['_amz_new_cust'] = df['new_customers'].astype(int)
+                df['_amz_repeat_cust'] = (df['total_customers'] - df['new_customers']).clip(lower=0).astype(int)
+                _oi_total = df['oi_total_rev']
+                _new_frac = (df['oi_new_rev'] / _oi_total).where(_oi_total > 0, 0)
+                df['_amz_new_rev'] = df['_amz_revenue'] * _new_frac
+                df['_amz_repeat_rev'] = df['_amz_revenue'] * (1 - _new_frac)
+                df['_projected'] = False
+                df['_date'] = pd.to_datetime(df['sale_date'])
+
+                # Inject NC projection for yesterday
+                yesterday_str = (date.today() - timedelta(days=1)).isoformat()
+                yd_rows = df[df['sale_date'] == yesterday_str]
+                yd_nc = int(yd_rows['new_customers'].sum()) if not yd_rows.empty else 0
+                if yd_nc == 0:
+                    try:
+                        proj = project_amazon_nc()
+                        if proj and proj.get('actual_nc_customers') is None and proj.get('projected_nc_customers', 0) > 0:
+                            proj_nc = proj['projected_nc_customers']
+                            proj_rev = proj['projected_nc_revenue']
+                            if not yd_rows.empty:
+                                idx = yd_rows.index[0]
+                                yd_revenue = df.loc[idx, '_amz_revenue']
+                                df.loc[idx, 'new_customers'] = proj_nc
+                                df.loc[idx, '_amz_new_cust'] = int(round(proj_nc))
+                                df.loc[idx, '_amz_new_rev'] = proj_rev
+                                df.loc[idx, '_amz_repeat_rev'] = max(yd_revenue - proj_rev, 0)
+                                df.loc[idx, '_projected'] = True
+                    except Exception:
+                        pass
+
+                _save_result('amazon_daily_merged', json.loads(df.to_json()),
+                             MODEL_OVERVIEW_DATA, time.time() - t0)
+        except Exception as exc:
+            logger.warning('[orchestrator] amazon_daily_merged failed: %s', exc)
+
+        # ---- 2. Overview daily trends (90-day) ----
+        for src_filter, key_suffix in [(None, 'rollup'), ('shopify', 'shopify'), ('amazon', 'amazon')]:
+            t0 = time.time()
+            try:
+                with get_db() as conn:
+                    if src_filter:
+                        trend_df = read_sql(
+                            "SELECT sale_date, source, SUM(units_sold) as units, SUM(revenue) as revenue "
+                            "FROM daily_sku_sales "
+                            "WHERE sale_date >= date('now', '-90 days') AND source = %s "
+                            "GROUP BY sale_date, source ORDER BY sale_date", conn, params=(src_filter,),
+                        )
+                    else:
+                        trend_df = read_sql(
+                            "SELECT sale_date, source, SUM(units_sold) as units, SUM(revenue) as revenue "
+                            "FROM daily_sku_sales "
+                            "WHERE sale_date >= date('now', '-90 days') "
+                            "GROUP BY sale_date, source ORDER BY sale_date", conn,
+                        )
+                if not trend_df.empty:
+                    _save_result(f'overview_daily_trend_{key_suffix}',
+                                 json.loads(trend_df.to_json()),
+                                 MODEL_OVERVIEW_DATA, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] overview_daily_trend_%s failed: %s', key_suffix, exc)
+
+        # ---- 3. Top SKUs ----
+        for src_filter, key_suffix in [(None, 'rollup'), ('shopify', 'shopify'), ('amazon', 'amazon')]:
+            t0 = time.time()
+            try:
+                with get_db() as conn:
+                    if src_filter:
+                        sku_df = read_sql(
+                            "SELECT sku, SUM(units_sold) as total_units "
+                            "FROM daily_sku_sales WHERE source = %s "
+                            "GROUP BY sku ORDER BY total_units DESC",
+                            conn, params=(src_filter,),
+                        )
+                    else:
+                        sku_df = read_sql(
+                            "SELECT sku, SUM(units_sold) as total_units "
+                            "FROM daily_sku_sales "
+                            "GROUP BY sku ORDER BY total_units DESC",
+                            conn,
+                        )
+                if not sku_df.empty:
+                    sku_df['flavor'] = sku_df['sku'].apply(lambda s: get_flavor(s) or s)
+                    grouped = sku_df.groupby('flavor', as_index=False)['total_units'].sum()
+                    grouped = grouped.sort_values('total_units', ascending=False).head(10)
+                    _save_result(f'top_skus_{key_suffix}',
+                                 json.loads(grouped.to_json()),
+                                 MODEL_OVERVIEW_DATA, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] top_skus_%s failed: %s', key_suffix, exc)
+
+    return _run_model(MODEL_OVERVIEW_DATA, _compute, triggered_by)
+
+
 def run_all_daily_models(triggered_by='scheduler'):
     """Run all daily analytics models in dependency order.
 
@@ -884,6 +1620,9 @@ def run_all_daily_models(triggered_by='scheduler'):
     results[MODEL_RETENTION_PAGE] = run_retention_page_data(triggered_by)
     results[MODEL_PAGE_STATS] = run_page_stats(triggered_by)
     results[MODEL_OPS_PAGE] = run_ops_page_data(triggered_by)
+    # Phase 3: cross-page pre-compute (depends on page_stats for master_dtc_forecast)
+    results[MODEL_PACING] = run_pacing_precompute(triggered_by)
+    results[MODEL_OVERVIEW_DATA] = run_overview_data_precompute(triggered_by)
 
     duration = round(time.time() - t0, 1)
     successes = sum(1 for s in results.values() if s == 'success')
