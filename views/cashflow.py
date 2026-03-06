@@ -615,51 +615,79 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                 overridden_cat_keys.add(cat)
                 break
 
-    # ── CSS — all rules use !important to override Streamlit theme ──
+    # ── CSS — exact mockup styling, all !important to beat Streamlit ──
+    # Streamlit dark theme bg is #0e1117. We use that + #111827 for stripes.
     css = '''<style>
-    .cf-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;
-      border:1px solid rgba(30,42,58,0.5)!important;border-radius:8px!important;}
-    .cf-tbl{border-collapse:collapse!important;font-size:0.78rem!important;width:100%!important;min-width:1200px!important;}
-    .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums!important;}
+    .cf-wrap{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
+      border:1px solid #1e2a3a!important;border-radius:8px!important;background:#0e1117!important;}
+    .cf-tbl{border-collapse:collapse!important;font-size:0.78rem!important;
+      width:100%!important;min-width:1200px!important;background:#0e1117!important;}
+    .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums!important;border:none!important;}
+
+    /* ── Header rows: month / week / date ── */
     .cf-month th{padding:6px 0!important;font-size:0.7rem!important;font-weight:700!important;
       text-transform:uppercase!important;letter-spacing:0.06em!important;color:#64748b!important;
-      border-bottom:1px solid rgba(30,42,58,0.5)!important;text-align:center!important;background:transparent!important;}
-    .cf-month th.ms{border-left:1px solid rgba(37,51,71,0.6)!important;}
+      border-bottom:1px solid #1e2a3a!important;text-align:center!important;background:#0a0e14!important;}
+    .cf-month th.ms{border-left:1px solid #253347!important;}
     .cf-wk th{padding:3px 0!important;font-size:0.65rem!important;font-weight:600!important;
-      color:#475569!important;text-align:center!important;background:transparent!important;}
+      color:#475569!important;text-align:center!important;background:#0a0e14!important;}
+    .cf-wk th.cf-ms{border-left:1px solid #253347!important;}
     .cf-dt th{padding:4px 10px!important;font-size:0.68rem!important;font-weight:500!important;
-      color:#64748b!important;text-align:right!important;border-bottom:2px solid rgba(30,42,58,0.5)!important;
-      white-space:nowrap!important;background:transparent!important;}
+      color:#64748b!important;text-align:right!important;border-bottom:2px solid #1e2a3a!important;
+      white-space:nowrap!important;background:#0a0e14!important;}
     .cf-dt th.cw{font-weight:700!important;color:#818cf8!important;}
     .cf-dt th.aw{color:#4ade80!important;}
+    .cf-dt th.cf-ms{border-left:1px solid #253347!important;}
+
+    /* ── Label column (sticky left) ── */
     .cf-lbl{text-align:left!important;padding-left:14px!important;font-weight:500!important;
-      position:sticky!important;left:0!important;z-index:2!important;min-width:160px!important;}
-    td.cf-lbl{color:#e2e8f0!important;}
+      position:sticky!important;left:0!important;z-index:2!important;min-width:160px!important;
+      background:#0a0e14!important;}
+    td.cf-lbl{color:#e2e8f0!important;background:#0e1117!important;}
+
+    /* ── Data cells ── */
     .cf-tbl td{padding:7px 10px!important;text-align:right!important;white-space:nowrap!important;
-      border-bottom:1px solid rgba(30,42,58,0.3)!important;color:#cbd5e1!important;}
-    .cf-even td{background:transparent!important;}
-    .cf-odd td{background:rgba(255,255,255,0.03)!important;}
-    .cf-even td.cf-lbl{background:rgba(14,17,23,0.99)!important;}
-    .cf-odd td.cf-lbl{background:rgba(17,20,28,0.99)!important;}
-    .cf-z{color:rgba(100,116,139,0.4)!important;}
-    td.cf-cw{background:rgba(99,110,250,0.08)!important;}
-    th.cf-ms,td.cf-ms{border-left:1px solid rgba(37,51,71,0.6)!important;}
+      border-bottom:1px solid #111827!important;color:#cbd5e1!important;}
+
+    /* ── Alternating rows ── */
+    .cf-even td{background:#0e1117!important;}
+    .cf-odd td{background:#111827!important;}
+    .cf-even td.cf-lbl{background:#0e1117!important;}
+    .cf-odd td.cf-lbl{background:#111827!important;}
+
+    /* ── Muted zero values ── */
+    .cf-z{color:#334155!important;}
+
+    /* ── Current week highlight ── */
+    .cf-even td.cf-cw{background:rgba(99,110,250,0.06)!important;}
+    .cf-odd td.cf-cw{background:rgba(99,110,250,0.08)!important;}
+
+    /* ── Month boundaries ── */
+    td.cf-ms{border-left:1px solid #253347!important;}
+
+    /* ── Section headers (Revenue, Expenses, COGS & Debt) ── */
     .cf-sec td{padding:10px 14px 4px!important;font-size:0.7rem!important;text-transform:uppercase!important;
       letter-spacing:0.06em!important;font-weight:700!important;color:#64748b!important;
-      border-bottom:none!important;text-align:left!important;background:transparent!important;}
-    .cf-sub td{font-weight:700!important;border-top:1px solid rgba(30,42,58,0.5)!important;
-      border-bottom:1px solid rgba(30,42,58,0.5)!important;padding:8px 10px!important;background:transparent!important;}
-    .cf-sub .cf-lbl{background:rgba(14,17,23,0.99)!important;}
+      border-bottom:none!important;text-align:left!important;background:#0e1117!important;}
+
+    /* ── Subtotal rows ── */
+    .cf-sub td{font-weight:700!important;border-top:1px solid #1e2a3a!important;
+      border-bottom:1px solid #1e2a3a!important;padding:8px 10px!important;background:#111827!important;}
+    .cf-sub td.cf-lbl{background:#111827!important;}
     .cf-sub-g td{color:#4ade80!important;}
     .cf-sub-r td{color:#f87171!important;}
     .cf-sub-a td{color:#fbbf24!important;}
     .cf-sub-m td{color:#94a3b8!important;}
+
+    /* ── Summary rows (Net Cash Flow, Closing Balance) ── */
     .cf-sum td{font-weight:800!important;font-size:0.82rem!important;padding:9px 10px!important;
-      border-bottom:1px solid rgba(30,42,58,0.5)!important;background:rgba(20,28,43,0.6)!important;}
-    .cf-sum .cf-lbl{background:rgba(20,28,43,0.95)!important;}
+      border-bottom:1px solid #1e2a3a!important;background:#141c2b!important;}
+    .cf-sum td.cf-lbl{background:#141c2b!important;}
     .cf-sum-net td{color:#fbbf24!important;}
     .cf-sum-bal td{color:#60a5fa!important;}
-    .cf-sep td{border-top:2px solid rgba(51,65,85,0.6)!important;padding:0!important;height:2px!important;
+
+    /* ── Separator before summary ── */
+    .cf-sep td{border-top:2px solid #334155!important;padding:0!important;height:2px!important;
       background:transparent!important;}
     </style>'''
 
