@@ -660,7 +660,10 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     # ── CSS — exact mockup styling, all !important to beat Streamlit ──
     # Streamlit dark theme bg is #0e1117. We use that + #111827 for stripes.
+    # st.html() renders in an iframe, so we style body to match.
     css = '''<style>
+    html,body{margin:0!important;padding:0!important;background:#0e1117!important;
+      overflow-x:auto!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;}
     .cf-wrap{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
       border:1px solid #1e2a3a!important;border-radius:8px!important;background:#0e1117!important;}
     .cf-tbl{border-collapse:collapse!important;font-size:0.78rem!important;
@@ -751,20 +754,7 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     .cf-child.cf-even td.cf-lbl{background:#0e1117!important;}
     .cf-child.cf-odd td.cf-lbl{background:rgba(17,24,39,0.5)!important;}
     .cf-child .cf-z{color:rgba(51,65,85,0.3)!important;}
-    </style>
-    <script>
-    function cfToggle(catId){
-      var parent=document.getElementById('cf-p-'+catId);
-      var children=document.querySelectorAll('.cf-ch-'+catId);
-      if(parent.classList.contains('cf-open')){
-        parent.classList.remove('cf-open');
-        children.forEach(function(c){c.style.display='none';});
-      }else{
-        parent.classList.add('cf-open');
-        children.forEach(function(c){c.style.display='';});
-      }
-    }
-    </script>'''
+    </style>'''
 
     # ── Helper to format a value cell ──
     def _cell(val, ws, is_summary=False):
@@ -840,12 +830,19 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
         if not cat_subs:
             return f'<tr class="{stripe}"><td class="cf-lbl">{label}{dot}</td>{cells}</tr>'
 
-        # Parent row with toggle arrow
+        # Parent row with toggle arrow — inline onclick (Streamlit strips <script>)
         safe_id = cat_key.replace(' ', '_').replace('/', '_')
         arrow = '<span class="cf-arrow">&#9654;</span>'
-        parent = (f'<tr id="cf-p-{safe_id}" class="{stripe} cf-parent" '
-                  f'onclick="cfToggle(\'{safe_id}\')">'
-                  f'<td class="cf-lbl">{arrow}{label}{dot}</td>{cells}</tr>')
+        toggle_js = (
+            f"var p=this.closest('tr');"
+            f"var ch=p.parentElement.querySelectorAll('.cf-ch-{safe_id}');"
+            f"if(p.classList.contains('cf-open'))"
+            f"{{p.classList.remove('cf-open');ch.forEach(function(c){{c.style.display='none'}})}}"
+            f"else{{p.classList.add('cf-open');ch.forEach(function(c){{c.style.display=''}})}}"
+        )
+        parent = (f'<tr id="cf-p-{safe_id}" class="{stripe} cf-parent">'
+                  f'<td class="cf-lbl" onclick="{toggle_js}">{arrow}{label}{dot}</td>'
+                  f'{cells}</tr>')
 
         # Child rows for each subcategory
         children = []
@@ -920,7 +917,17 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     h.append(_summary_row('closing_balance', 'Closing Balance', 'cf-sum-bal'))
 
     h.append('</tbody></table></div>')
-    st.markdown(''.join(h), unsafe_allow_html=True)
+
+    # Count visible rows for height: 3 header + section headers + data + subtotals + summary
+    n_data_rows = len(revenue_cats) + len(expense_cats) + len(cogs_debt_cats)
+    n_other = 3 + 3 + 3 + 4  # headers + section headers + section subtotals + summary rows
+    has_loc = 'loc_balance' in summary_data
+    row_height = 32
+    header_height = 70
+    table_height = header_height + (n_data_rows + n_other + (1 if has_loc else 0)) * row_height + 20
+
+    # Use st.html() instead of st.markdown() — supports onclick/JS
+    st.html(''.join(h), height=table_height)
 
     # Editing expander — keeps override editing functional
     _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
