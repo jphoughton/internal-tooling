@@ -533,11 +533,11 @@ def render(ctx):
 
 
 def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
-    """Render unified cash flow table with collapsible editable sections.
+    """Render unified cash flow table as a single styled HTML table.
 
-    Single table: section headers toggle to reveal editable st.data_editor
-    for each group (Revenue, Expenses, COGS & Debt). Subtotals roll up
-    from the line items. Summary rows always visible at bottom.
+    One table with section headers, month/week/date header rows,
+    alternating row colors, muted zeroes, and color-coded subtotals.
+    Editing is available in a collapsed expander below.
     """
     display = forecast_df.head(horizon_weeks)
     today = date.today()
@@ -550,7 +550,6 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
 
     week_starts = display['week_start'].tolist()
     is_actual_map = dict(zip(display['week_start'], display['is_actual']))
-    col_keys = [ws[:10] for ws in week_starts]
 
     # Identify current week
     current_week_col = None
@@ -562,7 +561,10 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
             break
 
     # Parse dates for header rows
-    parsed_dates = [date.fromisoformat(ws[:10]) for ws in week_starts]
+    parsed_dates = []
+    for ws in week_starts:
+        d = date.fromisoformat(ws[:10])
+        parsed_dates.append(d)
 
     # Group columns by month for colspan
     month_groups = []
@@ -601,6 +603,7 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
             row[ws] = round(val)
         summary_data[key] = row
 
+    col_keys = [ws[:10] for ws in week_starts]
     n_cols = len(col_keys)
 
     # Load overrides for indicator dots (cached)
@@ -612,18 +615,16 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                 overridden_cat_keys.add(cat)
                 break
 
-    # ── Shared CSS ──
-    _cf_css = '''<style>
+    # ── CSS — exact mockup styling, all !important to beat Streamlit ──
+    # Streamlit dark theme bg is #0e1117. We use that + #111827 for stripes.
+    css = '''<style>
     .cf-wrap{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
-      border:1px solid #1e2a3a!important;border-radius:8px 8px 0 0!important;background:#0e1117!important;}
-    .cf-wrap-mid{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
-      border-left:1px solid #1e2a3a!important;border-right:1px solid #1e2a3a!important;background:#0e1117!important;}
-    .cf-wrap-bot{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;
-      border:1px solid #1e2a3a!important;border-top:none!important;
-      border-radius:0 0 8px 8px!important;background:#0e1117!important;}
+      border:1px solid #1e2a3a!important;border-radius:8px!important;background:#0e1117!important;}
     .cf-tbl{border-collapse:collapse!important;font-size:0.78rem!important;
       width:100%!important;min-width:1200px!important;background:#0e1117!important;}
     .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums!important;border:none!important;}
+
+    /* ── Header rows: month / week / date ── */
     .cf-month th{padding:6px 0!important;font-size:0.7rem!important;font-weight:700!important;
       text-transform:uppercase!important;letter-spacing:0.06em!important;color:#64748b!important;
       border-bottom:1px solid #1e2a3a!important;text-align:center!important;background:#0a0e14!important;}
@@ -637,20 +638,39 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     .cf-dt th.cw{font-weight:700!important;color:#818cf8!important;}
     .cf-dt th.aw{color:#4ade80!important;}
     .cf-dt th.cf-ms{border-left:1px solid #253347!important;}
+
+    /* ── Label column (sticky left) ── */
     .cf-lbl{text-align:left!important;padding-left:14px!important;font-weight:500!important;
       position:sticky!important;left:0!important;z-index:2!important;min-width:160px!important;
       background:#0a0e14!important;}
     td.cf-lbl{color:#e2e8f0!important;background:#0e1117!important;}
+
+    /* ── Data cells ── */
     .cf-tbl td{padding:7px 10px!important;text-align:right!important;white-space:nowrap!important;
       border-bottom:1px solid #111827!important;color:#cbd5e1!important;}
+
+    /* ── Alternating rows ── */
     .cf-even td{background:#0e1117!important;}
     .cf-odd td{background:#111827!important;}
     .cf-even td.cf-lbl{background:#0e1117!important;}
     .cf-odd td.cf-lbl{background:#111827!important;}
+
+    /* ── Muted zero values ── */
     .cf-z{color:#334155!important;}
+
+    /* ── Current week highlight ── */
     .cf-even td.cf-cw{background:rgba(99,110,250,0.06)!important;}
     .cf-odd td.cf-cw{background:rgba(99,110,250,0.08)!important;}
+
+    /* ── Month boundaries ── */
     td.cf-ms{border-left:1px solid #253347!important;}
+
+    /* ── Section headers (Revenue, Expenses, COGS & Debt) ── */
+    .cf-sec td{padding:10px 14px 4px!important;font-size:0.7rem!important;text-transform:uppercase!important;
+      letter-spacing:0.06em!important;font-weight:700!important;color:#64748b!important;
+      border-bottom:none!important;text-align:left!important;background:#0e1117!important;}
+
+    /* ── Subtotal rows ── */
     .cf-sub td{font-weight:700!important;border-top:1px solid #1e2a3a!important;
       border-bottom:1px solid #1e2a3a!important;padding:8px 10px!important;background:#111827!important;}
     .cf-sub td.cf-lbl{background:#111827!important;}
@@ -658,83 +678,145 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     .cf-sub-r td{color:#f87171!important;}
     .cf-sub-a td{color:#fbbf24!important;}
     .cf-sub-m td{color:#94a3b8!important;}
+
+    /* ── Summary rows (Net Cash Flow, Closing Balance) ── */
     .cf-sum td{font-weight:800!important;font-size:0.82rem!important;padding:9px 10px!important;
       border-bottom:1px solid #1e2a3a!important;background:#141c2b!important;}
     .cf-sum td.cf-lbl{background:#141c2b!important;}
     .cf-sum-net td{color:#fbbf24!important;}
     .cf-sum-bal td{color:#60a5fa!important;}
+
+    /* ── Separator before summary ── */
     .cf-sep td{border-top:2px solid #334155!important;padding:0!important;height:2px!important;
       background:transparent!important;}
-    /* Remove gaps between Streamlit elements for seamless table feel */
-    [data-testid="stExpander"]{border:none!important;background:transparent!important;
-      margin:-1rem 0 0 0!important;padding:0!important;}
-    [data-testid="stExpander"] details{border:1px solid #1e2a3a!important;border-top:none!important;
-      border-bottom:none!important;border-radius:0!important;background:#0e1117!important;}
-    [data-testid="stExpander"] summary{padding:8px 14px!important;font-size:0.72rem!important;
-      text-transform:uppercase!important;letter-spacing:0.06em!important;font-weight:700!important;
-      color:#64748b!important;background:#0e1117!important;}
-    [data-testid="stExpander"] summary:hover{color:#94a3b8!important;}
-    [data-testid="stExpander"] [data-testid="stExpanderDetails"]{padding:0 0 4px 0!important;}
-    .cf-gap-kill{margin-top:-1rem!important;}
     </style>'''
 
-    # ── Helpers ──
+    # ── Helper to format a value cell ──
     def _cell(val, ws, is_summary=False):
         classes = []
         if ws == current_week_col:
             classes.append('cf-cw')
+        # Month boundary
         d = date.fromisoformat(ws)
-        idx = parsed_dates.index(d)
-        if idx > 0 and parsed_dates[idx - 1].month != d.month:
-            classes.append('cf-ms')
+        if d.day <= 7 and parsed_dates.index(d) > 0:
+            prev_d = parsed_dates[parsed_dates.index(d) - 1]
+            if prev_d.month != d.month:
+                classes.append('cf-ms')
         if val == 0 and not is_summary:
             classes.append('cf-z')
         cls = f' class="{" ".join(classes)}"' if classes else ''
-        formatted = f'-${abs(val):,.0f}' if val < 0 else f'${val:,.0f}'
+        if val < 0:
+            formatted = f'-${abs(val):,.0f}'
+        else:
+            formatted = f'${val:,.0f}'
         return f'<td{cls}>{formatted}</td>'
 
     def _month_boundary_class(idx):
+        """Return ' cf-ms' if this column is the first of a new month."""
         if idx > 0 and parsed_dates[idx].month != parsed_dates[idx - 1].month:
             return ' cf-ms'
         return ''
 
-    def _subtotal_html(key, label, color_class):
-        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, True) for ws in col_keys)
-        return (f'<tr class="cf-sub {color_class}">'
-                f'<td class="cf-lbl">{label}</td>{cells}</tr>')
+    # ── Build HTML ──
+    h = [css, '<div class="cf-wrap"><table class="cf-tbl">']
 
-    def _summary_html(key, label, cls):
-        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, True) for ws in col_keys)
-        return (f'<tr class="cf-sum {cls}">'
-                f'<td class="cf-lbl">{label}</td>{cells}</tr>')
-
-    # ── Header (month / week / date) — top of table ──
-    hdr = [_cf_css, '<div class="cf-wrap"><table class="cf-tbl"><thead>']
-    hdr.append('<tr class="cf-month"><th class="cf-lbl"></th>')
-    first = True
+    # Month header row
+    h.append('<thead><tr class="cf-month"><th class="cf-lbl"></th>')
+    first_in_group = True
     for month_name, colspan in month_groups:
-        ms = ' ms' if not first else ''
-        hdr.append(f'<th class="{ms}" colspan="{colspan}">{month_name}</th>')
-        first = False
-    hdr.append('</tr><tr class="cf-wk"><th class="cf-lbl"></th>')
+        ms = ' ms' if not first_in_group else ''
+        h.append(f'<th class="{ms}" colspan="{colspan}">{month_name}</th>')
+        first_in_group = False
+    h.append('</tr>')
+
+    # Week number row
+    h.append('<tr class="cf-wk"><th class="cf-lbl"></th>')
     for i, d in enumerate(parsed_dates):
+        wk = d.isocalendar()[1]
         mc = _month_boundary_class(i)
-        hdr.append(f'<th class="{mc}">W{d.isocalendar()[1]}</th>')
-    hdr.append('</tr><tr class="cf-dt"><th class="cf-lbl"></th>')
+        h.append(f'<th class="{mc}">W{wk}</th>')
+    h.append('</tr>')
+
+    # Date row
+    h.append('<tr class="cf-dt"><th class="cf-lbl"></th>')
     for i, d in enumerate(parsed_dates):
         ws = col_keys[i]
         mc = _month_boundary_class(i)
         label = d.strftime('%b %-d')
         if ws == current_week_col:
-            hdr.append(f'<th class="cw{mc}">{label}</th>')
+            h.append(f'<th class="cw{mc}">{label}</th>')
         elif is_actual_map.get(week_starts[i], False):
-            hdr.append(f'<th class="aw{mc}">{label}</th>')
+            h.append(f'<th class="aw{mc}">{label}</th>')
         else:
-            hdr.append(f'<th class="{mc}">{label}</th>')
-    hdr.append('</tr></thead></table></div>')
-    st.markdown(''.join(hdr), unsafe_allow_html=True)
+            h.append(f'<th class="{mc}">{label}</th>')
+    h.append('</tr></thead><tbody>')
 
-    # ── Build pivot DataFrame for editors ──
+    row_idx = 0  # for alternating colors
+
+    def _data_row(cat_key, label, override_dot=False):
+        nonlocal row_idx
+        stripe = 'cf-even' if row_idx % 2 == 0 else 'cf-odd'
+        dot = ' <span style="color:#818cf8;font-size:0.6rem;">&#9679;</span>' if override_dot else ''
+        cells = ''.join(_cell(pivot[cat_key].get(ws, 0), ws) for ws in col_keys)
+        row_idx += 1
+        return f'<tr class="{stripe}"><td class="cf-lbl">{label}{dot}</td>{cells}</tr>'
+
+    def _subtotal_row(key, label, color_class):
+        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, is_summary=True) for ws in col_keys)
+        return f'<tr class="cf-sub {color_class}"><td class="cf-lbl">{label}</td>{cells}</tr>'
+
+    def _summary_row(key, label, cls):
+        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, is_summary=True) for ws in col_keys)
+        return f'<tr class="cf-sum {cls}"><td class="cf-lbl">{label}</td>{cells}</tr>'
+
+    def _section_header(icon, label, color):
+        return (f'<tr class="cf-sec"><td colspan="{n_cols + 1}">'
+                f'<span style="color:{color};">{icon}</span> {label}</td></tr>')
+
+    # Revenue section
+    h.append(_section_header('&#9650;', 'Revenue', '#22c55e'))
+    for cat in revenue_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_inflows', 'Total Inflows', 'cf-sub-g'))
+
+    # Expenses section
+    h.append(_section_header('&#9660;', 'Expenses', '#ef4444'))
+    row_idx = 0  # reset alternation per section
+    for cat in expense_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_expenses', 'Total Expenses', 'cf-sub-r'))
+
+    # COGS & Debt section
+    h.append(_section_header('&#9670;', 'COGS & Debt', '#f59e0b'))
+    row_idx = 0
+    for cat in cogs_debt_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_cogs_debt', 'Total COGS & Debt', 'cf-sub-a'))
+
+    # LOC Balance
+    if 'loc_balance' in summary_data:
+        h.append(_subtotal_row('loc_balance', 'LOC Balance', 'cf-sub-m'))
+
+    # Separator + summary
+    h.append(f'<tr class="cf-sep"><td colspan="{n_cols + 1}"></td></tr>')
+    h.append(_subtotal_row('total_outflows', 'Total Outflows', 'cf-sub-r'))
+    h.append(_summary_row('net_cashflow', 'Net Cash Flow', 'cf-sum-net'))
+    h.append(_summary_row('closing_balance', 'Closing Balance', 'cf-sum-bal'))
+
+    h.append('</tbody></table></div>')
+    st.markdown(''.join(h), unsafe_allow_html=True)
+
+    # Editing expander — keeps override editing functional
+    _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
+                          cogs_debt_cats, week_starts, is_actual_map,
+                          existing_overrides, overridden_cat_keys, current_week_col)
+
+
+def _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
+                          cogs_debt_cats, week_starts, is_actual_map,
+                          existing_overrides, overridden_cat_keys, current_week_col):
+    """Collapsed expander for editing overrides and reset buttons."""
+    # Build pivot for editors
     pivot_data = {}
     for cat in all_cats:
         row_vals = {}
@@ -743,11 +825,38 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
             val = r.get(cat, 0)
             if val is None or (isinstance(val, float) and np.isnan(val)):
                 val = 0
-            row_vals[ws[:10]] = round(val)
+            row_vals[ws] = round(val)
         pivot_data[cat_labels[cat]] = row_vals
     pivot_df = pd.DataFrame(pivot_data).T
+    pivot_df.columns = [ws[:10] for ws in week_starts]
 
-    # Column config for data_editors (shared across sections)
+    with st.expander('Edit Overrides', expanded=False):
+        for group_cats, group_label, key_prefix in [
+            (revenue_cats, 'Revenue', 'rev'),
+            (expense_cats, 'Expenses', 'exp'),
+            (cogs_debt_cats, 'COGS & Debt', 'cd'),
+        ]:
+            group_labels = [cat_labels[c] for c in group_cats]
+            section_df = pivot_df.loc[pivot_df.index.isin(group_labels)].copy()
+            _render_category_editor(section_df, group_cats, cat_labels, week_starts,
+                                    is_actual_map, existing_overrides, overridden_cat_keys,
+                                    current_week_col, key_prefix)
+
+
+def _render_category_editor(section_df, cats, cat_labels, week_starts,
+                            is_actual_map, existing_overrides, overridden_cat_keys,
+                            current_week_col, key_prefix):
+    """Render a data_editor for a group of categories inside the edit expander."""
+    label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
+    display_labels = {}
+    for cat in cats:
+        lbl = cat_labels[cat]
+        if cat in overridden_cat_keys:
+            display_labels[lbl] = f'{lbl}  \u25cf'
+        else:
+            display_labels[lbl] = lbl
+    editor_df = section_df.rename(index=display_labels).astype(int)
+
     col_config = {}
     for ws in week_starts:
         col_key = ws[:10]
@@ -759,79 +868,55 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
         elif is_actual:
             label = f'{label} \u2713'
         col_config[col_key] = st.column_config.NumberColumn(
-            label, format='dollar', step=1, disabled=is_actual, width='small',
+            label,
+            format='dollar',
+            step=1,
+            disabled=is_actual,
+            width='small',
         )
 
-    # ── Render each section: expander with editor + subtotal row ──
-    sections = [
-        ('Revenue', '\u25b2', '#22c55e', revenue_cats, 'total_inflows', 'cf-sub-g', 'rev'),
-        ('Expenses', '\u25bc', '#ef4444', expense_cats, 'total_expenses', 'cf-sub-r', 'exp'),
-        ('COGS & Debt', '\u25c6', '#f59e0b', cogs_debt_cats, 'total_cogs_debt', 'cf-sub-a', 'cd'),
-    ]
+    edited = st.data_editor(
+        editor_df,
+        column_config=col_config,
+        use_container_width=True,
+        key=f'cf_edit_{key_prefix}',
+        height=min(35 * (len(editor_df) + 1), 400),
+    )
 
-    for sec_label, icon, color, cats, subtotal_key, sub_cls, prefix in sections:
-        # Expander with icon + section name — contains the editable data_editor
-        with st.expander(f'{icon} {sec_label}', expanded=False):
-            group_labels = [cat_labels[c] for c in cats]
-            section_df = pivot_df.loc[pivot_df.index.isin(group_labels)].copy().astype(int)
+    # Detect changes and save overrides
+    reverse_display = {v: k for k, v in display_labels.items()}
+    original_label_to_cat = {}
+    for disp_label in editor_df.index:
+        orig_label = reverse_display.get(disp_label, disp_label)
+        cat = label_to_cat.get(orig_label)
+        if cat:
+            original_label_to_cat[disp_label] = cat
 
-            # Show override indicators in row labels
-            label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
-            display_labels = {}
-            for cat in cats:
-                lbl = cat_labels[cat]
-                display_labels[lbl] = f'{lbl}  \u25cf' if cat in overridden_cat_keys else lbl
-            editor_df = section_df.rename(index=display_labels)
+    if edited is not None and not edited.equals(editor_df):
+        _save_edits(editor_df, edited, original_label_to_cat, week_starts, is_actual_map)
 
-            edited = st.data_editor(
-                editor_df, column_config=col_config, use_container_width=True,
-                key=f'cf_edit_{prefix}',
-                height=min(35 * (len(editor_df) + 1), 400),
-            )
-
-            # Detect and save edits
-            reverse_display = {v: k for k, v in display_labels.items()}
-            original_label_to_cat = {}
-            for disp_label in editor_df.index:
-                orig = reverse_display.get(disp_label, disp_label)
-                cat = label_to_cat.get(orig)
-                if cat:
-                    original_label_to_cat[disp_label] = cat
-            if edited is not None and not edited.equals(editor_df):
-                _save_edits(editor_df, edited, original_label_to_cat, week_starts, is_actual_map)
-
-            # Reset buttons for overridden rows
-            overridden = [c for c in cats if c in overridden_cat_keys]
-            for cat in overridden:
-                rc = st.columns([6, 1])
-                with rc[1]:
-                    if st.button(f'Reset {cat_labels[cat]}', key=f'cf_reset_{prefix}_{cat}',
-                                 type='tertiary', use_container_width=True):
-                        try:
-                            with get_db() as conn:
-                                conn.execute('DELETE FROM cashflow_overrides WHERE line_item = %s', (cat,))
-                            _load_cashflow_overrides.clear()
-                            st.toast(f'Reset {cat_labels[cat]} to auto')
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f'Failed to clear overrides: {e}')
-
-        # Subtotal row (always visible, sits below the expander)
-        sub_html = (f'<div class="cf-wrap-mid cf-gap-kill"><table class="cf-tbl"><tbody>'
-                    f'{_subtotal_html(subtotal_key, f"Total {sec_label}", sub_cls)}'
-                    f'</tbody></table></div>')
-        st.markdown(sub_html, unsafe_allow_html=True)
-
-    # ── LOC Balance + Total Outflows + Summary — bottom of table ──
-    bot = ['<div class="cf-wrap-bot cf-gap-kill"><table class="cf-tbl"><tbody>']
-    if 'loc_balance' in summary_data:
-        bot.append(_subtotal_html('loc_balance', 'LOC Balance', 'cf-sub-m'))
-    bot.append(f'<tr class="cf-sep"><td colspan="{n_cols + 1}"></td></tr>')
-    bot.append(_subtotal_html('total_outflows', 'Total Outflows', 'cf-sub-r'))
-    bot.append(_summary_html('net_cashflow', 'Net Cash Flow', 'cf-sum-net'))
-    bot.append(_summary_html('closing_balance', 'Closing Balance', 'cf-sum-bal'))
-    bot.append('</tbody></table></div>')
-    st.markdown(''.join(bot), unsafe_allow_html=True)
+    # Reset buttons
+    overridden = [c for c in cats if c in overridden_cat_keys]
+    for cat in overridden:
+        cols = st.columns([6, 1])
+        with cols[1]:
+            if st.button(
+                f'Reset {cat_labels[cat]}',
+                key=f'cf_reset_{key_prefix}_{cat}',
+                type='tertiary',
+                use_container_width=True,
+            ):
+                try:
+                    with get_db() as conn:
+                        conn.execute(
+                            'DELETE FROM cashflow_overrides WHERE line_item = %s',
+                            (cat,),
+                        )
+                    _load_cashflow_overrides.clear()
+                    st.toast(f'Reset {cat_labels[cat]} to auto')
+                    st.rerun()
+                except Exception as e:
+                    st.error(f'Failed to clear overrides: {e}')
 
 
 def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map):
