@@ -22,7 +22,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:

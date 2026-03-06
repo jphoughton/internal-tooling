@@ -17,7 +17,7 @@ from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 log = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _get_nc_projection():
     """Cached wrapper around project_amazon_nc() for yesterday."""
     try:
@@ -27,7 +27,7 @@ def _get_nc_projection():
         return None
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _load_amazon_daily():
     """Load Amazon daily data for trend tables (revenue, spend, new/repeat)."""
     try:
@@ -122,7 +122,7 @@ def _load_amazon_daily():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _load_overview_daily_trend(source_filter=None):
     """Load 90-day daily revenue trend by source for the stacked area chart."""
     with get_db() as conn:
@@ -141,7 +141,7 @@ def _load_overview_daily_trend(source_filter=None):
         )
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _load_top_skus(source_filter=None):
     """Load top 10 flavors by units sold, optionally filtered by source."""
     with get_db() as conn:

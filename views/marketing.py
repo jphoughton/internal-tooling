@@ -46,7 +46,7 @@ def _merge_shopify_daily(rev_df, cust_df):
     return df
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _load_shopify_daily_metrics():
     """Load daily DTC metrics from Shopify DB (revenue, orders, new/repeat customers).
 
@@ -115,7 +115,7 @@ def _load_shopify_daily_metrics():
     return _merge_shopify_daily(rev_df, cust_df)
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=1800)
 def _load_gs_spend():
     """Load ad spend and subscription data from Google Sheet."""
     with get_db() as conn:
