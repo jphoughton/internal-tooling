@@ -516,11 +516,11 @@ def render(ctx):
 
 
 def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
-    """Render an editable cash flow table with per-cell persistence.
+    """Render unified cash flow table as a single styled HTML table.
 
-    Past weeks (actuals) are read-only. Future weeks are editable.
-    Edits persist to cashflow_overrides and are used in projections.
-    Overridden rows show an inline reset link.
+    One table with section headers, month/week/date header rows,
+    alternating row colors, muted zeroes, and color-coded subtotals.
+    Editing is available in a collapsed expander below.
     """
     display = forecast_df.head(horizon_weeks)
     today = date.today()
@@ -534,7 +534,7 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     week_starts = display['week_start'].tolist()
     is_actual_map = dict(zip(display['week_start'], display['is_actual']))
 
-    # Identify current week (the week containing today)
+    # Identify current week
     current_week_col = None
     for ws in week_starts:
         ws_date = date.fromisoformat(ws[:10])
@@ -543,7 +543,237 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
             current_week_col = ws[:10]
             break
 
-    # Build pivot: rows = categories, columns = week_start dates
+    # Parse dates for header rows
+    parsed_dates = []
+    for ws in week_starts:
+        d = date.fromisoformat(ws[:10])
+        parsed_dates.append(d)
+
+    # Group columns by month for colspan
+    month_groups = []
+    for d in parsed_dates:
+        month_key = d.strftime('%B %Y')
+        if month_groups and month_groups[-1][0] == month_key:
+            month_groups[-1] = (month_key, month_groups[-1][1] + 1)
+        else:
+            month_groups.append((month_key, 1))
+
+    # Build pivot data
+    pivot = {}
+    for cat in all_cats:
+        row = {}
+        for _, r in display.iterrows():
+            ws = r['week_start']
+            val = r.get(cat, 0)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                val = 0
+            row[ws[:10]] = round(val)
+        pivot[cat] = row
+
+    # Summary rows from forecast_df
+    summary_keys = ['total_inflows', 'total_expenses', 'total_cogs_debt',
+                    'total_outflows', 'net_cashflow', 'closing_balance']
+    if 'loc_balance' in display.columns:
+        summary_keys.insert(3, 'loc_balance')
+    summary_data = {}
+    for key in summary_keys:
+        row = {}
+        for _, r in display.iterrows():
+            ws = r['week_start'][:10]
+            val = r.get(key, 0)
+            if val is None or (isinstance(val, float) and np.isnan(val)):
+                val = 0
+            row[ws] = round(val)
+        summary_data[key] = row
+
+    col_keys = [ws[:10] for ws in week_starts]
+    n_cols = len(col_keys)
+
+    # Load overrides for indicator dots
+    existing_overrides = set()
+    overridden_cat_keys = set()
+    try:
+        with get_db() as conn:
+            override_rows = read_sql(
+                'SELECT line_item, week_start FROM cashflow_overrides', conn,
+            )
+            for _, r in override_rows.iterrows():
+                existing_overrides.add((r['line_item'], r['week_start']))
+            for cat in all_cats:
+                for ws in week_starts:
+                    if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
+                        overridden_cat_keys.add(cat)
+                        break
+    except Exception as e:
+        log.warning('Failed to load cashflow overrides in view: %s', e)
+
+    # ── CSS ──
+    css = '''<style>
+    .cf-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid rgba(30,42,58,0.5);border-radius:8px;}
+    .cf-tbl{border-collapse:collapse;font-size:0.78rem;width:100%;min-width:1200px;}
+    .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums;}
+    .cf-month th{padding:6px 0;font-size:0.7rem;font-weight:700;text-transform:uppercase;
+      letter-spacing:0.06em;color:var(--text-color,#64748b);border-bottom:1px solid rgba(30,42,58,0.5);text-align:center;}
+    .cf-month th.ms{border-left:1px solid rgba(37,51,71,0.6);}
+    .cf-wk th{padding:3px 0;font-size:0.65rem;font-weight:600;color:var(--text-color,#475569);text-align:center;}
+    .cf-dt th{padding:4px 10px;font-size:0.68rem;font-weight:500;color:var(--text-color,#64748b);
+      text-align:right;border-bottom:2px solid rgba(30,42,58,0.5);white-space:nowrap;}
+    .cf-dt th.cw{font-weight:700;color:#818cf8;}
+    .cf-dt th.aw{color:#4ade80;}
+    .cf-lbl{text-align:left!important;padding-left:14px!important;font-weight:500;
+      position:sticky;left:0;z-index:2;min-width:160px;}
+    td.cf-lbl{color:var(--text-color,#e2e8f0);}
+    .cf-tbl td{padding:7px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid rgba(17,24,39,0.6);
+      color:var(--text-color,#cbd5e1);}
+    .cf-even{background:rgba(14,17,23,0.0);}
+    .cf-odd{background:rgba(17,24,39,0.4);}
+    .cf-even .cf-lbl{background:inherit;}
+    .cf-odd .cf-lbl{background:inherit;}
+    .cf-z{color:rgba(51,65,85,0.7)!important;}
+    td.cf-cw{background:rgba(99,110,250,0.06)!important;}
+    th.cf-ms,td.cf-ms{border-left:1px solid rgba(37,51,71,0.6);}
+    .cf-sec td{padding:10px 14px 4px;font-size:0.7rem;text-transform:uppercase;
+      letter-spacing:0.06em;font-weight:700;color:var(--text-color,#64748b);border-bottom:none;}
+    .cf-sub td{font-weight:700;border-top:1px solid rgba(30,42,58,0.5);
+      border-bottom:1px solid rgba(30,42,58,0.5);padding:8px 10px;}
+    .cf-sub-g td{color:#4ade80;}
+    .cf-sub-r td{color:#f87171;}
+    .cf-sub-a td{color:#fbbf24;}
+    .cf-sub-m td{color:#94a3b8;}
+    .cf-sum td{font-weight:800;font-size:0.82rem;padding:9px 10px;
+      border-bottom:1px solid rgba(30,42,58,0.5);background:rgba(20,28,43,0.5)!important;}
+    .cf-sum .cf-lbl{background:rgba(20,28,43,0.5)!important;}
+    .cf-sum-net td{color:#fbbf24;}
+    .cf-sum-bal td{color:#60a5fa;}
+    .cf-sep td{border-top:2px solid rgba(51,65,85,0.6);padding:0;height:2px;}
+    </style>'''
+
+    # ── Helper to format a value cell ──
+    def _cell(val, ws, is_summary=False):
+        classes = []
+        if ws == current_week_col:
+            classes.append('cf-cw')
+        # Month boundary
+        d = date.fromisoformat(ws)
+        if d.day <= 7 and parsed_dates.index(d) > 0:
+            prev_d = parsed_dates[parsed_dates.index(d) - 1]
+            if prev_d.month != d.month:
+                classes.append('cf-ms')
+        if val == 0 and not is_summary:
+            classes.append('cf-z')
+        cls = f' class="{" ".join(classes)}"' if classes else ''
+        if val < 0:
+            formatted = f'-${abs(val):,.0f}'
+        else:
+            formatted = f'${val:,.0f}'
+        return f'<td{cls}>{formatted}</td>'
+
+    def _month_boundary_class(idx):
+        """Return ' cf-ms' if this column is the first of a new month."""
+        if idx > 0 and parsed_dates[idx].month != parsed_dates[idx - 1].month:
+            return ' cf-ms'
+        return ''
+
+    # ── Build HTML ──
+    h = [css, '<div class="cf-wrap"><table class="cf-tbl">']
+
+    # Month header row
+    h.append('<thead><tr class="cf-month"><th class="cf-lbl"></th>')
+    first_in_group = True
+    for month_name, colspan in month_groups:
+        ms = ' ms' if not first_in_group else ''
+        h.append(f'<th class="{ms}" colspan="{colspan}">{month_name}</th>')
+        first_in_group = False
+    h.append('</tr>')
+
+    # Week number row
+    h.append('<tr class="cf-wk"><th class="cf-lbl"></th>')
+    for i, d in enumerate(parsed_dates):
+        wk = d.isocalendar()[1]
+        mc = _month_boundary_class(i)
+        h.append(f'<th class="{mc}">W{wk}</th>')
+    h.append('</tr>')
+
+    # Date row
+    h.append('<tr class="cf-dt"><th class="cf-lbl"></th>')
+    for i, d in enumerate(parsed_dates):
+        ws = col_keys[i]
+        mc = _month_boundary_class(i)
+        label = d.strftime('%b %-d')
+        if ws == current_week_col:
+            h.append(f'<th class="cw{mc}">{label}</th>')
+        elif is_actual_map.get(week_starts[i], False):
+            h.append(f'<th class="aw{mc}">{label}</th>')
+        else:
+            h.append(f'<th class="{mc}">{label}</th>')
+    h.append('</tr></thead><tbody>')
+
+    row_idx = 0  # for alternating colors
+
+    def _data_row(cat_key, label, override_dot=False):
+        nonlocal row_idx
+        stripe = 'cf-even' if row_idx % 2 == 0 else 'cf-odd'
+        dot = ' <span style="color:#818cf8;font-size:0.6rem;">&#9679;</span>' if override_dot else ''
+        cells = ''.join(_cell(pivot[cat_key].get(ws, 0), ws) for ws in col_keys)
+        row_idx += 1
+        return f'<tr class="{stripe}"><td class="cf-lbl">{label}{dot}</td>{cells}</tr>'
+
+    def _subtotal_row(key, label, color_class):
+        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, is_summary=True) for ws in col_keys)
+        return f'<tr class="cf-sub {color_class}"><td class="cf-lbl">{label}</td>{cells}</tr>'
+
+    def _summary_row(key, label, cls):
+        cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, is_summary=True) for ws in col_keys)
+        return f'<tr class="cf-sum {cls}"><td class="cf-lbl">{label}</td>{cells}</tr>'
+
+    def _section_header(icon, label, color):
+        return (f'<tr class="cf-sec"><td colspan="{n_cols + 1}">'
+                f'<span style="color:{color};">{icon}</span> {label}</td></tr>')
+
+    # Revenue section
+    h.append(_section_header('&#9650;', 'Revenue', '#22c55e'))
+    for cat in revenue_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_inflows', 'Total Inflows', 'cf-sub-g'))
+
+    # Expenses section
+    h.append(_section_header('&#9660;', 'Expenses', '#ef4444'))
+    row_idx = 0  # reset alternation per section
+    for cat in expense_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_expenses', 'Total Expenses', 'cf-sub-r'))
+
+    # COGS & Debt section
+    h.append(_section_header('&#9670;', 'COGS & Debt', '#f59e0b'))
+    row_idx = 0
+    for cat in cogs_debt_cats:
+        h.append(_data_row(cat, cat_labels[cat], cat in overridden_cat_keys))
+    h.append(_subtotal_row('total_cogs_debt', 'Total COGS & Debt', 'cf-sub-a'))
+
+    # LOC Balance
+    if 'loc_balance' in summary_data:
+        h.append(_subtotal_row('loc_balance', 'LOC Balance', 'cf-sub-m'))
+
+    # Separator + summary
+    h.append(f'<tr class="cf-sep"><td colspan="{n_cols + 1}"></td></tr>')
+    h.append(_subtotal_row('total_outflows', 'Total Outflows', 'cf-sub-r'))
+    h.append(_summary_row('net_cashflow', 'Net Cash Flow', 'cf-sum-net'))
+    h.append(_summary_row('closing_balance', 'Closing Balance', 'cf-sum-bal'))
+
+    h.append('</tbody></table></div>')
+    st.markdown(''.join(h), unsafe_allow_html=True)
+
+    # Editing expander — keeps override editing functional
+    _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
+                          cogs_debt_cats, week_starts, is_actual_map,
+                          existing_overrides, overridden_cat_keys, current_week_col)
+
+
+def _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
+                          cogs_debt_cats, week_starts, is_actual_map,
+                          existing_overrides, overridden_cat_keys, current_week_col):
+    """Collapsed expander for editing overrides and reset buttons."""
+    # Build pivot for editors
     pivot_data = {}
     for cat in all_cats:
         row_vals = {}
@@ -554,130 +784,46 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                 val = 0
             row_vals[ws] = round(val)
         pivot_data[cat_labels[cat]] = row_vals
-
     pivot_df = pd.DataFrame(pivot_data).T
     pivot_df.columns = [ws[:10] for ws in week_starts]
 
-    # Load existing overrides to show which cells have manual values
-    existing_overrides = set()
-    try:
-        with get_db() as conn:
-            override_rows = read_sql(
-                'SELECT line_item, week_start FROM cashflow_overrides', conn,
-            )
-            for _, r in override_rows.iterrows():
-                existing_overrides.add((r['line_item'], r['week_start']))
-    except Exception as e:
-        log.warning('Failed to load cashflow overrides in view: %s', e)
-
-    # Build set of categories that have overrides (for row labels)
-    overridden_cat_keys = set()
-    for cat in all_cats:
-        for ws in week_starts:
-            if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
-                overridden_cat_keys.add(cat)
-                break
-
-    # Section headers
-    rev_labels = [cat_labels[c] for c in revenue_cats]
-    exp_labels = [cat_labels[c] for c in expense_cats]
-    cd_labels = [cat_labels[c] for c in cogs_debt_cats]
-
-    # Render revenue section
-    st.markdown(
-        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
-        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
-        '<span style="color:#22c55e;">&#9650;</span> Revenue</p>',
-        unsafe_allow_html=True,
-    )
-    rev_df = pivot_df.loc[pivot_df.index.isin(rev_labels)].copy()
-    _render_category_section(rev_df, revenue_cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, overridden_cat_keys,
-                             current_week_col, '#22c55e', 'rev')
-
-    # Total inflows row
-    _render_total_row(display, 'total_inflows', 'Total Inflows', '#16a34a',
-                      current_week_col)
-
-    # Render expense section
-    st.markdown(
-        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
-        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
-        '<span style="color:#ef4444;">&#9660;</span> Expenses</p>',
-        unsafe_allow_html=True,
-    )
-    exp_df = pivot_df.loc[pivot_df.index.isin(exp_labels)].copy()
-    _render_category_section(exp_df, expense_cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, overridden_cat_keys,
-                             current_week_col, '#ef4444', 'exp')
-
-    # Total expenses subtotal
-    _render_total_row(display, 'total_expenses', 'Total Expenses', '#dc2626',
-                      current_week_col)
-
-    # Render COGS & Debt section
-    st.markdown(
-        '<p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;'
-        'color:#6b7c93;font-weight:700;margin:12px 0 4px;">'
-        '<span style="color:#f59e0b;">&#9670;</span> COGS & Debt</p>',
-        unsafe_allow_html=True,
-    )
-    cd_df = pivot_df.loc[pivot_df.index.isin(cd_labels)].copy()
-    _render_category_section(cd_df, cogs_debt_cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, overridden_cat_keys,
-                             current_week_col, '#f59e0b', 'cd')
-
-    # Total COGS & Debt subtotal
-    _render_total_row(display, 'total_cogs_debt', 'Total COGS & Debt', '#d97706',
-                      current_week_col)
-
-    # LOC Balance — running balance row (not a flow, shows remaining principal)
-    if 'loc_balance' in display.columns:
-        _render_total_row(display, 'loc_balance', 'LOC Balance', '#6b7c93',
-                          current_week_col, bold_bg=True)
-
-    # Total outflows (all outflows combined)
-    _render_total_row(display, 'total_outflows', 'Total Outflows', '#dc2626',
-                      current_week_col)
-
-    # Summary separator
-    st.markdown(
-        '<div style="border-top:2px solid #e2e8f0;margin:12px 0 8px;"></div>',
-        unsafe_allow_html=True,
-    )
-    _render_total_row(display, 'net_cashflow', 'Net Cash Flow', '#d97706',
-                      current_week_col, bold_bg=True)
-    _render_total_row(display, 'closing_balance', 'Closing Balance', '#0F3557',
-                      current_week_col, bold_bg=True)
+    with st.expander('Edit Overrides', expanded=False):
+        for group_cats, group_label, key_prefix in [
+            (revenue_cats, 'Revenue', 'rev'),
+            (expense_cats, 'Expenses', 'exp'),
+            (cogs_debt_cats, 'COGS & Debt', 'cd'),
+        ]:
+            group_labels = [cat_labels[c] for c in group_cats]
+            section_df = pivot_df.loc[pivot_df.index.isin(group_labels)].copy()
+            _render_category_editor(section_df, group_cats, cat_labels, week_starts,
+                                    is_actual_map, existing_overrides, overridden_cat_keys,
+                                    current_week_col, key_prefix)
 
 
-def _render_category_section(section_df, cats, cat_labels, week_starts,
-                             is_actual_map, existing_overrides, overridden_cat_keys,
-                             current_week_col, color, key_prefix):
-    """Render an editable data_editor section for a group of categories."""
-    # Modify index to show override indicator on rows with manual overrides
+def _render_category_editor(section_df, cats, cat_labels, week_starts,
+                            is_actual_map, existing_overrides, overridden_cat_keys,
+                            current_week_col, key_prefix):
+    """Render a data_editor for a group of categories inside the edit expander."""
     label_to_cat = {v: k for k, v in cat_labels.items() if k in cats}
     display_labels = {}
     for cat in cats:
         lbl = cat_labels[cat]
         if cat in overridden_cat_keys:
-            display_labels[lbl] = f'{lbl}  ●'
+            display_labels[lbl] = f'{lbl}  \u25cf'
         else:
             display_labels[lbl] = lbl
     editor_df = section_df.rename(index=display_labels).astype(int)
 
-    # Configure columns: actuals are disabled, future are editable
-    # Current week gets a "▸" indicator
     col_config = {}
     for ws in week_starts:
         col_key = ws[:10]
         is_actual = is_actual_map.get(ws, False)
+        d = date.fromisoformat(col_key)
+        label = d.strftime('%b %-d')
         if col_key == current_week_col:
-            label = f'▸ {col_key}'
+            label = f'\u25b8 {label}'
         elif is_actual:
-            label = f'{col_key} ✓'
-        else:
-            label = col_key
+            label = f'{label} \u2713'
         col_config[col_key] = st.column_config.NumberColumn(
             label,
             format='dollar',
@@ -694,7 +840,7 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
         height=min(35 * (len(editor_df) + 1), 400),
     )
 
-    # Detect changes and save overrides — map display labels back to original
+    # Detect changes and save overrides
     reverse_display = {v: k for k, v in display_labels.items()}
     original_label_to_cat = {}
     for disp_label in editor_df.index:
@@ -706,55 +852,8 @@ def _render_category_section(section_df, cats, cat_labels, week_starts,
     if edited is not None and not edited.equals(editor_df):
         _save_edits(editor_df, edited, original_label_to_cat, week_starts, is_actual_map)
 
-    # Per-row reset buttons — inline, compact, only for rows with overrides
-    _render_inline_resets(cats, cat_labels, overridden_cat_keys, key_prefix)
-
-
-def _render_total_row(display, col_key, label, color, current_week_col=None,
-                      bold_bg=False):
-    """Render a read-only summary total row as HTML.
-
-    bold_bg: If True, adds a subtle background to make summary rows
-    (Net Cash Flow, Closing Balance) feel like results, not inputs.
-    current_week_col: Highlights the current week's cell with a subtle stripe.
-    """
-    bg_style = 'background:#f1f5f9;border-radius:4px;' if bold_bg else ''
-    label_bg = '#f1f5f9' if bold_bg else '#ffffff'
-    cells = ''
-    for _, r in display.iterrows():
-        val = r.get(col_key, 0)
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            val = 0
-        formatted = f'-${abs(val):,.0f}' if val < 0 else f'${val:,.0f}'
-        ws = str(r.get('week_start', ''))[:10]
-        cell_bg = 'background:rgba(99,110,250,0.06);' if ws == current_week_col else ''
-        cells += (
-            f'<td style="text-align:right;padding:6px 8px;font-weight:700;'
-            f'color:{color};white-space:nowrap;{cell_bg}">{formatted}</td>'
-        )
-
-    html = (
-        f'<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;{bg_style}margin:2px 0;">'
-        f'<table style="border-collapse:collapse;font-size:0.75rem;width:100%;table-layout:auto;">'
-        f'<tr><td style="padding:6px 8px;font-weight:700;color:{color};'
-        f'white-space:nowrap;position:sticky;left:0;background:{label_bg};'
-        f'z-index:1;min-width:120px;">{label}</td>'
-        f'{cells}</tr></table></div>'
-    )
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def _render_inline_resets(cats, cat_labels, overridden_cat_keys, key_prefix):
-    """Render compact per-row reset links for categories with manual overrides.
-
-    Only renders for categories that have active overrides. Each reset link
-    appears on a single line with the category name, making the connection
-    between the row and its reset action obvious.
-    """
+    # Reset buttons
     overridden = [c for c in cats if c in overridden_cat_keys]
-    if not overridden:
-        return
-
     for cat in overridden:
         cols = st.columns([6, 1])
         with cols[1]:
