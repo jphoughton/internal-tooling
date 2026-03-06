@@ -236,6 +236,7 @@ def compute_pacing_data(ctx):
         log.warning("Failed to load revenue model for blended NC goals: %s", e)
 
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
+    _goal_total_repeat_rev = max(_goal_total_rev - _goal_blended_nc_rev, 0)
     _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
     _remaining_days = max(_days_in_month - _day_of_month, 1)
 
@@ -384,6 +385,7 @@ def compute_pacing_data(ctx):
         # Goals
         'goal_nc_rev': _goal_blended_nc_rev,
         'goal_repeat_rev': _goal_repeat_rev,
+        'goal_total_repeat_rev': _goal_total_repeat_rev,
         'goal_amz_rev': _goal_amz_rev,
         'goal_total_rev': _goal_total_rev,
         'goal_dtc_rev': _goal_dtc_rev,
@@ -537,8 +539,8 @@ def render_pacing_detail_table(data, source_filter=None):
                                        d['l7d_total_nc_rev'], d['yd_total_nc_rev'],
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
-        if d.get('goal_repeat_rev', 0) > 0:
-            rows.append(build_pace_row("\u00a0\u00a0\u00a0\u00a0Repeat Rev", d['cm_total_repeat_rev'], d['goal_repeat_rev'],
+        if d.get('goal_total_repeat_rev', d.get('goal_repeat_rev', 0)) > 0:
+            rows.append(build_pace_row("\u00a0\u00a0\u00a0\u00a0Repeat Rev", d['cm_total_repeat_rev'], d['goal_total_repeat_rev'],
                                        d['l7d_total_repeat_rev'], d['yd_total_repeat_rev'],
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
@@ -652,7 +654,7 @@ def render_pacing(ctx):
                            d['l7d_total_rev'], d['yd_total_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
             build_pace_row("Total NC Revenue", d['cm_total_nc_rev'], d['goal_nc_rev'],
                            d['l7d_total_nc_rev'], d['yd_total_nc_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
-            build_pace_row("Total Repeat Revenue", d['cm_total_repeat_rev'], d['goal_repeat_rev'],
+            build_pace_row("Total Repeat Revenue", d['cm_total_repeat_rev'], d['goal_total_repeat_rev'],
                            d['l7d_total_repeat_rev'], d['yd_total_repeat_rev'], d['pct_month'], d['days_in_month'], d['remaining_days']),
         ])
         if d['goal_nc_count'] > 0:

@@ -12,6 +12,7 @@ from analytics.amazon_nc_projector import project_amazon_nc
 from ui.components import render_freshness_badge, render_html_table
 from ui.perf_tables import render_perf_table_colored, render_perf_table_transposed, build_overview_trend_rows
 from views.pacing import compute_pacing_data, render_hero_bars, render_pacing_detail_table
+from utils.date_helpers import business_yesterday
 from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
 
 log = logging.getLogger(__name__)
@@ -403,6 +404,41 @@ def render(ctx):
                    delta=f"Target: {_goal_cac_payback:.1f}mo" if _goal_cac_payback and _goal_cac_payback > 0 else None,
                    delta_color='off',
                    help='Months until contribution margin covers CAC')
+
+        # --- Yesterday tiles (same layout as MTD) ---
+        if _source_filter == 'shopify':
+            _yd_hero_rev = d['yd_dtc_rev']
+            _yd_hero_spend = d['yd_dtc_spend']
+            _yd_hero_nc = d['yd_nc']
+            _yd_hero_nc_rev = d['yd_nc_rev']
+        elif _source_filter == 'amazon':
+            _yd_hero_rev = d['yd_amz_rev']
+            _yd_hero_spend = d['yd_amz_spend']
+            _yd_hero_nc = d['yd_amz_nc']
+            _yd_hero_nc_rev = d['yd_amz_nc_rev']
+        else:
+            _yd_hero_rev = d['yd_total_rev']
+            _yd_hero_spend = d['yd_total_spend']
+            _yd_hero_nc = d['yd_total_nc']
+            _yd_hero_nc_rev = d['yd_total_nc_rev']
+
+        _yd_nc_roas_val = _yd_hero_nc_rev / _yd_hero_spend if _yd_hero_spend > 0 else 0
+        _yd_cac_payback = compute_cac_payback(
+            _yd_hero_spend, _yd_hero_nc, _yd_hero_nc_rev,
+            cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
+            net_to_gross=_net_to_gross,
+            retention_curve=_use_ret,
+        ) if _yd_hero_nc > 0 and _yd_hero_spend > 0 else 0
+
+        _yd_date = business_yesterday()
+        _yd_label = _yd_date.strftime('%b %-d')
+        y1, y2, y3, y4, y5 = st.columns(5)
+        y1.metric(f'Rev {_yd_label}', f"${_yd_hero_rev:,.0f}")
+        y2.metric(f'Spend {_yd_label}', f"${_yd_hero_spend:,.0f}")
+        y3.metric(f'New Cust {_yd_label}', f"{_yd_hero_nc:,}")
+        y4.metric(f'NC-ROAS {_yd_label}', f"{_yd_nc_roas_val:.2f}x")
+        y5.metric(f'CAC Payback {_yd_label}',
+                   f'{_yd_cac_payback:.1f}mo' if _yd_cac_payback > 0 else '\u2014')
 
         # CAC Payback math breakdown
         _has_amz_ret = bool(_amz_ret and any(v > 0 for v in _amz_ret.values()))
