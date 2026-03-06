@@ -926,8 +926,9 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     header_height = 70
     table_height = header_height + (n_data_rows + n_other + (1 if has_loc else 0)) * row_height + 20
 
-    # Use st.html() instead of st.markdown() — supports onclick/JS
-    st.html(''.join(h), height=table_height)
+    # Use components.html() — renders in iframe with full JS support
+    import streamlit.components.v1 as components
+    components.html(''.join(h), height=table_height, scrolling=True)
 
     # Editing expander — keeps override editing functional
     _render_edit_expander(display, all_cats, cat_labels, revenue_cats, expense_cats,
