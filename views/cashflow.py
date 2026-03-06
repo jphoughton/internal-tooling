@@ -532,11 +532,51 @@ def render(ctx):
         _render_settings_section()
 
 
+@st.cache_data(ttl=86400)
+def _load_transaction_detail():
+    """Load actual transactions grouped by category, subcategory, and week.
+
+    Returns dict: {category: {subcategory: {week_start_str: total_amount}}}
+    """
+    try:
+        with get_db() as conn:
+            df = read_sql('''
+                SELECT category, COALESCE(subcategory, 'other') as subcategory,
+                       tx_date, amount, direction
+                FROM cashflow_transactions
+                WHERE is_duplicate = 0 AND is_transfer = 0
+                  AND category IS NOT NULL AND category != 'unmapped'
+            ''', conn)
+        if df.empty:
+            return {}
+        df['tx_date'] = pd.to_datetime(df['tx_date'])
+        # Compute week_start (Monday) for each transaction
+        df['week_start'] = (df['tx_date'] - pd.to_timedelta(df['tx_date'].dt.weekday, unit='d')).dt.strftime('%Y-%m-%d')
+        # Sign: debits are positive outflows, credits are positive inflows
+        df['signed'] = df.apply(
+            lambda r: r['amount'] if r['direction'] == 'debit' else r['amount'], axis=1,
+        )
+        # Group by category, subcategory, week
+        grouped = df.groupby(['category', 'subcategory', 'week_start'])['signed'].sum()
+        result = {}
+        for (cat, sub, ws), total in grouped.items():
+            if cat not in result:
+                result[cat] = {}
+            if sub not in result[cat]:
+                result[cat][sub] = {}
+            result[cat][sub][ws] = round(total)
+        return result
+    except Exception as e:
+        log.warning('Failed to load transaction detail: %s', e)
+        return {}
+
+
 def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
-    """Render unified cash flow table as a single styled HTML table.
+    """Render unified cash flow table with expandable transaction detail.
 
     One table with section headers, month/week/date header rows,
     alternating row colors, muted zeroes, and color-coded subtotals.
+    Each line item row is expandable to show vendor/subcategory breakdown.
     Editing is available in a collapsed expander below.
     """
     display = forecast_df.head(horizon_weeks)
@@ -615,6 +655,9 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                 overridden_cat_keys.add(cat)
                 break
 
+    # Load transaction detail for expandable rows
+    tx_detail = _load_transaction_detail()
+
     # ── CSS — exact mockup styling, all !important to beat Streamlit ──
     # Streamlit dark theme bg is #0e1117. We use that + #111827 for stripes.
     css = '''<style>
@@ -689,7 +732,39 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     /* ── Separator before summary ── */
     .cf-sep td{border-top:2px solid #334155!important;padding:0!important;height:2px!important;
       background:transparent!important;}
-    </style>'''
+
+    /* ── Expandable parent rows ── */
+    .cf-parent td.cf-lbl{cursor:pointer!important;}
+    .cf-parent td.cf-lbl:hover{color:#818cf8!important;}
+    .cf-arrow{display:inline-block;font-size:0.55rem;margin-right:6px;transition:transform 0.15s;
+      color:#475569;vertical-align:middle;}
+    .cf-parent.cf-open .cf-arrow{transform:rotate(90deg);}
+
+    /* ── Child (vendor) rows — hidden by default ── */
+    .cf-child{display:none;}
+    .cf-child td{padding:5px 10px!important;font-size:0.72rem!important;color:#94a3b8!important;
+      border-bottom:1px solid rgba(17,24,39,0.4)!important;}
+    .cf-child td.cf-lbl{padding-left:30px!important;font-weight:400!important;color:#94a3b8!important;
+      font-style:italic!important;}
+    .cf-child.cf-even td{background:#0e1117!important;}
+    .cf-child.cf-odd td{background:rgba(17,24,39,0.5)!important;}
+    .cf-child.cf-even td.cf-lbl{background:#0e1117!important;}
+    .cf-child.cf-odd td.cf-lbl{background:rgba(17,24,39,0.5)!important;}
+    .cf-child .cf-z{color:rgba(51,65,85,0.3)!important;}
+    </style>
+    <script>
+    function cfToggle(catId){
+      var parent=document.getElementById('cf-p-'+catId);
+      var children=document.querySelectorAll('.cf-ch-'+catId);
+      if(parent.classList.contains('cf-open')){
+        parent.classList.remove('cf-open');
+        children.forEach(function(c){c.style.display='none';});
+      }else{
+        parent.classList.add('cf-open');
+        children.forEach(function(c){c.style.display='';});
+      }
+    }
+    </script>'''
 
     # ── Helper to format a value cell ──
     def _cell(val, ws, is_summary=False):
@@ -759,7 +834,48 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
         dot = ' <span style="color:#818cf8;font-size:0.6rem;">&#9679;</span>' if override_dot else ''
         cells = ''.join(_cell(pivot[cat_key].get(ws, 0), ws) for ws in col_keys)
         row_idx += 1
-        return f'<tr class="{stripe}"><td class="cf-lbl">{label}{dot}</td>{cells}</tr>'
+
+        # Check if this category has transaction detail
+        cat_subs = tx_detail.get(cat_key, {})
+        if not cat_subs:
+            return f'<tr class="{stripe}"><td class="cf-lbl">{label}{dot}</td>{cells}</tr>'
+
+        # Parent row with toggle arrow
+        safe_id = cat_key.replace(' ', '_').replace('/', '_')
+        arrow = '<span class="cf-arrow">&#9654;</span>'
+        parent = (f'<tr id="cf-p-{safe_id}" class="{stripe} cf-parent" '
+                  f'onclick="cfToggle(\'{safe_id}\')">'
+                  f'<td class="cf-lbl">{arrow}{label}{dot}</td>{cells}</tr>')
+
+        # Child rows for each subcategory
+        children = []
+        child_idx = 0
+        for sub_name in sorted(cat_subs.keys()):
+            sub_data = cat_subs[sub_name]
+            c_stripe = 'cf-even' if child_idx % 2 == 0 else 'cf-odd'
+            sub_label = sub_name.replace('_', ' ').title()
+            c_cells = []
+            for ws in col_keys:
+                val = sub_data.get(ws, 0)
+                classes = []
+                if ws == current_week_col:
+                    classes.append('cf-cw')
+                d = date.fromisoformat(ws)
+                idx = parsed_dates.index(d)
+                if idx > 0 and parsed_dates[idx - 1].month != d.month:
+                    classes.append('cf-ms')
+                if val == 0:
+                    classes.append('cf-z')
+                cls = f' class="{" ".join(classes)}"' if classes else ''
+                formatted = f'-${abs(val):,.0f}' if val < 0 else f'${val:,.0f}'
+                c_cells.append(f'<td{cls}>{formatted}</td>')
+            children.append(
+                f'<tr class="cf-child {c_stripe} cf-ch-{safe_id}">'
+                f'<td class="cf-lbl">{sub_label}</td>{"".join(c_cells)}</tr>'
+            )
+            child_idx += 1
+
+        return parent + ''.join(children)
 
     def _subtotal_row(key, label, color_class):
         cells = ''.join(_cell(summary_data[key].get(ws, 0), ws, is_summary=True) for ws in col_keys)
