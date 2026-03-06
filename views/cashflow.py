@@ -21,6 +21,23 @@ from utils.constants import CASHFLOW_CATEGORIES
 log = logging.getLogger(__name__)
 
 
+@st.cache_data(ttl=86400)
+def _load_cashflow_overrides():
+    """Cached load of cashflow overrides for indicator dots."""
+    try:
+        with get_db() as conn:
+            override_rows = read_sql(
+                'SELECT line_item, week_start FROM cashflow_overrides', conn,
+            )
+            return set(
+                (r['line_item'], r['week_start'])
+                for _, r in override_rows.iterrows()
+            )
+    except Exception as e:
+        log.warning('Failed to load cashflow overrides: %s', e)
+        return set()
+
+
 def _get_precomputed_cf(key):
     """Load precomputed result from DB, return parsed JSON or None."""
     try:
@@ -589,23 +606,14 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
     col_keys = [ws[:10] for ws in week_starts]
     n_cols = len(col_keys)
 
-    # Load overrides for indicator dots
-    existing_overrides = set()
+    # Load overrides for indicator dots (cached)
+    existing_overrides = _load_cashflow_overrides()
     overridden_cat_keys = set()
-    try:
-        with get_db() as conn:
-            override_rows = read_sql(
-                'SELECT line_item, week_start FROM cashflow_overrides', conn,
-            )
-            for _, r in override_rows.iterrows():
-                existing_overrides.add((r['line_item'], r['week_start']))
-            for cat in all_cats:
-                for ws in week_starts:
-                    if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
-                        overridden_cat_keys.add(cat)
-                        break
-    except Exception as e:
-        log.warning('Failed to load cashflow overrides in view: %s', e)
+    for cat in all_cats:
+        for ws in week_starts:
+            if (cat, ws[:10]) in existing_overrides or (cat, ws) in existing_overrides:
+                overridden_cat_keys.add(cat)
+                break
 
     # ── CSS ──
     css = '''<style>
@@ -869,6 +877,7 @@ def _render_category_editor(section_df, cats, cat_labels, week_starts,
                             'DELETE FROM cashflow_overrides WHERE line_item = %s',
                             (cat,),
                         )
+                    _load_cashflow_overrides.clear()
                     st.toast(f'Reset {cat_labels[cat]} to auto')
                     st.rerun()
                 except Exception as e:
@@ -907,6 +916,7 @@ def _save_edits(original_df, edited_df, label_to_cat, week_starts, is_actual_map
                        DO UPDATE SET override_amount = %s""",
                     (cat, ws, amount, amount),
                 )
+        _load_cashflow_overrides.clear()
         st.toast(f'Saved {len(changes)} override(s)')
         st.rerun()  # rebuild forecast with new overrides so totals update
     except Exception as e:
