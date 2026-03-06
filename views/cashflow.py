@@ -615,45 +615,52 @@ def _render_editable_table(forecast_df: pd.DataFrame, horizon_weeks: int):
                 overridden_cat_keys.add(cat)
                 break
 
-    # ── CSS ──
+    # ── CSS — all rules use !important to override Streamlit theme ──
     css = '''<style>
-    .cf-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid rgba(30,42,58,0.5);border-radius:8px;}
-    .cf-tbl{border-collapse:collapse;font-size:0.78rem;width:100%;min-width:1200px;}
-    .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums;}
-    .cf-month th{padding:6px 0;font-size:0.7rem;font-weight:700;text-transform:uppercase;
-      letter-spacing:0.06em;color:var(--text-color,#64748b);border-bottom:1px solid rgba(30,42,58,0.5);text-align:center;}
-    .cf-month th.ms{border-left:1px solid rgba(37,51,71,0.6);}
-    .cf-wk th{padding:3px 0;font-size:0.65rem;font-weight:600;color:var(--text-color,#475569);text-align:center;}
-    .cf-dt th{padding:4px 10px;font-size:0.68rem;font-weight:500;color:var(--text-color,#64748b);
-      text-align:right;border-bottom:2px solid rgba(30,42,58,0.5);white-space:nowrap;}
-    .cf-dt th.cw{font-weight:700;color:#818cf8;}
-    .cf-dt th.aw{color:#4ade80;}
-    .cf-lbl{text-align:left!important;padding-left:14px!important;font-weight:500;
-      position:sticky;left:0;z-index:2;min-width:160px;}
-    td.cf-lbl{color:var(--text-color,#e2e8f0);}
-    .cf-tbl td{padding:7px 10px;text-align:right;white-space:nowrap;border-bottom:1px solid rgba(17,24,39,0.6);
-      color:var(--text-color,#cbd5e1);}
-    .cf-even{background:rgba(14,17,23,0.0);}
-    .cf-odd{background:rgba(17,24,39,0.4);}
-    .cf-even .cf-lbl{background:inherit;}
-    .cf-odd .cf-lbl{background:inherit;}
-    .cf-z{color:rgba(51,65,85,0.7)!important;}
-    td.cf-cw{background:rgba(99,110,250,0.06)!important;}
-    th.cf-ms,td.cf-ms{border-left:1px solid rgba(37,51,71,0.6);}
-    .cf-sec td{padding:10px 14px 4px;font-size:0.7rem;text-transform:uppercase;
-      letter-spacing:0.06em;font-weight:700;color:var(--text-color,#64748b);border-bottom:none;}
-    .cf-sub td{font-weight:700;border-top:1px solid rgba(30,42,58,0.5);
-      border-bottom:1px solid rgba(30,42,58,0.5);padding:8px 10px;}
-    .cf-sub-g td{color:#4ade80;}
-    .cf-sub-r td{color:#f87171;}
-    .cf-sub-a td{color:#fbbf24;}
-    .cf-sub-m td{color:#94a3b8;}
-    .cf-sum td{font-weight:800;font-size:0.82rem;padding:9px 10px;
-      border-bottom:1px solid rgba(30,42,58,0.5);background:rgba(20,28,43,0.5)!important;}
-    .cf-sum .cf-lbl{background:rgba(20,28,43,0.5)!important;}
-    .cf-sum-net td{color:#fbbf24;}
-    .cf-sum-bal td{color:#60a5fa;}
-    .cf-sep td{border-top:2px solid rgba(51,65,85,0.6);padding:0;height:2px;}
+    .cf-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;
+      border:1px solid rgba(30,42,58,0.5)!important;border-radius:8px!important;}
+    .cf-tbl{border-collapse:collapse!important;font-size:0.78rem!important;width:100%!important;min-width:1200px!important;}
+    .cf-tbl th,.cf-tbl td{font-variant-numeric:tabular-nums!important;}
+    .cf-month th{padding:6px 0!important;font-size:0.7rem!important;font-weight:700!important;
+      text-transform:uppercase!important;letter-spacing:0.06em!important;color:#64748b!important;
+      border-bottom:1px solid rgba(30,42,58,0.5)!important;text-align:center!important;background:transparent!important;}
+    .cf-month th.ms{border-left:1px solid rgba(37,51,71,0.6)!important;}
+    .cf-wk th{padding:3px 0!important;font-size:0.65rem!important;font-weight:600!important;
+      color:#475569!important;text-align:center!important;background:transparent!important;}
+    .cf-dt th{padding:4px 10px!important;font-size:0.68rem!important;font-weight:500!important;
+      color:#64748b!important;text-align:right!important;border-bottom:2px solid rgba(30,42,58,0.5)!important;
+      white-space:nowrap!important;background:transparent!important;}
+    .cf-dt th.cw{font-weight:700!important;color:#818cf8!important;}
+    .cf-dt th.aw{color:#4ade80!important;}
+    .cf-lbl{text-align:left!important;padding-left:14px!important;font-weight:500!important;
+      position:sticky!important;left:0!important;z-index:2!important;min-width:160px!important;}
+    td.cf-lbl{color:#e2e8f0!important;}
+    .cf-tbl td{padding:7px 10px!important;text-align:right!important;white-space:nowrap!important;
+      border-bottom:1px solid rgba(30,42,58,0.3)!important;color:#cbd5e1!important;}
+    .cf-even td{background:transparent!important;}
+    .cf-odd td{background:rgba(255,255,255,0.03)!important;}
+    .cf-even td.cf-lbl{background:rgba(14,17,23,0.99)!important;}
+    .cf-odd td.cf-lbl{background:rgba(17,20,28,0.99)!important;}
+    .cf-z{color:rgba(100,116,139,0.4)!important;}
+    td.cf-cw{background:rgba(99,110,250,0.08)!important;}
+    th.cf-ms,td.cf-ms{border-left:1px solid rgba(37,51,71,0.6)!important;}
+    .cf-sec td{padding:10px 14px 4px!important;font-size:0.7rem!important;text-transform:uppercase!important;
+      letter-spacing:0.06em!important;font-weight:700!important;color:#64748b!important;
+      border-bottom:none!important;text-align:left!important;background:transparent!important;}
+    .cf-sub td{font-weight:700!important;border-top:1px solid rgba(30,42,58,0.5)!important;
+      border-bottom:1px solid rgba(30,42,58,0.5)!important;padding:8px 10px!important;background:transparent!important;}
+    .cf-sub .cf-lbl{background:rgba(14,17,23,0.99)!important;}
+    .cf-sub-g td{color:#4ade80!important;}
+    .cf-sub-r td{color:#f87171!important;}
+    .cf-sub-a td{color:#fbbf24!important;}
+    .cf-sub-m td{color:#94a3b8!important;}
+    .cf-sum td{font-weight:800!important;font-size:0.82rem!important;padding:9px 10px!important;
+      border-bottom:1px solid rgba(30,42,58,0.5)!important;background:rgba(20,28,43,0.6)!important;}
+    .cf-sum .cf-lbl{background:rgba(20,28,43,0.95)!important;}
+    .cf-sum-net td{color:#fbbf24!important;}
+    .cf-sum-bal td{color:#60a5fa!important;}
+    .cf-sep td{border-top:2px solid rgba(51,65,85,0.6)!important;padding:0!important;height:2px!important;
+      background:transparent!important;}
     </style>'''
 
     # ── Helper to format a value cell ──
