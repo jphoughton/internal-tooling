@@ -465,10 +465,12 @@ def render(ctx):
             retention_curve=_use_ret,
         ) if _yd_hero_nc > 0 and _yd_hero_spend > 0 else 0
 
+        _yd_est = d.get('yd_amz_projected', False) and _source_filter != 'shopify'
+        _yd_est_suffix = ' (est)' if _yd_est else ''
         y1, y2, y3, y4, y5 = st.columns(5)
-        y1.metric('Rev Yesterday', f"${_yd_hero_rev:,.0f}")
-        y2.metric('Spend Yesterday', f"${_yd_hero_spend:,.0f}")
-        y3.metric('New Cust Yesterday', f"{_yd_hero_nc:,}")
+        y1.metric(f'Rev Yesterday{_yd_est_suffix}', f"${_yd_hero_rev:,.0f}")
+        y2.metric(f'Spend Yesterday{_yd_est_suffix}', f"${_yd_hero_spend:,.0f}")
+        y3.metric(f'New Cust Yesterday{_yd_est_suffix}', f"{_yd_hero_nc:,}")
         y4.metric('NC-ROAS Yesterday', f"{_yd_nc_roas_val:.2f}x")
         y5.metric('CAC Payback Yesterday',
                    f'{_yd_cac_payback:.1f}mo' if _yd_cac_payback > 0 else '\u2014')

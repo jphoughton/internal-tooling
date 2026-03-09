@@ -1296,6 +1296,15 @@ def run_pacing_precompute(triggered_by='scheduler'):
         _yd_amz_nc = _amz['yd_amz_nc']
         _yd_amz_nc_rev = _amz['yd_amz_nc_rev']
 
+        # Project Amazon yesterday from L7D averages when actual data is missing (API lag)
+        _yd_amz_projected = False
+        if _yd_amz_rev == 0 and _l7d_amz_rev > 0:
+            _yd_amz_rev = _l7d_amz_rev  # already daily avg
+            _yd_amz_projected = True
+        if _yd_amz_spend == 0 and _l7d_amz_spend > 0:
+            _yd_amz_spend = _l7d_amz_spend  # already daily avg
+            _yd_amz_projected = True
+
         # Inject NC projection for yesterday
         if _yd_amz_nc == 0:
             _proj = _get_nc_proj()
@@ -1305,6 +1314,10 @@ def run_pacing_precompute(triggered_by='scheduler'):
                 _cm_amz_nc += _yd_amz_nc
                 _cm_amz_nc_rev += _yd_amz_nc_rev
                 _amz_nc_projected = True
+            elif _l7d_amz_nc > 0:
+                _yd_amz_nc = int(round(_l7d_amz_nc))  # already daily avg
+                _yd_amz_nc_rev = _l7d_amz_nc_rev  # already daily avg
+                _yd_amz_projected = True
 
         _cm_dtc_total_cust = _amz['cm_dtc_total_cust']
         _cm_amz_total_cust = _amz['cm_amz_total_cust']
@@ -1437,6 +1450,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'yd_nc': _yd_nc, 'yd_spend': _yd_spend,
             'yd_amz_rev': _yd_amz_rev, 'yd_amz_spend': _yd_amz_spend,
             'yd_amz_nc': _yd_amz_nc, 'yd_amz_nc_rev': _yd_amz_nc_rev,
+            'yd_amz_projected': _yd_amz_projected,
             'business_mer': _business_mer,
             'total_nc_roas': _total_nc_roas, 'total_nc_cpa': _total_nc_cpa,
             'dtc_nc_roas': _dtc_nc_roas, 'dtc_nc_aov': _dtc_nc_aov,
