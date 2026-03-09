@@ -11,8 +11,6 @@ from db import (
 )
 from analytics.dtc_demand import build_master_dtc_forecast
 from analytics.metrics import (
-    get_channel_revenue, get_amazon_spend, get_amazon_spend_projected, get_nc_stats,
-    nc_revenue_fraction, project_daily_spend_gaps,
     compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
 )
 from analytics.retention import get_projected_new_repeat_summary
@@ -197,6 +195,138 @@ def _load_gs_spend():
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=600)
+def _load_amazon_daily():
+    """Load Amazon daily data with L7D projection for incomplete/missing recent days.
+
+    Returns a DataFrame with columns: sale_date, _date, _amz_revenue, _amz_spend,
+    _amz_new_cust, _amz_repeat_cust, _amz_new_rev, _amz_repeat_rev.
+    Shared by both the pacing hero tiles and the performance tables.
+    """
+    log = logging.getLogger(__name__)
+    try:
+        with get_db() as conn:
+            rev_daily = read_sql(
+                "SELECT sale_date, SUM(revenue) as _amz_revenue "
+                "FROM daily_sku_sales WHERE source = 'amazon' "
+                "GROUP BY sale_date ORDER BY sale_date",
+                conn,
+            )
+            spend_daily = read_sql(
+                "SELECT date as sale_date, spend as _amz_spend "
+                "FROM amazon_daily_rollup ORDER BY date",
+                conn,
+            )
+            cust_daily = read_sql(
+                "SELECT DATE(o.order_date) AS sale_date, "
+                "COUNT(DISTINCT o.customer_id) AS total_customers, "
+                "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                "THEN o.customer_id END) AS new_customers, "
+                "SUM(oi.total_price) AS oi_total_rev, "
+                "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+                "FROM orders o "
+                "JOIN customers c ON o.customer_id = c.customer_id "
+                "JOIN order_items oi ON o.order_id = oi.order_id "
+                "WHERE o.source = %s "
+                "GROUP BY DATE(o.order_date)",
+                conn,
+                params=('amazon',),
+            )
+        if rev_daily.empty:
+            return pd.DataFrame()
+
+        df = rev_daily.copy()
+        df["_date"] = pd.to_datetime(df["sale_date"])
+        if not spend_daily.empty:
+            try:
+                from analytics.metrics import project_daily_spend_gaps
+                spend_daily = project_daily_spend_gaps(
+                    spend_daily, date_col='sale_date', spend_col='_amz_spend')
+            except Exception:
+                pass
+            df = df.merge(
+                spend_daily[['sale_date', '_amz_spend']], on="sale_date", how="left")
+        if "_amz_spend" not in df.columns:
+            df["_amz_spend"] = 0
+        df["_amz_spend"] = df["_amz_spend"].fillna(0)
+
+        if not cust_daily.empty:
+            cust_daily["sale_date"] = cust_daily["sale_date"].astype(str)
+            df = df.merge(
+                cust_daily[["sale_date", "total_customers", "new_customers",
+                            "oi_total_rev", "oi_new_rev"]],
+                on="sale_date", how="left",
+            )
+        for col in ["total_customers", "new_customers", "oi_total_rev", "oi_new_rev"]:
+            if col not in df.columns:
+                df[col] = 0
+            df[col] = df[col].fillna(0)
+
+        df["_amz_new_cust"] = df["new_customers"].astype(int)
+        df["_amz_repeat_cust"] = (df["total_customers"] - df["new_customers"]).clip(lower=0).astype(int)
+
+        oi_total = df["oi_total_rev"]
+        new_frac = (df["oi_new_rev"] / oi_total).where(oi_total > 0, 0)
+        df["_amz_new_rev"] = df["_amz_revenue"] * new_frac
+        df["_amz_repeat_rev"] = df["_amz_revenue"] * (1 - new_frac)
+        # Exclude today
+        df = df[df['_date'].dt.date < date.today()]
+
+        # Project incomplete/missing recent Amazon days using L7D stable window
+        if len(df) >= 10 and "_amz_new_cust" in df.columns:
+            sorted_df = df.sort_values("_date")
+            stable = sorted_df.iloc[-10:-3]
+            if not stable.empty:
+                avg = {
+                    "_amz_new_cust": stable["_amz_new_cust"].mean(),
+                    "_amz_repeat_cust": stable["_amz_repeat_cust"].mean(),
+                    "_amz_new_rev": stable["_amz_new_rev"].mean(),
+                    "_amz_repeat_rev": stable["_amz_repeat_rev"].mean(),
+                    "_amz_revenue": stable["_amz_revenue"].mean(),
+                    "_amz_spend": stable["_amz_spend"].mean(),
+                }
+                threshold = 0.4
+
+                # 1. Backfill existing rows with incomplete data
+                for idx in sorted_df.index[-3:]:
+                    row_nc = sorted_df.at[idx, "_amz_new_cust"]
+                    if avg["_amz_new_cust"] > 0 and row_nc < avg["_amz_new_cust"] * threshold:
+                        for k, v in avg.items():
+                            df.at[idx, k] = round(v) if 'cust' in k else round(v, 2)
+
+                # 2. Create projected rows for missing recent days
+                from datetime import timedelta
+                yesterday = date.today() - timedelta(days=1)
+                max_date = sorted_df["_date"].max().date()
+                gap_rows = []
+                cur = max_date + timedelta(days=1)
+                while cur <= yesterday:
+                    gap_rows.append({
+                        "sale_date": str(cur),
+                        "_date": pd.Timestamp(cur),
+                        "_amz_revenue": round(avg["_amz_revenue"], 2),
+                        "_amz_spend": round(avg["_amz_spend"], 2),
+                        "_amz_new_cust": round(avg["_amz_new_cust"]),
+                        "_amz_repeat_cust": round(avg["_amz_repeat_cust"]),
+                        "_amz_new_rev": round(avg["_amz_new_rev"], 2),
+                        "_amz_repeat_rev": round(avg["_amz_repeat_rev"], 2),
+                    })
+                    cur += timedelta(days=1)
+                if gap_rows:
+                    log.info(
+                        'Amazon NC projection: adding %d gap rows (max_date=%s, yesterday=%s, avg_nc=%.1f)',
+                        len(gap_rows), max_date, yesterday, avg["_amz_new_cust"])
+                    df = pd.concat(
+                        [df, pd.DataFrame(gap_rows)],
+                        ignore_index=True,
+                    )
+        return df
+    except Exception as exc:
+        log.warning('Amazon daily build failed: %s', exc, exc_info=True)
+        return pd.DataFrame()
+
+
 def render(ctx):
     """Render the Marketing page."""
     _cached_waterfall = ctx['cached_waterfall']
@@ -218,6 +348,7 @@ def render(ctx):
     # Load Shopify DB metrics (revenue, orders, new/repeat customers)
     _shopify_daily = _load_shopify_daily_metrics()
     _gs_spend = _load_gs_spend()
+    _amz_daily = _load_amazon_daily()
     _has_shopify_data = not _shopify_daily.empty
 
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend/sessions
@@ -338,20 +469,20 @@ def render(ctx):
             _cm_nc = int(mkt_df.loc[_cm_mask, "_nc_orders"].sum())
             _cm_ret_orders = int(mkt_df.loc[_cm_mask, "_ret_orders"].sum()) if _cm_mask.any() else 0
 
-            # Amazon MTD: Revenue, Spend, NC from centralized helpers
+            # Amazon MTD: from shared _amz_daily (includes L7D projections)
             _cm_amz_rev = 0
             _cm_amz_spend = 0
             _cm_amz_nc = 0
             _cm_amz_nc_rev = 0
-            try:
-                with get_db() as _amz_conn:
-                    _cm_amz_rev = get_channel_revenue(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-                    _cm_amz_spend, _, _ = get_amazon_spend_projected(_amz_conn, f"{_cur_month}-01", _yesterday_str)
-                    _nc = get_nc_stats(_amz_conn, 'amazon', f"{_cur_month}-01", _yesterday_str)
-                    _cm_amz_nc = _nc['new_customers']
-                    _cm_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _cm_amz_rev)
-            except Exception:
-                pass
+            if not _amz_daily.empty:
+                _amz_cm = _amz_daily[
+                    (_amz_daily['_date'].dt.strftime('%Y-%m') == _cur_month)
+                    & (_amz_daily['_date'].dt.date <= _yesterday)
+                ]
+                _cm_amz_rev = _amz_cm['_amz_revenue'].sum()
+                _cm_amz_spend = _amz_cm['_amz_spend'].sum()
+                _cm_amz_nc = int(_amz_cm['_amz_new_cust'].sum())
+                _cm_amz_nc_rev = _amz_cm['_amz_new_rev'].sum()
 
             # Revenue GOALS from the forecast engine
             _goal_nc_rev = 0
@@ -391,22 +522,21 @@ def render(ctx):
             _l7d_spend = mkt_df.loc[_l7d_mask, "_ad_spend"].sum() / 7 if _l7d_mask.any() else 0
             _l7d_nc = mkt_df.loc[_l7d_mask, "_nc_orders"].sum() / 7 if _l7d_mask.any() else 0
 
-            # Amazon L7D from centralized helpers (divided by 7 for daily avg)
+            # Amazon L7D from shared _amz_daily (divided by 7 for daily avg)
             _l7d_amz_rev = 0
             _l7d_amz_spend = 0
             _l7d_amz_nc = 0
             _l7d_amz_nc_rev = 0
-            try:
-                _l7d_start_str = str(_l7d_start)
-                with get_db() as _l7_conn:
-                    _l7d_amz_rev = get_channel_revenue(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str) / 7
-                    _l7d_amz_spend_total, _, _ = get_amazon_spend_projected(_l7_conn, _l7d_start_str, _yesterday_str)
-                    _l7d_amz_spend = _l7d_amz_spend_total / 7
-                    _nc = get_nc_stats(_l7_conn, 'amazon', _l7d_start_str, _yesterday_str)
-                    _l7d_amz_nc = _nc['new_customers'] / 7
-                    _l7d_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _l7d_amz_rev * 7) / 7
-            except Exception:
-                pass
+            if not _amz_daily.empty:
+                _amz_l7d = _amz_daily[
+                    (_amz_daily['_date'].dt.date >= _l7d_start)
+                    & (_amz_daily['_date'].dt.date <= _yesterday)
+                ]
+                if not _amz_l7d.empty:
+                    _l7d_amz_rev = _amz_l7d['_amz_revenue'].sum() / 7
+                    _l7d_amz_spend = _amz_l7d['_amz_spend'].sum() / 7
+                    _l7d_amz_nc = _amz_l7d['_amz_new_cust'].sum() / 7
+                    _l7d_amz_nc_rev = _amz_l7d['_amz_new_rev'].sum() / 7
 
             # Yesterday actuals from Google Sheet
             _yd_mask = mkt_df["_date"].dt.strftime("%Y-%m-%d") == _yesterday_str
@@ -416,20 +546,18 @@ def render(ctx):
             _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
             _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-            # Amazon yesterday from centralized helpers
+            # Amazon yesterday from shared _amz_daily
             _yd_amz_rev = 0
             _yd_amz_spend = 0
             _yd_amz_nc = 0
             _yd_amz_nc_rev = 0
-            try:
-                with get_db() as _yd_conn:
-                    _yd_amz_rev = get_channel_revenue(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-                    _yd_amz_spend, _, _ = get_amazon_spend_projected(_yd_conn, _yesterday_str, _yesterday_str)
-                    _nc = get_nc_stats(_yd_conn, 'amazon', _yesterday_str, _yesterday_str)
-                    _yd_amz_nc = _nc['new_customers']
-                    _yd_amz_nc_rev = nc_revenue_fraction(_nc['oi_total_rev'], _nc['oi_new_rev'], _yd_amz_rev)
-            except Exception:
-                pass
+            if not _amz_daily.empty:
+                _amz_yd = _amz_daily[_amz_daily['_date'].dt.strftime('%Y-%m-%d') == _yesterday_str]
+                if not _amz_yd.empty:
+                    _yd_amz_rev = _amz_yd['_amz_revenue'].sum()
+                    _yd_amz_spend = _amz_yd['_amz_spend'].sum()
+                    _yd_amz_nc = int(_amz_yd['_amz_new_cust'].sum())
+                    _yd_amz_nc_rev = _amz_yd['_amz_new_rev'].sum()
 
             _remaining_days = _days_in_month - _day_of_month
             _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
@@ -748,129 +876,7 @@ def render(ctx):
             # Exclude today — always start with yesterday
             _perf_df = _perf_df[_perf_df['_date'].dt.date < date.today()]
 
-            # Amazon daily data: revenue from daily_sku_sales, spend from amazon_daily_rollup,
-            # new/repeat customer counts and revenue from orders/customers/order_items
-            _amz_daily = pd.DataFrame()
-            try:
-                with get_db() as _amz_perf_conn:
-                    _amz_rev_daily = read_sql(
-                        "SELECT sale_date, SUM(revenue) as _amz_revenue "
-                        "FROM daily_sku_sales WHERE source = 'amazon' "
-                        "GROUP BY sale_date ORDER BY sale_date",
-                        _amz_perf_conn,
-                    )
-                    _amz_spend_daily = read_sql(
-                        "SELECT date as sale_date, spend as _amz_spend "
-                        "FROM amazon_daily_rollup ORDER BY date",
-                        _amz_perf_conn,
-                    )
-                    # New/repeat customer counts and order_items revenue by day
-                    _amz_cust_daily = read_sql(
-                        "SELECT DATE(o.order_date) AS sale_date, "
-                        "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                        "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                        "THEN o.customer_id END) AS new_customers, "
-                        "SUM(oi.total_price) AS oi_total_rev, "
-                        "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                        "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                        "FROM orders o "
-                        "JOIN customers c ON o.customer_id = c.customer_id "
-                        "JOIN order_items oi ON o.order_id = oi.order_id "
-                        "WHERE o.source = %s "
-                        "GROUP BY DATE(o.order_date)",
-                        _amz_perf_conn,
-                        params=('amazon',),
-                    )
-                if not _amz_rev_daily.empty:
-                    _amz_daily = _amz_rev_daily
-                    _amz_daily["_date"] = pd.to_datetime(_amz_daily["sale_date"])
-                    if not _amz_spend_daily.empty:
-                        try:
-                            _amz_spend_daily = project_daily_spend_gaps(
-                                _amz_spend_daily, date_col='sale_date', spend_col='_amz_spend')
-                        except Exception:
-                            pass
-                        _amz_daily = _amz_daily.merge(
-                            _amz_spend_daily[['sale_date', '_amz_spend']], on="sale_date", how="left")
-                    if "_amz_spend" not in _amz_daily.columns:
-                        _amz_daily["_amz_spend"] = 0
-                    _amz_daily["_amz_spend"] = _amz_daily["_amz_spend"].fillna(0)
-
-                    # Merge customer data and derive new/repeat counts + proportionally scaled revenue
-                    if not _amz_cust_daily.empty:
-                        _amz_cust_daily["sale_date"] = _amz_cust_daily["sale_date"].astype(str)
-                        _amz_daily = _amz_daily.merge(
-                            _amz_cust_daily[["sale_date", "total_customers", "new_customers",
-                                             "oi_total_rev", "oi_new_rev"]],
-                            on="sale_date", how="left",
-                        )
-                    for _col in ["total_customers", "new_customers", "oi_total_rev", "oi_new_rev"]:
-                        if _col not in _amz_daily.columns:
-                            _amz_daily[_col] = 0
-                        _amz_daily[_col] = _amz_daily[_col].fillna(0)
-
-                    _amz_daily["_amz_new_cust"] = _amz_daily["new_customers"].astype(int)
-                    _amz_daily["_amz_repeat_cust"] = (_amz_daily["total_customers"] - _amz_daily["new_customers"]).clip(lower=0).astype(int)
-
-                    # Scale new/repeat revenue proportionally from daily_sku_sales total
-                    _oi_total = _amz_daily["oi_total_rev"]
-                    _new_frac = (_amz_daily["oi_new_rev"] / _oi_total).where(_oi_total > 0, 0)
-                    _amz_daily["_amz_new_rev"] = _amz_daily["_amz_revenue"] * _new_frac
-                    _amz_daily["_amz_repeat_rev"] = _amz_daily["_amz_revenue"] * (1 - _new_frac)
-                    # Exclude today — always start with yesterday
-                    _amz_daily = _amz_daily[_amz_daily['_date'].dt.date < date.today()]
-
-                    # Project incomplete/missing recent Amazon days using L7D stable
-                    # window averages. Amazon API data often lags 1-2 days.
-                    if len(_amz_daily) >= 10 and "_amz_new_cust" in _amz_daily.columns:
-                        _amz_sorted = _amz_daily.sort_values("_date")
-                        _amz_stable = _amz_sorted.iloc[-10:-3]  # days -10 to -4
-                        if not _amz_stable.empty:
-                            _avg = {
-                                "_amz_new_cust": _amz_stable["_amz_new_cust"].mean(),
-                                "_amz_repeat_cust": _amz_stable["_amz_repeat_cust"].mean(),
-                                "_amz_new_rev": _amz_stable["_amz_new_rev"].mean(),
-                                "_amz_repeat_rev": _amz_stable["_amz_repeat_rev"].mean(),
-                                "_amz_revenue": _amz_stable["_amz_revenue"].mean(),
-                                "_amz_spend": _amz_stable["_amz_spend"].mean(),
-                            }
-                            _threshold = 0.4
-
-                            # 1. Backfill existing rows with incomplete data
-                            for _idx in _amz_sorted.index[-3:]:
-                                _row_nc = _amz_sorted.at[_idx, "_amz_new_cust"]
-                                if _avg["_amz_new_cust"] > 0 and _row_nc < _avg["_amz_new_cust"] * _threshold:
-                                    for _k, _v in _avg.items():
-                                        _amz_daily.at[_idx, _k] = round(_v) if 'cust' in _k else round(_v, 2)
-
-                            # 2. Create projected rows for missing recent days
-                            from datetime import timedelta
-                            _yesterday = date.today() - timedelta(days=1)
-                            _amz_max_date = _amz_sorted["_date"].max().date()
-                            _gap_rows = []
-                            _cur = _amz_max_date + timedelta(days=1)
-                            while _cur <= _yesterday:
-                                _gap_rows.append({
-                                    "sale_date": str(_cur),
-                                    "_date": pd.Timestamp(_cur),
-                                    "_amz_revenue": round(_avg["_amz_revenue"], 2),
-                                    "_amz_spend": round(_avg["_amz_spend"], 2),
-                                    "_amz_new_cust": round(_avg["_amz_new_cust"]),
-                                    "_amz_repeat_cust": round(_avg["_amz_repeat_cust"]),
-                                    "_amz_new_rev": round(_avg["_amz_new_rev"], 2),
-                                    "_amz_repeat_rev": round(_avg["_amz_repeat_rev"], 2),
-                                })
-                                _cur += timedelta(days=1)
-                            if _gap_rows:
-                                logging.getLogger(__name__).info(
-                                    'Amazon NC projection: adding %d gap rows (max_date=%s, yesterday=%s, avg_nc=%.1f)',
-                                    len(_gap_rows), _amz_max_date, _yesterday, _avg["_amz_new_cust"])
-                                _amz_daily = pd.concat(
-                                    [_amz_daily, pd.DataFrame(_gap_rows)],
-                                    ignore_index=True,
-                                )
-            except Exception as _amz_exc:
-                logging.getLogger(__name__).warning('Amazon daily build failed: %s', _amz_exc, exc_info=True)
+            # _amz_daily is pre-loaded by _load_amazon_daily() (shared with pacing hero tiles)
 
             # --- DAY OVER DAY ---
             with _perf_tab_dod:
