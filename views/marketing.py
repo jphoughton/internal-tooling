@@ -1,4 +1,5 @@
 """Marketing page — Google Sheet analytics, pacing, DoD/WoW/MoM performance."""
+import logging
 from datetime import date
 import streamlit as st
 import pandas as pd
@@ -115,33 +116,10 @@ def _load_shopify_daily_metrics():
     return _merge_shopify_daily(rev_df, cust_df)
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=600)
 def _load_gs_spend():
     """Load ad spend and subscription data from Google Sheet."""
-    # Try precomputed data first
-    try:
-        import json as _json_pre
-        from db import get_precomputed
-        with get_db() as conn:
-            cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
-        if cached:
-            return pd.DataFrame(_json_pre.loads(cached))
-    except Exception:
-        pass
-
-    with get_db() as conn:
-        try:
-            cols = [d["column_name"] for d in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'google_sheet_data'"
-            ).fetchall()]
-            if "date" not in cols:
-                return pd.DataFrame()
-        except Exception:
-            return pd.DataFrame()
-        df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
-    if df.empty:
-        return df
+    log = logging.getLogger(__name__)
 
     def _clean_num(val):
         if pd.isna(val):
@@ -152,19 +130,63 @@ def _load_gs_spend():
         except (ValueError, TypeError):
             return 0.0
 
-    df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
-    df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
+    def _parse_spend_df(df):
+        """Convert raw google_sheet_data DataFrame to cleaned spend DataFrame."""
+        df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
+        df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
+        sub_cols = []
+        for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions',
+                         'total_active_subscriptions', 'total_new_subscriptions',
+                         'total_cancelled_subscriptions', 'total_subscription_order_revenue']:
+            if sub_col in df.columns:
+                df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
+                sub_cols.append(f'_{sub_col}')
+        return df[['_date', '_ad_spend'] + sub_cols].copy()
 
-    # Keep subscription columns if present
-    sub_cols = []
-    for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions',
-                     'total_active_subscriptions', 'total_new_subscriptions',
-                     'total_cancelled_subscriptions', 'total_subscription_order_revenue']:
-        if sub_col in df.columns:
-            df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
-            sub_cols.append(f'_{sub_col}')
+    # Path 1: precomputed data (fastest)
+    try:
+        import json as _json_pre
+        from db import get_precomputed
+        with get_db() as conn:
+            cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
+        if cached:
+            return pd.DataFrame(_json_pre.loads(cached))
+    except Exception as exc:
+        log.warning('gs_spend precomputed cache failed: %s', exc)
 
-    return df[['_date', '_ad_spend'] + sub_cols].copy()
+    # Path 2: live DB table
+    try:
+        with get_db() as conn:
+            cols = [d["column_name"] for d in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'google_sheet_data'"
+            ).fetchall()]
+            if "date" in cols and "blended_ad_spend" in cols:
+                df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
+                if not df.empty:
+                    return _parse_spend_df(df)
+            else:
+                log.warning('google_sheet_data missing required columns: have %s', cols[:5])
+    except Exception as exc:
+        log.warning('gs_spend DB query failed: %s', exc)
+
+    # Path 3: direct fetch from Google Sheets (fallback)
+    try:
+        from etl.google_sheets import fetch_daily_data_tab
+        import re as _re_gs
+        df = fetch_daily_data_tab()
+        if not df.empty:
+            df.columns = [
+                _re_gs.sub(r'[^a-z0-9_]', '', c.strip().lower().replace(' ', '_').replace('-', '_'))
+                for c in df.columns
+            ]
+            if 'date' in df.columns and 'blended_ad_spend' in df.columns:
+                log.info('gs_spend loaded via direct sheet fetch (%d rows)', len(df))
+                return _parse_spend_df(df)
+    except Exception as exc:
+        log.warning('gs_spend direct sheet fetch failed: %s', exc)
+
+    return pd.DataFrame()
 
 
 def render(ctx):
