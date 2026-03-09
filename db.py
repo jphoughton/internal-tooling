@@ -439,6 +439,15 @@ _SCHEMA_SQL = [
         PRIMARY KEY (invoice_number)
     )""",
 
+    """CREATE TABLE IF NOT EXISTS page_errors (
+        id SERIAL PRIMARY KEY,
+        page TEXT NOT NULL,
+        error_type TEXT NOT NULL,
+        error_message TEXT NOT NULL,
+        traceback TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -452,6 +461,7 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_cashflow_overrides_week ON cashflow_overrides(week_start)",
     "CREATE INDEX IF NOT EXISTS idx_orders_source_customer ON orders(source, customer_id)",
     "CREATE INDEX IF NOT EXISTS idx_orders_source_date ON orders(source, order_date)",
+    "CREATE INDEX IF NOT EXISTS idx_orders_source_total_customer ON orders(source, total_amount, customer_id, order_date)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
@@ -1347,6 +1357,43 @@ def get_model_run(conn: ConnectionWrapper, model_name: str) -> Optional[dict[str
     except Exception as exc:
         logger.error('get_model_run failed for model=%s: %s', model_name, exc)
         raise DatabaseError(f'get_model_run failed: {exc}') from exc
+
+
+# ---------------------------------------------------------------------------
+# Page error logging
+# ---------------------------------------------------------------------------
+def log_page_error(
+    conn: ConnectionWrapper,
+    page: str,
+    error_type: str,
+    error_message: str,
+    traceback_str: Optional[str] = None,
+) -> None:
+    """Log a page rendering error for automated monitoring."""
+    try:
+        conn.execute("""
+            INSERT INTO page_errors (page, error_type, error_message, traceback)
+            VALUES (%s, %s, %s, %s)
+        """, (page, error_type, error_message[:2000], (traceback_str or '')[:10000]))
+    except Exception as exc:
+        logger.error('log_page_error failed for page=%s: %s', page, exc)
+
+
+def get_recent_page_errors(conn: ConnectionWrapper, hours: int = 24) -> list[dict]:
+    """Return page errors from the last N hours."""
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    try:
+        rows = conn.execute("""
+            SELECT id, page, error_type, error_message, traceback, created_at
+            FROM page_errors
+            WHERE created_at > %s
+            ORDER BY created_at DESC
+        """, (cutoff,)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.error('get_recent_page_errors failed: %s', exc)
+        return []
 
 
 # ---------------------------------------------------------------------------

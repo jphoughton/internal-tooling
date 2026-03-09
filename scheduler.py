@@ -74,12 +74,27 @@ def healthcheck_job():
         traceback.print_exc()
 
 
+def error_report_job():
+    """Check for page errors and create GitHub issues."""
+    print(f"\n{'='*60}")
+    print(f"Error report at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+    try:
+        from report_errors import run_report
+        run_report(dry_run=False)
+    except Exception as e:
+        print(f"Error report failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def run_daemon():
     """Run scheduler in daemon mode — keeps running and triggers daily at 5 AM PST.
 
     Also runs Amazon-only catchup syncs at 11 AM and 5 PM PST to pick up
     delayed S&T report data (Amazon has 24-48h reporting lag).
     Health check runs at 6:30 AM to verify sync results and auto-fix failures.
+    Error report runs at 6:45 AM to create GitHub issues for any page crashes.
     """
     sync_time = f"{SYNC_HOUR:02d}:{SYNC_MINUTE:02d}"
     schedule.every().day.at(sync_time, SYNC_TIMEZONE).do(daily_job)
@@ -87,12 +102,15 @@ def run_daemon():
     # Post-sync health check — runs 90 min after sync to allow completion
     schedule.every().day.at("06:30", SYNC_TIMEZONE).do(healthcheck_job)
 
+    # Page error report — creates GitHub issues for dashboard crashes
+    schedule.every().day.at("06:45", SYNC_TIMEZONE).do(error_report_job)
+
     # Amazon catchup syncs — S&T data arrives with a lag, retry twice more daily
     schedule.every().day.at("11:00", SYNC_TIMEZONE).do(amazon_catchup_job)
     schedule.every().day.at("17:00", SYNC_TIMEZONE).do(amazon_catchup_job)
 
     print(f"Scheduler started. Daily sync at {sync_time} {SYNC_TIMEZONE}.")
-    print(f"Health check at 06:30 {SYNC_TIMEZONE}.")
+    print(f"Health check at 06:30, error report at 06:45 {SYNC_TIMEZONE}.")
     print(f"Amazon catchup syncs at 11:00 and 17:00 {SYNC_TIMEZONE}.")
     print(f"Press Ctrl+C to stop.\n")
 

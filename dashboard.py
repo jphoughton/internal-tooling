@@ -40,14 +40,47 @@ _CACHE_VERSION = 'v2'  # bump to force cache invalidation on deploy
 
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_retention_curve(source_filter):
+    """Load retention curve from precomputed table first, fall back to live query."""
+    import json as _json
+    key = f"retention_curve_{source_filter or 'shopify'}"
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            data = _json.loads(cached)
+            # Keys come back as strings from JSON — convert to int
+            return {int(k): v for k, v in data.items()}
+    except Exception:
+        pass
     return get_average_retention_curve(source_filter)
 
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_customer_retention_curve(source_filter):
+    """Load customer retention curve from precomputed table first, fall back to live query."""
+    import json as _json
+    key = f"customer_retention_curve_{source_filter or 'shopify'}"
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            data = _json.loads(cached)
+            return {int(k): v for k, v in data.items()}
+    except Exception:
+        pass
     return get_customer_retention_curve(source_filter)
 
 @st.cache_data(ttl=_CACHE_TTL)
 def _cached_aov_and_units(source_filter):
+    """Load AOV/units from precomputed table first, fall back to live query."""
+    import json as _json
+    key = f"aov_and_units_{source_filter or 'shopify'}"
+    try:
+        with get_db() as conn:
+            cached = get_precomputed(conn, key, max_age_hours=25)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
     return get_aov_and_units(source_filter)
 
 @st.cache_data(ttl=_CACHE_TTL)
@@ -801,27 +834,32 @@ _ctx = {
     'global_alerts': _global_alerts,
 }
 
-if _page_type == 'Overview':
-    from views.overview import render
-    render(_ctx)
-elif _page_type == 'Marketing':
-    from views.marketing import render
-    render(_ctx)
-elif _page_type == 'Retention':
-    from views.retention import render
-    render(_ctx)
-elif _page_type == 'Ops':
-    from views.ops import render
-    render(_ctx)
-elif _page_type == 'Cash Flow':
-    from views.cashflow import render
-    render(_ctx)
-elif _page_type == 'Financials':
-    from views.financials import render
-    render(_ctx)
-elif _page_type == 'Settings':
-    from views.settings import render
-    render(_ctx)
-elif _page_type == 'Variables':
-    from views.variables import render
-    render(_ctx)
+_page_modules = {
+    'Overview': 'views.overview',
+    'Marketing': 'views.marketing',
+    'Retention': 'views.retention',
+    'Ops': 'views.ops',
+    'Cash Flow': 'views.cashflow',
+    'Financials': 'views.financials',
+    'Settings': 'views.settings',
+    'Variables': 'views.variables',
+}
+
+if _page_type in _page_modules:
+    import importlib
+    _mod = importlib.import_module(_page_modules[_page_type])
+    try:
+        _mod.render(_ctx)
+    except Exception as _page_exc:
+        import traceback as _tb
+        _tb_str = _tb.format_exc()
+        st.error(f'{type(_page_exc).__name__}: {_page_exc}')
+        st.expander('Traceback:').code(_tb_str)
+        # Log to DB for automated monitoring
+        try:
+            from db import get_db, log_page_error
+            _full_page = f'{_channel} {_page_type}' if _channel else _page_type
+            with get_db() as _err_conn:
+                log_page_error(_err_conn, _full_page, type(_page_exc).__name__, str(_page_exc), _tb_str)
+        except Exception:
+            pass  # don't let error logging break the page
