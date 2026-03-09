@@ -835,9 +835,32 @@ def _project_missing_days(actuals_df, last_data_date, projection_end, nc_aov):
     """Use DOW-adjusted trailing average to project new customers + revenue
     for each missing day between last_data_date+1 and projection_end.
 
+    Also detects partial data: if the last few days have < 40% of the
+    trailing average, projects the shortfall (common with Amazon API lag).
+
     Returns (projected_customers, projected_revenue, gap_days, method).
     Returns (0, 0, 0, None) when no projection is needed.
     """
+    # Check for partial recent data even when last_data_date >= projection_end
+    if last_data_date is not None and projection_end <= last_data_date and not actuals_df.empty and len(actuals_df) >= 7:
+        overall_avg = actuals_df['new_customers'].mean()
+        if overall_avg > 3:  # only project if meaningful volume
+            # Check last 3 days for partial data
+            recent = actuals_df.sort_values('first_order_date').tail(3)
+            stable = actuals_df.sort_values('first_order_date').iloc[:-3]
+            if len(stable) >= 4:
+                stable_avg = stable['new_customers'].mean()
+                shortfall = 0.0
+                partial_days = 0
+                for _, row in recent.iterrows():
+                    if stable_avg > 0 and row['new_customers'] < stable_avg * 0.4:
+                        shortfall += stable_avg - row['new_customers']
+                        partial_days += 1
+                if partial_days > 0:
+                    shortfall = round(shortfall)
+                    shortfall_rev = round(shortfall * nc_aov, 2) if nc_aov > 0 else 0.0
+                    return int(shortfall), shortfall_rev, partial_days, 'partial_backfill'
+
     if last_data_date is None or projection_end <= last_data_date:
         return 0, 0.0, 0, None
 

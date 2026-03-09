@@ -819,6 +819,28 @@ def render(ctx):
                     _amz_daily["_amz_repeat_rev"] = _amz_daily["_amz_revenue"] * (1 - _new_frac)
                     # Exclude today — always start with yesterday
                     _amz_daily = _amz_daily[_amz_daily['_date'].dt.date < date.today()]
+
+                    # Project incomplete recent Amazon days: if the last few days
+                    # have significantly fewer customers than the trailing average,
+                    # top them up to the L7D average (Amazon API data often lags).
+                    _amz_nc_cols = ["_amz_new_cust", "_amz_repeat_cust",
+                                    "_amz_new_rev", "_amz_repeat_rev"]
+                    if len(_amz_daily) >= 10 and "_amz_new_cust" in _amz_daily.columns:
+                        _amz_sorted = _amz_daily.sort_values("_date")
+                        _amz_l7d = _amz_sorted.iloc[-10:-3]  # days -10 to -4 (stable window)
+                        if not _amz_l7d.empty:
+                            _amz_l7d_nc_avg = _amz_l7d["_amz_new_cust"].mean()
+                            _amz_l7d_rep_avg = _amz_l7d["_amz_repeat_cust"].mean()
+                            _amz_l7d_new_rev_avg = _amz_l7d["_amz_new_rev"].mean()
+                            _amz_l7d_rep_rev_avg = _amz_l7d["_amz_repeat_rev"].mean()
+                            _threshold = 0.4  # if below 40% of average, project
+                            for _idx in _amz_sorted.index[-3:]:  # last 3 days
+                                _row_nc = _amz_sorted.at[_idx, "_amz_new_cust"]
+                                if _amz_l7d_nc_avg > 0 and _row_nc < _amz_l7d_nc_avg * _threshold:
+                                    _amz_daily.at[_idx, "_amz_new_cust"] = round(_amz_l7d_nc_avg)
+                                    _amz_daily.at[_idx, "_amz_repeat_cust"] = round(_amz_l7d_rep_avg)
+                                    _amz_daily.at[_idx, "_amz_new_rev"] = round(_amz_l7d_new_rev_avg, 2)
+                                    _amz_daily.at[_idx, "_amz_repeat_rev"] = round(_amz_l7d_rep_rev_avg, 2)
             except Exception:
                 pass
 
