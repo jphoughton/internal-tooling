@@ -281,14 +281,16 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
 
     yesterday = business_yesterday()
 
-    # Merge Shopify with spend
+    # Merge Shopify with spend — coerce _date to datetime first to avoid type mismatch
     dtc = shopify_daily.copy()
+    dtc['_date'] = pd.to_datetime(dtc['_date'])
     if not gs_spend.empty:
-        dtc = dtc.merge(gs_spend[['_date', '_ad_spend']], on='_date', how='left', suffixes=('', '_gs'))
+        gs = gs_spend[['_date', '_ad_spend']].copy()
+        gs['_date'] = pd.to_datetime(gs['_date'])
+        dtc = dtc.merge(gs, on='_date', how='left', suffixes=('', '_gs'))
     if '_ad_spend' not in dtc.columns:
         dtc['_ad_spend'] = 0
     dtc['_ad_spend'] = dtc['_ad_spend'].fillna(0)
-    dtc['_date'] = pd.to_datetime(dtc['_date'])
 
     rows = []
 

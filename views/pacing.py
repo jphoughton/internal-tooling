@@ -128,10 +128,13 @@ def compute_pacing_data(ctx):
 
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend only
     mkt_df = _shopify_daily.copy()
+    mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
     _gs_spend = _load_gs_spend()
     if not _gs_spend.empty:
+        _gs = _gs_spend[['_date', '_ad_spend']].copy()
+        _gs['_date'] = pd.to_datetime(_gs['_date'])
         mkt_df = mkt_df.merge(
-            _gs_spend[['_date', '_ad_spend']], on='_date', how='left', suffixes=('', '_gs')
+            _gs, on='_date', how='left', suffixes=('', '_gs')
         )
     else:
         mkt_df['_ad_spend'] = 0

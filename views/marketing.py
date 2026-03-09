@@ -193,9 +193,12 @@ def render(ctx):
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend/sessions
     if _has_shopify_data:
         mkt_df = _shopify_daily.copy()
+        mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
         if not _gs_spend.empty:
+            _gs = _gs_spend.copy()
+            _gs['_date'] = pd.to_datetime(_gs['_date'])
             mkt_df = mkt_df.merge(
-                _gs_spend, on='_date', how='left', suffixes=('', '_gs')
+                _gs, on='_date', how='left', suffixes=('', '_gs')
             )
         else:
             mkt_df['_ad_spend'] = 0
@@ -672,9 +675,12 @@ def render(ctx):
             # We use the full (unfiltered by date range) dataset for these tabs
             # Shopify DB for revenue/customers, Google Sheet for spend/sessions
             _perf_df = _shopify_daily.copy()
+            _perf_df['_date'] = pd.to_datetime(_perf_df['_date'])
             if not _gs_spend.empty:
+                _gs_perf = _gs_spend.copy()
+                _gs_perf['_date'] = pd.to_datetime(_gs_perf['_date'])
                 _perf_df = _perf_df.merge(
-                    _gs_spend, on='_date', how='left', suffixes=('', '_gs')
+                    _gs_perf, on='_date', how='left', suffixes=('', '_gs')
                 )
             else:
                 _perf_df['_ad_spend'] = 0

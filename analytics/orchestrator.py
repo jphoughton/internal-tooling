@@ -130,17 +130,46 @@ def run_retention_cohorts(triggered_by='scheduler'):
 
 
 def run_repeat_forecast(triggered_by='scheduler'):
-    """Recompute the average retention curve and AOV/units metrics (DTC only)."""
+    """Recompute retention curves and AOV/units for all source filters."""
     def _compute():
         from analytics.waterfall import (
             get_average_retention_curve,
+            get_customer_retention_curve,
             get_aov_and_units,
             get_monthly_new_customers,
             clear_waterfall_cache,
         )
         # Clear stale cache before recomputing
         clear_waterfall_cache()
-        # Repeat model is DTC-only: all functions use Shopify internally
+
+        # Precompute retention curves for all source filters used by dashboard
+        for src in ['shopify', 'amazon']:
+            key_suffix = src
+            t0 = time.time()
+            try:
+                curve = get_average_retention_curve(src)
+                _save_result(f'retention_curve_{key_suffix}', curve,
+                             MODEL_REPEAT_FORECAST, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] retention_curve_%s failed: %s', key_suffix, exc)
+
+            t0 = time.time()
+            try:
+                cust_curve = get_customer_retention_curve(src)
+                _save_result(f'customer_retention_curve_{key_suffix}', cust_curve,
+                             MODEL_REPEAT_FORECAST, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] customer_retention_curve_%s failed: %s', key_suffix, exc)
+
+            t0 = time.time()
+            try:
+                aov = get_aov_and_units(src)
+                _save_result(f'aov_and_units_{key_suffix}', aov,
+                             MODEL_REPEAT_FORECAST, time.time() - t0)
+            except Exception as exc:
+                logger.warning('[orchestrator] aov_and_units_%s failed: %s', key_suffix, exc)
+
+        # Also save the default (shopify) under the legacy key for compatibility
         t0 = time.time()
         curve = get_average_retention_curve()
         _save_result('retention_curve', curve, MODEL_REPEAT_FORECAST, time.time() - t0)
@@ -1127,10 +1156,13 @@ def run_pacing_precompute(triggered_by='scheduler'):
             return
 
         mkt_df = _shopify_daily.copy()
+        mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
         _gs_spend = _load_gs_spend_no_cache()
         if not _gs_spend.empty:
+            _gs = _gs_spend[['_date', '_ad_spend']].copy()
+            _gs['_date'] = pd.to_datetime(_gs['_date'])
             mkt_df = mkt_df.merge(
-                _gs_spend[['_date', '_ad_spend']], on='_date', how='left', suffixes=('', '_gs')
+                _gs, on='_date', how='left', suffixes=('', '_gs')
             )
         else:
             mkt_df['_ad_spend'] = 0
