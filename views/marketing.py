@@ -820,27 +820,52 @@ def render(ctx):
                     # Exclude today — always start with yesterday
                     _amz_daily = _amz_daily[_amz_daily['_date'].dt.date < date.today()]
 
-                    # Project incomplete recent Amazon days: if the last few days
-                    # have significantly fewer customers than the trailing average,
-                    # top them up to the L7D average (Amazon API data often lags).
-                    _amz_nc_cols = ["_amz_new_cust", "_amz_repeat_cust",
-                                    "_amz_new_rev", "_amz_repeat_rev"]
+                    # Project incomplete/missing recent Amazon days using L7D stable
+                    # window averages. Amazon API data often lags 1-2 days.
                     if len(_amz_daily) >= 10 and "_amz_new_cust" in _amz_daily.columns:
                         _amz_sorted = _amz_daily.sort_values("_date")
-                        _amz_l7d = _amz_sorted.iloc[-10:-3]  # days -10 to -4 (stable window)
-                        if not _amz_l7d.empty:
-                            _amz_l7d_nc_avg = _amz_l7d["_amz_new_cust"].mean()
-                            _amz_l7d_rep_avg = _amz_l7d["_amz_repeat_cust"].mean()
-                            _amz_l7d_new_rev_avg = _amz_l7d["_amz_new_rev"].mean()
-                            _amz_l7d_rep_rev_avg = _amz_l7d["_amz_repeat_rev"].mean()
-                            _threshold = 0.4  # if below 40% of average, project
-                            for _idx in _amz_sorted.index[-3:]:  # last 3 days
+                        _amz_stable = _amz_sorted.iloc[-10:-3]  # days -10 to -4
+                        if not _amz_stable.empty:
+                            _avg = {
+                                "_amz_new_cust": _amz_stable["_amz_new_cust"].mean(),
+                                "_amz_repeat_cust": _amz_stable["_amz_repeat_cust"].mean(),
+                                "_amz_new_rev": _amz_stable["_amz_new_rev"].mean(),
+                                "_amz_repeat_rev": _amz_stable["_amz_repeat_rev"].mean(),
+                                "_amz_revenue": _amz_stable["_amz_revenue"].mean(),
+                                "_amz_spend": _amz_stable["_amz_spend"].mean(),
+                            }
+                            _threshold = 0.4
+
+                            # 1. Backfill existing rows with incomplete data
+                            for _idx in _amz_sorted.index[-3:]:
                                 _row_nc = _amz_sorted.at[_idx, "_amz_new_cust"]
-                                if _amz_l7d_nc_avg > 0 and _row_nc < _amz_l7d_nc_avg * _threshold:
-                                    _amz_daily.at[_idx, "_amz_new_cust"] = round(_amz_l7d_nc_avg)
-                                    _amz_daily.at[_idx, "_amz_repeat_cust"] = round(_amz_l7d_rep_avg)
-                                    _amz_daily.at[_idx, "_amz_new_rev"] = round(_amz_l7d_new_rev_avg, 2)
-                                    _amz_daily.at[_idx, "_amz_repeat_rev"] = round(_amz_l7d_rep_rev_avg, 2)
+                                if _avg["_amz_new_cust"] > 0 and _row_nc < _avg["_amz_new_cust"] * _threshold:
+                                    for _k, _v in _avg.items():
+                                        _amz_daily.at[_idx, _k] = round(_v) if 'cust' in _k else round(_v, 2)
+
+                            # 2. Create projected rows for missing recent days
+                            from datetime import timedelta
+                            _yesterday = date.today() - timedelta(days=1)
+                            _amz_max_date = _amz_sorted["_date"].max().date()
+                            _gap_rows = []
+                            _cur = _amz_max_date + timedelta(days=1)
+                            while _cur <= _yesterday:
+                                _gap_rows.append({
+                                    "sale_date": str(_cur),
+                                    "_date": pd.Timestamp(_cur),
+                                    "_amz_revenue": round(_avg["_amz_revenue"], 2),
+                                    "_amz_spend": round(_avg["_amz_spend"], 2),
+                                    "_amz_new_cust": round(_avg["_amz_new_cust"]),
+                                    "_amz_repeat_cust": round(_avg["_amz_repeat_cust"]),
+                                    "_amz_new_rev": round(_avg["_amz_new_rev"], 2),
+                                    "_amz_repeat_rev": round(_avg["_amz_repeat_rev"], 2),
+                                })
+                                _cur += timedelta(days=1)
+                            if _gap_rows:
+                                _amz_daily = pd.concat(
+                                    [_amz_daily, pd.DataFrame(_gap_rows)],
+                                    ignore_index=True,
+                                )
             except Exception:
                 pass
 
