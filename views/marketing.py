@@ -862,12 +862,15 @@ def render(ctx):
                                 })
                                 _cur += timedelta(days=1)
                             if _gap_rows:
+                                logging.getLogger(__name__).info(
+                                    'Amazon NC projection: adding %d gap rows (max_date=%s, yesterday=%s, avg_nc=%.1f)',
+                                    len(_gap_rows), _amz_max_date, _yesterday, _avg["_amz_new_cust"])
                                 _amz_daily = pd.concat(
                                     [_amz_daily, pd.DataFrame(_gap_rows)],
                                     ignore_index=True,
                                 )
-            except Exception:
-                pass
+            except Exception as _amz_exc:
+                logging.getLogger(__name__).warning('Amazon daily build failed: %s', _amz_exc, exc_info=True)
 
             # --- DAY OVER DAY ---
             with _perf_tab_dod:
