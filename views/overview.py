@@ -29,6 +29,73 @@ def _get_nc_projection():
 
 
 @st.cache_data(ttl=86400)
+def _get_yesterday_rollup():
+    """Get yesterday's combined DTC+Amazon metrics using the same data sources as Marketing rollup.
+
+    Returns dict with keys: rev, spend, nc, nc_rev (all combined DTC+Amazon),
+    plus dtc_* and amz_* breakdowns. Returns None if data unavailable.
+    """
+    yesterday = date.today() - timedelta(days=1)
+    yd_str = yesterday.isoformat()
+    result = {'dtc_rev': 0, 'dtc_spend': 0, 'dtc_nc': 0, 'dtc_nc_rev': 0,
+              'amz_rev': 0, 'amz_spend': 0, 'amz_nc': 0, 'amz_nc_rev': 0}
+
+    # DTC from Shopify daily metrics
+    try:
+        dtc = _load_shopify_daily_metrics()
+        if not dtc.empty:
+            dtc['_date'] = pd.to_datetime(dtc['_date']).dt.normalize()
+            yd_dtc = dtc[dtc['_date'].dt.date == yesterday]
+            if not yd_dtc.empty:
+                result['dtc_rev'] = float(yd_dtc['_revenue'].sum())
+                result['dtc_nc'] = int(yd_dtc['_nc_orders'].sum())
+                result['dtc_nc_rev'] = float(yd_dtc['_nc_revenue'].sum())
+
+        # DTC spend from Google Sheets
+        gs = _load_gs_spend()
+        if not gs.empty:
+            gs['_date'] = pd.to_datetime(gs['_date']).dt.normalize()
+            yd_gs = gs[gs['_date'].dt.date == yesterday]
+            if not yd_gs.empty:
+                result['dtc_spend'] = float(yd_gs['_ad_spend'].sum())
+            elif not gs.empty:
+                # Gap-fill: use L7D average if yesterday's spend not yet in sheet
+                result['dtc_spend'] = float(gs.tail(7)['_ad_spend'].mean())
+    except Exception as e:
+        log.warning('_get_yesterday_rollup DTC failed: %s', e)
+
+    # Amazon from _load_amazon_daily (same source as Marketing page)
+    try:
+        amz = _load_amazon_daily()
+        if not amz.empty:
+            amz_yd = amz[amz['sale_date'] == yd_str]
+            if not amz_yd.empty:
+                result['amz_rev'] = float(amz_yd['_amz_revenue'].sum())
+                result['amz_spend'] = float(amz_yd['_amz_spend'].sum())
+                result['amz_nc'] = int(amz_yd['_amz_new_cust'].sum())
+                result['amz_nc_rev'] = float(amz_yd['_amz_new_rev'].sum())
+            else:
+                # Amazon data missing for yesterday — project from stable window
+                if len(amz) >= 10 and '_amz_new_cust' in amz.columns:
+                    amz_sorted = amz.sort_values('sale_date')
+                    stable = amz_sorted.iloc[-10:-3]
+                    if not stable.empty:
+                        result['amz_rev'] = float(stable['_amz_revenue'].mean())
+                        result['amz_spend'] = float(stable['_amz_spend'].mean())
+                        result['amz_nc'] = int(round(stable['_amz_new_cust'].mean()))
+                        result['amz_nc_rev'] = float(stable['_amz_new_rev'].mean())
+                        result['amz_projected'] = True
+    except Exception as e:
+        log.warning('_get_yesterday_rollup Amazon failed: %s', e)
+
+    result['rev'] = result['dtc_rev'] + result['amz_rev']
+    result['spend'] = result['dtc_spend'] + result['amz_spend']
+    result['nc'] = result['dtc_nc'] + result['amz_nc']
+    result['nc_rev'] = result['dtc_nc_rev'] + result['amz_nc_rev']
+    return result
+
+
+@st.cache_data(ttl=86400)
 def _load_amazon_daily():
     """Load Amazon daily data for trend tables (revenue, spend, new/repeat)."""
     # Try precomputed data first
@@ -440,22 +507,43 @@ def render(ctx):
                    delta_color='off',
                    help='Months until contribution margin covers CAC')
 
-        # --- Yesterday tiles (same layout as MTD) ---
-        if _source_filter == 'shopify':
-            _yd_hero_rev = d['yd_dtc_rev']
-            _yd_hero_spend = d['yd_dtc_spend']
-            _yd_hero_nc = d['yd_nc']
-            _yd_hero_nc_rev = d['yd_nc_rev']
-        elif _source_filter == 'amazon':
-            _yd_hero_rev = d['yd_amz_rev']
-            _yd_hero_spend = d['yd_amz_spend']
-            _yd_hero_nc = d['yd_amz_nc']
-            _yd_hero_nc_rev = d['yd_amz_nc_rev']
+        # --- Yesterday tiles — use Marketing rollup data source for accuracy ---
+        _yd_rollup = _get_yesterday_rollup()
+        if _yd_rollup and _yd_rollup.get('rev', 0) > 0:
+            if _source_filter == 'shopify':
+                _yd_hero_rev = _yd_rollup['dtc_rev']
+                _yd_hero_spend = _yd_rollup['dtc_spend']
+                _yd_hero_nc = _yd_rollup['dtc_nc']
+                _yd_hero_nc_rev = _yd_rollup['dtc_nc_rev']
+            elif _source_filter == 'amazon':
+                _yd_hero_rev = _yd_rollup['amz_rev']
+                _yd_hero_spend = _yd_rollup['amz_spend']
+                _yd_hero_nc = _yd_rollup['amz_nc']
+                _yd_hero_nc_rev = _yd_rollup['amz_nc_rev']
+            else:
+                _yd_hero_rev = _yd_rollup['rev']
+                _yd_hero_spend = _yd_rollup['spend']
+                _yd_hero_nc = _yd_rollup['nc']
+                _yd_hero_nc_rev = _yd_rollup['nc_rev']
+            _yd_est = _yd_rollup.get('amz_projected', False) and _source_filter != 'shopify'
         else:
-            _yd_hero_rev = d['yd_total_rev']
-            _yd_hero_spend = d['yd_total_spend']
-            _yd_hero_nc = d['yd_total_nc']
-            _yd_hero_nc_rev = d['yd_total_nc_rev']
+            # Fallback to pacing data if rollup unavailable
+            if _source_filter == 'shopify':
+                _yd_hero_rev = d['yd_dtc_rev']
+                _yd_hero_spend = d['yd_dtc_spend']
+                _yd_hero_nc = d['yd_nc']
+                _yd_hero_nc_rev = d['yd_nc_rev']
+            elif _source_filter == 'amazon':
+                _yd_hero_rev = d['yd_amz_rev']
+                _yd_hero_spend = d['yd_amz_spend']
+                _yd_hero_nc = d['yd_amz_nc']
+                _yd_hero_nc_rev = d['yd_amz_nc_rev']
+            else:
+                _yd_hero_rev = d['yd_total_rev']
+                _yd_hero_spend = d['yd_total_spend']
+                _yd_hero_nc = d['yd_total_nc']
+                _yd_hero_nc_rev = d['yd_total_nc_rev']
+            _yd_est = d.get('yd_amz_projected', False) and _source_filter != 'shopify'
 
         _yd_nc_roas_val = _yd_hero_nc_rev / _yd_hero_spend if _yd_hero_spend > 0 else 0
         _yd_cac_payback = compute_cac_payback(
@@ -465,7 +553,6 @@ def render(ctx):
             retention_curve=_use_ret,
         ) if _yd_hero_nc > 0 and _yd_hero_spend > 0 else 0
 
-        _yd_est = d.get('yd_amz_projected', False) and _source_filter != 'shopify'
         _yd_est_suffix = ' (est)' if _yd_est else ''
         y1, y2, y3, y4, y5 = st.columns(5)
         y1.metric(f'Rev Yesterday{_yd_est_suffix}', f"${_yd_hero_rev:,.0f}")
