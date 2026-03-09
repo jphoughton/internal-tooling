@@ -150,23 +150,31 @@ def _load_gs_spend():
         with get_db() as conn:
             cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
         if cached:
-            return pd.DataFrame(_json_pre.loads(cached))
+            result = pd.DataFrame(_json_pre.loads(cached))
+            if '_date' in result.columns and not result.empty:
+                result['_date'] = pd.to_datetime(result['_date'], unit='ms', errors='coerce')
+                result = result.dropna(subset=['_date'])
+            if '_ad_spend' in result.columns and not result.empty:
+                log.info('gs_spend loaded from precomputed cache (%d rows, spend sum=%.0f)',
+                         len(result), result['_ad_spend'].sum())
+                return result
+            log.warning('gs_spend precomputed cache had no usable data')
     except Exception as exc:
         log.warning('gs_spend precomputed cache failed: %s', exc)
 
     # Path 2: live DB table
     try:
         with get_db() as conn:
-            cols = [d["column_name"] for d in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'google_sheet_data'"
-            ).fetchall()]
-            if "date" in cols and "blended_ad_spend" in cols:
-                df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
-                if not df.empty:
-                    return _parse_spend_df(df)
+            df = read_sql(
+                "SELECT * FROM google_sheet_data ORDER BY id", conn
+            )
+            if not df.empty and 'date' in df.columns and 'blended_ad_spend' in df.columns:
+                log.info('gs_spend loaded from DB table (%d rows)', len(df))
+                return _parse_spend_df(df)
+            elif not df.empty:
+                log.warning('google_sheet_data missing columns: have %s', list(df.columns)[:5])
             else:
-                log.warning('google_sheet_data missing required columns: have %s', cols[:5])
+                log.warning('google_sheet_data table is empty')
     except Exception as exc:
         log.warning('gs_spend DB query failed: %s', exc)
 
@@ -215,10 +223,10 @@ def render(ctx):
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend/sessions
     if _has_shopify_data:
         mkt_df = _shopify_daily.copy()
-        mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
+        mkt_df['_date'] = pd.to_datetime(mkt_df['_date']).dt.normalize()
         if not _gs_spend.empty:
             _gs = _gs_spend.copy()
-            _gs['_date'] = pd.to_datetime(_gs['_date'])
+            _gs['_date'] = pd.to_datetime(_gs['_date']).dt.normalize()
             mkt_df = mkt_df.merge(
                 _gs, on='_date', how='left', suffixes=('', '_gs')
             )
@@ -711,10 +719,10 @@ def render(ctx):
             # We use the full (unfiltered by date range) dataset for these tabs
             # Shopify DB for revenue/customers, Google Sheet for spend/sessions
             _perf_df = _shopify_daily.copy()
-            _perf_df['_date'] = pd.to_datetime(_perf_df['_date'])
+            _perf_df['_date'] = pd.to_datetime(_perf_df['_date']).dt.normalize()
             if not _gs_spend.empty:
                 _gs_perf = _gs_spend.copy()
-                _gs_perf['_date'] = pd.to_datetime(_gs_perf['_date'])
+                _gs_perf['_date'] = pd.to_datetime(_gs_perf['_date']).dt.normalize()
                 _perf_df = _perf_df.merge(
                     _gs_perf, on='_date', how='left', suffixes=('', '_gs')
                 )
