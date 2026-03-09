@@ -203,6 +203,16 @@ def render(ctx):
         else:
             mkt_df['_ad_spend'] = 0
         mkt_df = mkt_df.sort_values('_date')
+        mkt_df['_ad_spend'] = mkt_df.get('_ad_spend', pd.Series(0, index=mkt_df.index)).fillna(0)
+
+        # Gap-fill DTC spend for hero metrics (same logic as perf tables)
+        _hero_has_spend = mkt_df[mkt_df['_ad_spend'] > 0]
+        if not _hero_has_spend.empty:
+            _hero_l7d = _hero_has_spend.tail(7)['_ad_spend'].mean()
+            _hero_last = _hero_has_spend['_date'].max()
+            _hero_gap = (mkt_df['_ad_spend'] == 0) & (mkt_df['_date'] > _hero_last)
+            if _hero_gap.any():
+                mkt_df.loc[_hero_gap, '_ad_spend'] = round(_hero_l7d, 2)
 
         if not mkt_df.empty:
             # Date range with smart presets — default to MTD
@@ -630,11 +640,15 @@ def render(ctx):
                             amz_new_rev_val = float(amz_match.iloc[0].get("_amz_new_rev", 0))
                             amz_repeat_rev_val = float(amz_match.iloc[0].get("_amz_repeat_rev", 0))
 
+                    dtc_total_cust = int(r.get("total_customers", nc_orders))
+                    dtc_repeat_cust = max(0, dtc_total_cust - int(nc_orders))
+
                     combined_rev = total_rev + amz_rev_val
                     combined_spend = spend + amz_spend_val
                     combined_new_cust = int(nc_orders) + amz_new_cust
+                    combined_repeat_cust = dtc_repeat_cust + amz_repeat_cust
                     combined_new_rev = nc_rev + amz_new_rev_val
-                    combined_total_cust = int(nc_orders) + amz_new_cust + amz_repeat_cust
+                    combined_total_cust = combined_new_cust + combined_repeat_cust
                     nc_mer = combined_new_rev / combined_spend if combined_spend > 0 else 0
                     mer = combined_rev / combined_spend if combined_spend > 0 else 0
                     combined_nc_cpa = combined_spend / combined_new_cust if combined_new_cust > 0 else 0
@@ -644,7 +658,7 @@ def render(ctx):
                         "Spend": f"${combined_spend:,.0f}",
                         "Revenue": f"${combined_rev:,.0f}",
                         "New Cust": combined_new_cust,
-                        "Repeat Cust": amz_repeat_cust,
+                        "Repeat Cust": combined_repeat_cust,
                         "Total Cust": combined_total_cust,
                         "New Rev": f"${combined_new_rev:,.0f}",
                         "NC MER": f"{nc_mer:.2f}x",
@@ -686,6 +700,21 @@ def render(ctx):
                 _perf_df['_ad_spend'] = 0
             _perf_df = _perf_df.sort_values('_date')
             _perf_df['_ad_spend'] = _perf_df['_ad_spend'].fillna(0)
+
+            # Gap-fill DTC spend: Google Sheet often lags a few days — estimate
+            # missing days using L7D average so the daily table isn't $0.
+            _has_dtc_spend = _perf_df[_perf_df['_ad_spend'] > 0]
+            if not _has_dtc_spend.empty:
+                _dtc_l7d_spend = _has_dtc_spend.tail(7)['_ad_spend'].mean()
+                _dtc_last_spend_date = _has_dtc_spend['_date'].max()
+                _gap_mask = (_perf_df['_ad_spend'] == 0) & (_perf_df['_date'] > _dtc_last_spend_date)
+                if _gap_mask.any():
+                    _perf_df.loc[_gap_mask, '_ad_spend'] = round(_dtc_l7d_spend, 2)
+
+            # Ensure total_customers column exists for repeat-cust rollup
+            if 'total_customers' not in _perf_df.columns:
+                _perf_df['total_customers'] = _perf_df.get('_nc_orders', 0)
+
             # Exclude today — always start with yesterday
             _perf_df = _perf_df[_perf_df['_date'].dt.date < date.today()]
 
@@ -769,7 +798,8 @@ def render(ctx):
                 _dod_df["Day"] = _dod_df["_date"].dt.strftime("%Y-%m-%d")
                 _dod_agg_cols = {"_ad_spend": "sum", "_revenue": "sum", "_nc_orders": "sum",
                                  "_nc_revenue": "sum", "_ret_revenue": "sum",
-                                 "_orders": "sum", "_units": "sum"}
+                                 "_orders": "sum", "_units": "sum",
+                                 "total_customers": "sum"}
                 _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
 
                 # Amazon daily
@@ -818,6 +848,7 @@ def render(ctx):
                     _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
                     _ret_revenue=("_ret_revenue", "sum"),
                     _orders=("_orders", "sum"), _units=("_units", "sum"),
+                    total_customers=("total_customers", "sum"),
                     **{"Wk #": ("Wk #", "first")},
                 ).reset_index()
 
@@ -872,6 +903,7 @@ def render(ctx):
                     _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
                     _ret_revenue=("_ret_revenue", "sum"),
                     _orders=("_orders", "sum"), _units=("_units", "sum"),
+                    total_customers=("total_customers", "sum"),
                 ).reset_index()
 
                 # Amazon monthly
