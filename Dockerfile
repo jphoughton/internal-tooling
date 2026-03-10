@@ -14,7 +14,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code (bust cache on every deploy)
+ARG CACHE_BUST=1
 COPY . .
 
 # Create data directory for volume mount fallback
