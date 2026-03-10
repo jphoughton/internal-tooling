@@ -335,16 +335,14 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         if not amz_daily.empty and '_date' in amz_daily.columns:
             amz_d = amz_daily.copy()
             amz_d['_date'] = pd.to_datetime(amz_d['_date'])
+            # Exclude projected rows from trend tables — only show actuals
+            if '_amz_projected' in amz_d.columns:
+                amz_d = amz_d[~amz_d['_amz_projected'].astype(bool)]
             mask_amz = (amz_d['_date'] >= p_start) & (amz_d['_date'] <= p_end)
             amz_rev = amz_d.loc[mask_amz, '_amz_revenue'].sum() if '_amz_revenue' in amz_d.columns else 0
             amz_spend = amz_d.loc[mask_amz, '_amz_spend'].sum() if '_amz_spend' in amz_d.columns else 0
             amz_nc = int(amz_d.loc[mask_amz, '_amz_new_cust'].sum()) if '_amz_new_cust' in amz_d.columns else 0
             amz_nc_rev = amz_d.loc[mask_amz, '_amz_new_rev'].sum() if '_amz_new_rev' in amz_d.columns else 0
-            # Check if any day in the window has projected NC data
-            amz_has_projected = (
-                '_projected' in amz_d.columns
-                and amz_d.loc[mask_amz, '_projected'].any()
-            )
 
         # Rollup
         total_rev = dtc_rev + amz_rev
@@ -366,10 +364,9 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         amz_nc_pct = (amz_nc_rev / amz_rev * 100) if amz_rev > 0 else 0
         amz_contribution = ((amz_rev - amz_spend) / amz_rev * 100) if amz_rev > 0 else 0
 
-        _est = ' (est)' if amz_has_projected else ''
-        _amz_nc_display = f'{amz_nc:,}{_est}' if amz_nc > 0 else '\u2014'
-        _amz_cpa_display = f'${amz_cpa:,.0f}{_est}' if amz_nc > 0 else '\u2014'
-        _rollup_nc_display = f'{total_nc:,}{_est}' if amz_has_projected else total_nc
+        _amz_nc_display = f'{amz_nc:,}' if amz_nc > 0 else '\u2014'
+        _amz_cpa_display = f'${amz_cpa:,.0f}' if amz_nc > 0 else '\u2014'
+        _rollup_nc_display = total_nc
 
         rows.append({
             'Period': label, 'Channel': 'Rollup',

@@ -113,15 +113,7 @@ def compute_pacing_data(ctx):
             cached = get_precomputed(conn, 'pacing_data', max_age_hours=25)
         if cached:
             d = _json_pace.loads(cached)
-            # Project Amazon yesterday from L7D when actual data is missing (API lag)
-            if d.get('yd_amz_rev', 0) == 0 and d.get('l7d_amz_rev', 0) > 0:
-                d['yd_amz_rev'] = d['l7d_amz_rev']
-                d['yd_total_rev'] = d.get('yd_dtc_rev', 0) + d['yd_amz_rev']
-                d['yd_amz_projected'] = True
-            if d.get('yd_amz_spend', 0) == 0 and d.get('l7d_amz_spend', 0) > 0:
-                d['yd_amz_spend'] = d['l7d_amz_spend']
-                d['yd_total_spend'] = d.get('yd_dtc_spend', 0) + d['yd_amz_spend']
-                d['yd_amz_projected'] = True
+            # Don't project Amazon yesterday — show actual data only in YEST. ACTUAL
             if d.get('yd_amz_nc', 0) == 0 and d.get('l7d_amz_nc', 0) > 0:
                 d['yd_amz_nc'] = int(round(d['l7d_amz_nc']))
                 d['yd_amz_nc_rev'] = d.get('l7d_amz_nc_rev', 0)
@@ -298,11 +290,7 @@ def compute_pacing_data(ctx):
     _yd_amz_nc = _amz['yd_amz_nc']
     _yd_amz_nc_rev = _amz['yd_amz_nc_rev']
 
-    # Project Amazon yesterday from L7D averages when actual data is missing (API lag)
-    if _yd_amz_rev == 0 and _l7d_amz_rev > 0:
-        _yd_amz_rev = _l7d_amz_rev  # already daily avg
-    if _yd_amz_spend == 0 and _l7d_amz_spend > 0:
-        _yd_amz_spend = _l7d_amz_spend  # already daily avg
+    # Don't project Amazon yesterday — show actual data only in YEST. ACTUAL column
 
     # Inject NC projection for yesterday if actual NC data is missing
     if _yd_amz_nc == 0:

@@ -311,6 +311,7 @@ def _load_amazon_daily():
                         "_amz_repeat_cust": round(avg["_amz_repeat_cust"]),
                         "_amz_new_rev": round(avg["_amz_new_rev"], 2),
                         "_amz_repeat_rev": round(avg["_amz_repeat_rev"], 2),
+                        "_amz_projected": True,
                     })
                     cur += timedelta(days=1)
                 if gap_rows:
@@ -321,6 +322,9 @@ def _load_amazon_daily():
                         [df, pd.DataFrame(gap_rows)],
                         ignore_index=True,
                     )
+        if '_amz_projected' not in df.columns:
+            df['_amz_projected'] = False
+        df['_amz_projected'] = df['_amz_projected'].fillna(False)
         return df
     except Exception as exc:
         log.warning('Amazon daily build failed: %s', exc, exc_info=True)
@@ -367,11 +371,13 @@ def render(ctx):
         mkt_df['_ad_spend'] = mkt_df.get('_ad_spend', pd.Series(0, index=mkt_df.index)).fillna(0)
 
         # Gap-fill DTC spend for hero metrics (same logic as perf tables)
+        # Exclude yesterday — only fill intermediate gaps, not the most recent day
         _hero_has_spend = mkt_df[mkt_df['_ad_spend'] > 0]
+        _hero_yesterday = pd.Timestamp(business_yesterday())
         if not _hero_has_spend.empty:
             _hero_l7d = _hero_has_spend.tail(7)['_ad_spend'].mean()
             _hero_last = _hero_has_spend['_date'].max()
-            _hero_gap = (mkt_df['_ad_spend'] == 0) & (mkt_df['_date'] > _hero_last)
+            _hero_gap = (mkt_df['_ad_spend'] == 0) & (mkt_df['_date'] > _hero_last) & (mkt_df['_date'] < _hero_yesterday)
             if _hero_gap.any():
                 mkt_df.loc[_hero_gap, '_ad_spend'] = round(_hero_l7d, 2)
 
@@ -546,13 +552,16 @@ def render(ctx):
             _yd_spend = mkt_df.loc[_yd_mask, "_ad_spend"].sum()
             _yd_nc = int(mkt_df.loc[_yd_mask, "_nc_orders"].sum())
 
-            # Amazon yesterday from shared _amz_daily
+            # Amazon yesterday from shared _amz_daily (actuals only, no projections)
             _yd_amz_rev = 0
             _yd_amz_spend = 0
             _yd_amz_nc = 0
             _yd_amz_nc_rev = 0
             if not _amz_daily.empty:
-                _amz_yd = _amz_daily[_amz_daily['_date'].dt.strftime('%Y-%m-%d') == _yesterday_str]
+                _amz_yd = _amz_daily[
+                    (_amz_daily['_date'].dt.strftime('%Y-%m-%d') == _yesterday_str)
+                    & (~_amz_daily.get('_amz_projected', pd.Series(False, index=_amz_daily.index)).astype(bool))
+                ]
                 if not _amz_yd.empty:
                     _yd_amz_rev = _amz_yd['_amz_revenue'].sum()
                     _yd_amz_spend = _amz_yd['_amz_spend'].sum()
@@ -861,11 +870,15 @@ def render(ctx):
 
             # Gap-fill DTC spend: Google Sheet often lags a few days — estimate
             # missing days using L7D average so the daily table isn't $0.
+            # Exclude yesterday — don't show projected spend as actual.
             _has_dtc_spend = _perf_df[_perf_df['_ad_spend'] > 0]
+            _perf_yesterday = pd.Timestamp(business_yesterday())
             if not _has_dtc_spend.empty:
                 _dtc_l7d_spend = _has_dtc_spend.tail(7)['_ad_spend'].mean()
                 _dtc_last_spend_date = _has_dtc_spend['_date'].max()
-                _gap_mask = (_perf_df['_ad_spend'] == 0) & (_perf_df['_date'] > _dtc_last_spend_date)
+                _gap_mask = ((_perf_df['_ad_spend'] == 0)
+                             & (_perf_df['_date'] > _dtc_last_spend_date)
+                             & (_perf_df['_date'] < _perf_yesterday))
                 if _gap_mask.any():
                     _perf_df.loc[_gap_mask, '_ad_spend'] = round(_dtc_l7d_spend, 2)
 
@@ -888,12 +901,12 @@ def render(ctx):
                                  "total_customers": "sum"}
                 _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
 
-                # Amazon daily
+                # Amazon daily (exclude projected rows from performance tables)
                 _amz_dod = pd.DataFrame(columns=["Day", "_amz_revenue", "_amz_spend",
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_dod = _amz_daily.copy()
+                    _amz_dod = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
                     _amz_dod["Day"] = _amz_dod["_date"].dt.strftime("%Y-%m-%d")
                     _amz_dod_agg = {
                         "_amz_revenue": ("_amz_revenue", "sum"),
@@ -943,7 +956,7 @@ def render(ctx):
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_wow_tmp = _amz_daily.copy()
+                    _amz_wow_tmp = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
                     _amz_wow_tmp["_week_start"] = _amz_wow_tmp["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
                     _amz_wow_tmp["Week"] = _amz_wow_tmp["_week_start"].dt.strftime("%Y-%m-%d")
                     _amz_wow_agg = {
@@ -997,7 +1010,7 @@ def render(ctx):
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_mom_tmp = _amz_daily.copy()
+                    _amz_mom_tmp = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
                     _amz_mom_tmp["Month"] = _amz_mom_tmp["_date"].dt.to_period("M").astype(str)
                     _amz_mom_agg = {
                         "_amz_revenue": ("_amz_revenue", "sum"),
