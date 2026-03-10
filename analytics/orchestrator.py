@@ -627,7 +627,7 @@ def run_page_stats(triggered_by='scheduler'):
                 # incl. shipping + tax), exclude refunded/voided orders
                 rev_df = read_sql(
                     "SELECT o.order_date AS sale_date, "
-                    "SUM(o.total_amount - COALESCE(o.total_tax, 0) - COALESCE(o.refund_amount, 0)) AS revenue, "
+                    "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
                     "SUM(oi_agg.units) AS units "
                     "FROM orders o "
                     "LEFT JOIN ("
@@ -990,7 +990,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             with get_db() as conn:
                 rev_df = read_sql(
                     "SELECT o.order_date AS sale_date, "
-                    "SUM(o.total_amount - COALESCE(o.total_tax, 0) - COALESCE(o.refund_amount, 0)) AS revenue, "
+                    "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
                     "SUM(oi_agg.units) AS units "
                     "FROM orders o "
                     "LEFT JOIN ("
