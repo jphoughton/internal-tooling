@@ -73,14 +73,15 @@ def _cached_revenue_model_goals(cur_month):
                         m = str(row.get('month', ''))
                         if m in months:
                             inputs['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
-            except Exception:
-                pass
+            except Exception as e:
+                log.exception("DTC waterfall failed in revenue model goals: %s", e)
 
         # Amazon repeat from Amazon waterfall fed with nc_mult × DTC new rev
         dtc_spend = inputs.get('dtc_spend', {}).get(cur_month, 0)
         dtc_roas = inputs.get('dtc_nc_roas', {}).get(cur_month, 0)
         nc_mult = inputs.get('nc_multiplier', {}).get(cur_month, 0)
         amz_new_rev = nc_mult * dtc_roas * dtc_spend
+        log.warning("AMZ_WF_DEBUG: amz_new_rev=%s dtc_spend=%s dtc_roas=%s nc_mult=%s", amz_new_rev, dtc_spend, dtc_roas, nc_mult)
         if amz_new_rev > 0:
             try:
                 amz_media = [{'month': cur_month, 'spend': amz_new_rev, 'roas': 1.0}]
@@ -90,13 +91,15 @@ def _cached_revenue_model_goals(cur_month):
                     horizon_months=12,
                     seasonal_indices=seasonal,
                 )
+                log.warning("AMZ_WF_DEBUG: wf_amz=%s", wf_amz if wf_amz is None else wf_amz.shape)
                 if wf_amz is not None and not wf_amz.empty:
                     for _, row in wf_amz.iterrows():
                         m = str(row.get('month', ''))
                         if m in months:
                             inputs['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
-            except Exception:
-                pass
+                            log.warning("AMZ_WF_DEBUG: injected amazon_repeat[%s]=%s", m, inputs['amazon_repeat'][m])
+            except Exception as e:
+                log.exception("Amazon waterfall failed in revenue model goals: %s", e)
 
         calc = rm.compute(inputs, months)
         _v = lambda d, k: d.get(k, {}).get(cur_month, 0)
