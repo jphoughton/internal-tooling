@@ -371,13 +371,11 @@ def render(ctx):
         mkt_df['_ad_spend'] = mkt_df.get('_ad_spend', pd.Series(0, index=mkt_df.index)).fillna(0)
 
         # Gap-fill DTC spend for hero metrics (same logic as perf tables)
-        # Exclude yesterday — only fill intermediate gaps, not the most recent day
         _hero_has_spend = mkt_df[mkt_df['_ad_spend'] > 0]
-        _hero_yesterday = pd.Timestamp(business_yesterday())
         if not _hero_has_spend.empty:
             _hero_l7d = _hero_has_spend.tail(7)['_ad_spend'].mean()
             _hero_last = _hero_has_spend['_date'].max()
-            _hero_gap = (mkt_df['_ad_spend'] == 0) & (mkt_df['_date'] > _hero_last) & (mkt_df['_date'] < _hero_yesterday)
+            _hero_gap = (mkt_df['_ad_spend'] == 0) & (mkt_df['_date'] > _hero_last)
             if _hero_gap.any():
                 mkt_df.loc[_hero_gap, '_ad_spend'] = round(_hero_l7d, 2)
 
@@ -870,15 +868,11 @@ def render(ctx):
 
             # Gap-fill DTC spend: Google Sheet often lags a few days — estimate
             # missing days using L7D average so the daily table isn't $0.
-            # Exclude yesterday — don't show projected spend as actual.
             _has_dtc_spend = _perf_df[_perf_df['_ad_spend'] > 0]
-            _perf_yesterday = pd.Timestamp(business_yesterday())
             if not _has_dtc_spend.empty:
                 _dtc_l7d_spend = _has_dtc_spend.tail(7)['_ad_spend'].mean()
                 _dtc_last_spend_date = _has_dtc_spend['_date'].max()
-                _gap_mask = ((_perf_df['_ad_spend'] == 0)
-                             & (_perf_df['_date'] > _dtc_last_spend_date)
-                             & (_perf_df['_date'] < _perf_yesterday))
+                _gap_mask = (_perf_df['_ad_spend'] == 0) & (_perf_df['_date'] > _dtc_last_spend_date)
                 if _gap_mask.any():
                     _perf_df.loc[_gap_mask, '_ad_spend'] = round(_dtc_l7d_spend, 2)
 
