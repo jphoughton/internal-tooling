@@ -165,6 +165,7 @@ def compute(inputs, months):
         _set('blended_cpa', m, blended_cpa)
 
         # ── Repeat Revenue ──
+        _set('amazon_repeat', m, amz_repeat)
         total_repeat = dtc_repeat + amz_repeat
         _set('total_repeat', m, total_repeat)
 

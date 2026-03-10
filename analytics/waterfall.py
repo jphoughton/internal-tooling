@@ -247,14 +247,13 @@ def _extrapolate_curve(curve):
 
 def get_aov_and_units(source_filter=None):
     """
-    Compute average order value (AOV) and unit-level metrics from Shopify data.
+    Compute average order value (AOV) and unit-level metrics.
 
-    The source_filter parameter is accepted for API compatibility but
-    the repeat model always uses Shopify-only data internally.
+    Uses the specified source_filter channel (defaults to 'shopify').
 
     Returns:
         dict with keys:
-            aov                        — overall avg order value (all Shopify orders)
+            aov                        — overall avg order value
             avg_units_per_order        — overall units per order
             units_per_new_customer     — units per new customer in their first month
             units_per_repeat_customer  — units per repeat customer per return month
@@ -262,12 +261,13 @@ def get_aov_and_units(source_filter=None):
             new_customer_rev_per_unit  — revenue per unit for new customer orders
             repeat_rev_per_unit        — revenue per unit for repeat customer orders
     """
+    _src = source_filter or 'shopify'
     with get_db() as conn:
         conn.execute("SET LOCAL max_parallel_workers_per_gather = 0")
         conn.execute("SET LOCAL work_mem = '256MB'")
 
         source_clause = "AND o.source = ?"
-        params = ['shopify']
+        params = [_src]
 
         # Overall AOV and UPO
         row = conn.execute(f"""
@@ -290,7 +290,7 @@ def get_aov_and_units(source_filter=None):
                 GROUP BY customer_id
             )
         """
-        cte_params = ['shopify']
+        cte_params = [_src]
 
         # New customer metrics (last 12 months)
         new_metrics = conn.execute(f"""
@@ -368,14 +368,14 @@ def get_aov_and_units(source_filter=None):
 
 def get_monthly_new_customers(source_filter=None):
     """
-    Count new Shopify customers per month using first_order_date.
+    Count new customers per month using first_order_date.
 
-    The source_filter parameter is accepted for API compatibility but
-    the repeat model always uses Shopify-only data.
+    Uses the specified source_filter channel (defaults to 'shopify').
 
     Returns:
         dict: {month_str: count} e.g. {"2025-03": 45, "2025-04": 38}
     """
+    _src = source_filter or 'shopify'
     with get_db() as conn:
         rows = conn.execute("""
             WITH cust_first AS (
@@ -389,7 +389,7 @@ def get_monthly_new_customers(source_filter=None):
             FROM cust_first
             GROUP BY strftime('%Y-%m', first_order_date)
             ORDER BY month
-        """, ['shopify']).fetchall()
+        """, [_src]).fetchall()
 
     return {r["month"]: r["new_customers"] for r in rows}
 

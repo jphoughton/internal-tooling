@@ -780,6 +780,30 @@ def build_master_dtc_forecast(
             amz_units = amazon_table[m].sum() if not amazon_table.empty and m in amazon_table.columns else 0
             amz_rev_by_month[m] = round(amz_units * amz_rev_per_unit, 2)
 
+    # Amazon NC/Repeat split from revenue model (Variables tab)
+    # amazon_new = nc_multiplier × DTC new rev, amazon_repeat = direct input
+    amz_new_rev_by_month = {}
+    amz_repeat_rev_by_month = {}
+    try:
+        from db import get_revenue_model
+        import analytics.revenue_model as _rm
+        with get_db() as _rm_conn:
+            _rm_data = get_revenue_model(_rm_conn)
+        if _rm_data:
+            _rm_inputs = _rm.merge_with_defaults(_rm_data, months)
+            _rm_calc = _rm.compute(_rm_inputs, months)
+            for m in months:
+                amz_new_rev_by_month[m] = round(_rm_calc.get('amazon_new', {}).get(m, 0))
+                amz_repeat_rev_by_month[m] = round(_rm_inputs.get('amazon_repeat', {}).get(m, 0))
+    except Exception as e:
+        logger.warning("Failed to load revenue model for Amazon NC/repeat split: %s", e)
+
+    # Fallback: if revenue model unavailable, treat all Amazon as unsplit
+    for m in months:
+        if m not in amz_repeat_rev_by_month:
+            amz_repeat_rev_by_month[m] = 0
+            amz_new_rev_by_month[m] = amz_rev_by_month.get(m, 0)
+
     # Summary table (monthly totals by channel)
     summary_rows = []
     for m in months:
@@ -800,6 +824,9 @@ def build_master_dtc_forecast(
             if not _wf_row.empty:
                 _nc_acquired = float(_wf_row.iloc[0].get('new_customers_acquired', 0))
 
+        amz_nc_rev = amz_new_rev_by_month.get(m, 0)
+        amz_rpt_rev = amz_repeat_rev_by_month.get(m, 0)
+
         summary_rows.append({
             "month": m,
             "shopify_new_customers": round(_nc_acquired),
@@ -812,6 +839,8 @@ def build_master_dtc_forecast(
             "shopify_repeat_rev": round(rep_rev),
             "shopify_total_rev": round(new_rev + rep_rev),
             "amazon_rev": round(amz_rev),
+            "amazon_new_rev": round(amz_nc_rev),
+            "amazon_repeat_rev": round(amz_rpt_rev),
             "total_rev": round(new_rev + rep_rev + amz_rev),
         })
 

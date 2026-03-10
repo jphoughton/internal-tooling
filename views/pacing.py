@@ -34,19 +34,80 @@ def _get_nc_projection():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _cached_revenue_model_goals(cur_month):
-    """Cache revenue model blended NC goals for the current month."""
+    """Cache revenue model goals for the current month.
+
+    Returns NC/repeat splits for both DTC and Amazon.  Amazon repeat is
+    computed from the Amazon retention curve waterfall fed with projected
+    Amazon new customer revenue (nc_multiplier × DTC new).
+    """
     try:
-        from db import get_revenue_model
+        from db import get_revenue_model, get_media_spend, get_seasonal_indices
+        from analytics.waterfall import build_waterfall
+        import json as _json_rm
+
         with get_db() as conn:
             rm_data = get_revenue_model(conn)
-        if rm_data:
-            months = [cur_month]
-            inputs = rm.merge_with_defaults(rm_data, months)
-            calc = rm.compute(inputs, months)
-            return {
-                'nc_rev': round(calc.get('total_new', {}).get(cur_month, 0)),
-                'nc_roas': calc.get('blended_nc_roas', {}).get(cur_month, 0),
-            }
+        if not rm_data:
+            return None
+
+        months = [cur_month]
+        inputs = rm.merge_with_defaults(rm_data, months)
+
+        # Inject waterfall-computed repeat revenue (same logic as Variables tab)
+        with get_db() as conn:
+            media_spend = get_media_spend(conn, source='All Sources')
+            seasonal = get_seasonal_indices(conn)
+
+        # DTC repeat from Shopify waterfall
+        if media_spend:
+            spend_json = _json_rm.dumps(media_spend, sort_keys=True)
+            try:
+                wf_dtc = build_waterfall(
+                    media_plan=media_spend,
+                    source_filter='shopify',
+                    horizon_months=12,
+                    seasonal_indices=seasonal,
+                )
+                if wf_dtc is not None and not wf_dtc.empty:
+                    for _, row in wf_dtc.iterrows():
+                        m = str(row.get('month', ''))
+                        if m in months:
+                            inputs['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
+            except Exception:
+                pass
+
+        # Amazon repeat from Amazon waterfall fed with nc_mult × DTC new rev
+        dtc_spend = inputs.get('dtc_spend', {}).get(cur_month, 0)
+        dtc_roas = inputs.get('dtc_nc_roas', {}).get(cur_month, 0)
+        nc_mult = inputs.get('nc_multiplier', {}).get(cur_month, 0)
+        amz_new_rev = nc_mult * dtc_roas * dtc_spend
+        if amz_new_rev > 0:
+            try:
+                amz_media = [{'month': cur_month, 'spend': amz_new_rev, 'roas': 1.0}]
+                wf_amz = build_waterfall(
+                    media_plan=amz_media,
+                    source_filter='amazon',
+                    horizon_months=12,
+                    seasonal_indices=seasonal,
+                )
+                if wf_amz is not None and not wf_amz.empty:
+                    for _, row in wf_amz.iterrows():
+                        m = str(row.get('month', ''))
+                        if m in months:
+                            inputs['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
+            except Exception:
+                pass
+
+        calc = rm.compute(inputs, months)
+        _v = lambda d, k: d.get(k, {}).get(cur_month, 0)
+        return {
+            'nc_rev': round(_v(calc, 'total_new')),
+            'nc_roas': _v(calc, 'blended_nc_roas'),
+            'dtc_new': round(_v(calc, 'dtc_new')),
+            'amazon_new': round(_v(calc, 'amazon_new')),
+            'dtc_repeat': round(_v(inputs, 'dtc_repeat')),
+            'amazon_repeat': round(_v(calc, 'amazon_repeat')),
+        }
     except Exception:
         pass
     return None
@@ -233,32 +294,48 @@ def compute_pacing_data(ctx):
     _amz_spend_gap_days = _amz['amz_spend_gap_days']
     _amz_nc_projected = False
 
-    # Revenue GOALS from the forecast engine
+    # Revenue GOALS — primary source is the revenue model (Variables tab)
+    # which has NC multiplier × DTC new rev for Amazon NC, and direct
+    # amazon_repeat / dtc_repeat inputs.  Falls back to waterfall summary.
     _goal_nc_rev = 0
     _goal_repeat_rev = 0
     _goal_amz_rev = 0
+    _goal_amz_nc_rev = 0
+    _goal_amz_repeat_rev = 0
+    _goal_blended_nc_rev = 0
+    _goal_blended_nc_roas = 0
     _has_goals = False
-    if _mkt_summary is not None and not _mkt_summary.empty:
+
+    # Try revenue model first (Variables tab)
+    try:
+        _rm_goals = _cached_revenue_model_goals(_cur_month)
+    except Exception as e:
+        log.warning("Failed to load revenue model goals: %s", e)
+        _rm_goals = None
+
+    if _rm_goals and _rm_goals.get('nc_rev', 0) > 0:
+        _goal_nc_rev = _rm_goals['dtc_new']
+        _goal_repeat_rev = _rm_goals['dtc_repeat']
+        _goal_amz_nc_rev = _rm_goals['amazon_new']
+        _goal_amz_repeat_rev = _rm_goals['amazon_repeat']
+        _goal_amz_rev = _goal_amz_nc_rev + _goal_amz_repeat_rev
+        _goal_blended_nc_rev = _rm_goals['nc_rev']
+        _goal_blended_nc_roas = _rm_goals['nc_roas']
+        _has_goals = True
+    elif _mkt_summary is not None and not _mkt_summary.empty:
+        # Fallback to waterfall summary
         _plan_row = _mkt_summary[_mkt_summary["month"] == _cur_month]
         if not _plan_row.empty:
             _goal_nc_rev = float(_plan_row.iloc[0].get("shopify_new_rev", 0))
             _goal_repeat_rev = float(_plan_row.iloc[0].get("shopify_repeat_rev", 0))
             _goal_amz_rev = float(_plan_row.iloc[0].get("amazon_rev", 0))
+            _goal_amz_nc_rev = float(_plan_row.iloc[0].get("amazon_new_rev", 0))
+            _goal_amz_repeat_rev = float(_plan_row.iloc[0].get("amazon_repeat_rev", 0))
+            _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
-    # Override NC rev + NC-ROAS goals with blended (DTC + Amazon) from revenue model
-    _goal_blended_nc_rev = _goal_nc_rev  # fallback to DTC-only
-    _goal_blended_nc_roas = 0
-    try:
-        _rm_goals = _cached_revenue_model_goals(_cur_month)
-        if _rm_goals:
-            _goal_blended_nc_rev = _rm_goals['nc_rev'] if _rm_goals['nc_rev'] else _goal_nc_rev
-            _goal_blended_nc_roas = _rm_goals['nc_roas']
-    except Exception as e:
-        log.warning("Failed to load revenue model for blended NC goals: %s", e)
-
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
-    _goal_total_repeat_rev = max(_goal_total_rev - _goal_blended_nc_rev, 0)
+    _goal_total_repeat_rev = _goal_repeat_rev + _goal_amz_repeat_rev
     _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
     _remaining_days = max(_days_in_month - _day_of_month, 1)
 

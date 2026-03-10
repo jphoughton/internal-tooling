@@ -153,8 +153,18 @@ def _inject_waterfall_repeat(live, months, ctx):
                 if m in months:
                     live['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
 
-        # Amazon repeat from amazon waterfall (uses DTC seasonality)
-        wf_amz = cached_waterfall(spend_json, 'amazon', 12, dtc_seasonal)
+        # Amazon repeat from amazon waterfall fed with Amazon new customer
+        # projections (nc_multiplier × DTC new rev), not raw DTC spend.
+        amz_media = []
+        for m in months:
+            dtc_spend = live.get('dtc_spend', {}).get(m, 0)
+            dtc_roas = live.get('dtc_nc_roas', {}).get(m, 0)
+            nc_mult = live.get('nc_multiplier', {}).get(m, 0)
+            amz_new_rev = nc_mult * dtc_roas * dtc_spend
+            if amz_new_rev > 0:
+                amz_media.append({'month': m, 'spend': amz_new_rev, 'roas': 1.0})
+        amz_spend_json = _json_wf.dumps(amz_media, sort_keys=True)
+        wf_amz = cached_waterfall(amz_spend_json, 'amazon', 12, dtc_seasonal)
         if wf_amz is not None and not wf_amz.empty:
             for _, row in wf_amz.iterrows():
                 m = str(row.get('month', ''))

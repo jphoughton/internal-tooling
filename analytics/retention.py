@@ -259,8 +259,12 @@ def get_revenue_retention_data(source_filter=None):
 
     # Convert cumulative revenue to incremental retention rates:
     # retention[N] = (Cum[N] - Cum[N-1]) / 1st_Order_Revenue
-    # For M0: retention[0] = (Cum[0] - 1st_Order_Rev) / 1st_Order_Rev
-    #   (same-month repeat above the first order)
+    #
+    # M0 (same-month repeat) is folded into M1 to eliminate the calendar-
+    # boundary artifact: customers who order late in their cohort month and
+    # reorder early next month would otherwise split across M0/M1, making M0
+    # artificially small and M1 inflated relative to actual behaviour.
+    # The waterfall skips months_since <= 0, so M0 was previously lost entirely.
     retention_matrix = pd.DataFrame(index=cum_matrix.index, columns=cum_matrix.columns, dtype=float)
 
     for cohort in cum_matrix.index:
@@ -272,7 +276,11 @@ def get_revenue_retention_data(source_filter=None):
             if pd.isna(cum_val):
                 continue
             if col == 0:
-                # M0 = (total month-0 revenue - 1st order revenue) / 1st order revenue
+                # Skip M0 — it will be folded into M1 below
+                continue
+            elif col == 1:
+                # M1 = all repeat revenue in months 0+1 (above first-order rev)
+                # This combines same-month repeat (M0) with next-month repeat (M1)
                 retention_matrix.loc[cohort, col] = (cum_val - fo_rev) / fo_rev
             else:
                 prev_col = col - 1
@@ -280,6 +288,10 @@ def get_revenue_retention_data(source_filter=None):
                 if pd.isna(prev_val):
                     prev_val = 0
                 retention_matrix.loc[cohort, col] = (cum_val - prev_val) / fo_rev
+
+    # Drop M0 column — it's now merged into M1
+    if 0 in retention_matrix.columns:
+        retention_matrix = retention_matrix.drop(columns=[0])
 
     return {
         'matrix': retention_matrix,
