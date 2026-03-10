@@ -335,9 +335,6 @@ def build_overview_trend_rows(shopify_daily, gs_spend, amz_daily, period):
         if not amz_daily.empty and '_date' in amz_daily.columns:
             amz_d = amz_daily.copy()
             amz_d['_date'] = pd.to_datetime(amz_d['_date'])
-            # Exclude projected rows from trend tables — only show actuals
-            if '_amz_projected' in amz_d.columns:
-                amz_d = amz_d[~amz_d['_amz_projected'].astype(bool)]
             mask_amz = (amz_d['_date'] >= p_start) & (amz_d['_date'] <= p_end)
             amz_rev = amz_d.loc[mask_amz, '_amz_revenue'].sum() if '_amz_revenue' in amz_d.columns else 0
             amz_spend = amz_d.loc[mask_amz, '_amz_spend'].sum() if '_amz_spend' in amz_d.columns else 0

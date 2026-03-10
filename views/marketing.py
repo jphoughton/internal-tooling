@@ -895,12 +895,12 @@ def render(ctx):
                                  "total_customers": "sum"}
                 _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
 
-                # Amazon daily (exclude projected rows from performance tables)
+                # Amazon daily
                 _amz_dod = pd.DataFrame(columns=["Day", "_amz_revenue", "_amz_spend",
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_dod = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
+                    _amz_dod = _amz_daily.copy()
                     _amz_dod["Day"] = _amz_dod["_date"].dt.strftime("%Y-%m-%d")
                     _amz_dod_agg = {
                         "_amz_revenue": ("_amz_revenue", "sum"),
@@ -950,7 +950,7 @@ def render(ctx):
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_wow_tmp = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
+                    _amz_wow_tmp = _amz_daily.copy()
                     _amz_wow_tmp["_week_start"] = _amz_wow_tmp["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
                     _amz_wow_tmp["Week"] = _amz_wow_tmp["_week_start"].dt.strftime("%Y-%m-%d")
                     _amz_wow_agg = {
@@ -1004,7 +1004,7 @@ def render(ctx):
                                                   "_amz_new_cust", "_amz_repeat_cust",
                                                   "_amz_new_rev", "_amz_repeat_rev"])
                 if not _amz_daily.empty:
-                    _amz_mom_tmp = _amz_daily[~_amz_daily['_amz_projected'].astype(bool)].copy()
+                    _amz_mom_tmp = _amz_daily.copy()
                     _amz_mom_tmp["Month"] = _amz_mom_tmp["_date"].dt.to_period("M").astype(str)
                     _amz_mom_agg = {
                         "_amz_revenue": ("_amz_revenue", "sum"),
