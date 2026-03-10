@@ -108,8 +108,8 @@ def _cached_revenue_model_goals(cur_month):
             'dtc_repeat': round(_v(inputs, 'dtc_repeat')),
             'amazon_repeat': round(_v(calc, 'amazon_repeat')),
         }
-    except Exception:
-        pass
+    except Exception as e:
+        log.exception("_cached_revenue_model_goals failed: %s", e)
     return None
 
 
