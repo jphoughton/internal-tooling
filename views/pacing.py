@@ -336,6 +336,14 @@ def compute_pacing_data(ctx):
 
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
     _goal_total_repeat_rev = _goal_repeat_rev + _goal_amz_repeat_rev
+
+    # DEBUG: log goal sources for troubleshooting
+    log.warning(
+        "PACING_GOALS path=%s nc=%s dtc_rep=%s amz_nc=%s amz_rep=%s total_rep=%s rm_goals=%s",
+        'rm' if (_rm_goals and _rm_goals.get('nc_rev', 0) > 0) else 'wf',
+        _goal_blended_nc_rev, _goal_repeat_rev, _goal_amz_nc_rev,
+        _goal_amz_repeat_rev, _goal_total_repeat_rev, _rm_goals,
+    )
     _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
     _remaining_days = max(_days_in_month - _day_of_month, 1)
 
