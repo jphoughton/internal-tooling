@@ -171,6 +171,41 @@ def _cached_freshness_badge(sources_key):
     return {'ts': ts, 'new': new, 'srcs': srcs}
 
 # ---------------------------------------------------------------------------
+# Sync-aware cache invalidation
+# ---------------------------------------------------------------------------
+# The ETL scheduler runs in a separate process (supervisord) and cannot call
+# st.cache_data.clear() in the Streamlit process.  On every page load we check
+# the latest successful sync timestamp (cheap query, cached 60s).  If it is
+# newer than what this session last saw, we clear all st.cache_data caches so
+# the dashboard picks up fresh data automatically.
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _get_latest_sync_ts():
+    """Return the latest successful sync timestamp from sync_log (cached 60s)."""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) as ts FROM sync_log WHERE status = 'success'"
+            ).fetchone()
+            return row['ts'] if row and row['ts'] else None
+    except Exception:
+        return None
+
+
+def _auto_invalidate_caches():
+    """Clear all Streamlit caches if a new ETL sync has completed since last check."""
+    latest = _get_latest_sync_ts()
+    prev = st.session_state.get('_last_known_sync_ts')
+    if latest and latest != prev:
+        if prev is not None:
+            # A genuinely new sync happened — clear everything
+            _log.info('New sync detected (%s > %s), clearing caches', latest, prev)
+            st.cache_data.clear()
+        # Store the current version (first visit or after clear)
+        st.session_state['_last_known_sync_ts'] = latest
+
+
+# ---------------------------------------------------------------------------
 # Startup validation — runs once per process on first Streamlit boot
 # ---------------------------------------------------------------------------
 _STARTUP_DONE = False
@@ -368,6 +403,9 @@ st.set_page_config(
 
 # Run once per process after page config is set (st.error is now safe to call)
 _maybe_run_startup()
+
+# Auto-clear stale caches when a new ETL sync completes
+_auto_invalidate_caches()
 
 # --- Password protection (Railway / production) ---
 if not check_password():
