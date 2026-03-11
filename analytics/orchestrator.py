@@ -1125,19 +1125,70 @@ def run_pacing_precompute(triggered_by='scheduler'):
         def _revenue_model_goals(cur_month):
             try:
                 import analytics.revenue_model as rm
-                from db import get_revenue_model
+                from db import get_revenue_model, get_seasonal_indices
+                from analytics.waterfall import build_waterfall
                 with get_db() as conn:
                     rm_data = get_revenue_model(conn)
-                if rm_data:
-                    months = [cur_month]
-                    inputs = rm.merge_with_defaults(rm_data, months)
-                    calc = rm.compute(inputs, months)
-                    return {
-                        'nc_rev': round(calc.get('total_new', {}).get(cur_month, 0)),
-                        'nc_roas': calc.get('blended_nc_roas', {}).get(cur_month, 0),
-                    }
+                if not rm_data:
+                    return None
+                months = [cur_month]
+                inputs = rm.merge_with_defaults(rm_data, months)
+
+                # Inject waterfall-computed repeat revenue
+                with get_db() as conn:
+                    seasonal = get_seasonal_indices(conn)
+
+                # DTC repeat from Shopify waterfall
+                if _mkt_media:
+                    try:
+                        wf_dtc = build_waterfall(
+                            media_plan=_mkt_media,
+                            source_filter='shopify',
+                            horizon_months=12,
+                            seasonal_indices=seasonal,
+                        )
+                        if wf_dtc is not None and not wf_dtc.empty:
+                            for _, row in wf_dtc.iterrows():
+                                m = str(row.get('month', ''))
+                                if m in months:
+                                    inputs['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
+                    except Exception:
+                        logger.exception('DTC waterfall failed in orchestrator pacing goals')
+
+                # Amazon repeat from Amazon waterfall
+                _v = lambda d, k: d.get(k, {}).get(cur_month, 0)
+                dtc_spend = _v(inputs, 'dtc_spend')
+                dtc_roas = _v(inputs, 'dtc_nc_roas')
+                nc_mult = _v(inputs, 'nc_multiplier')
+                amz_new_rev = nc_mult * dtc_roas * dtc_spend
+                if amz_new_rev > 0:
+                    try:
+                        amz_media = [{'month': cur_month, 'spend': amz_new_rev, 'roas': 1.0}]
+                        wf_amz = build_waterfall(
+                            media_plan=amz_media,
+                            source_filter='amazon',
+                            horizon_months=12,
+                            seasonal_indices=seasonal,
+                        )
+                        if wf_amz is not None and not wf_amz.empty:
+                            for _, row in wf_amz.iterrows():
+                                m = str(row.get('month', ''))
+                                if m in months:
+                                    inputs['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
+                    except Exception:
+                        logger.exception('Amazon waterfall failed in orchestrator pacing goals')
+
+                calc = rm.compute(inputs, months)
+                return {
+                    'nc_rev': round(_v(calc, 'total_new')),
+                    'nc_roas': _v(calc, 'blended_nc_roas'),
+                    'dtc_new': round(_v(calc, 'dtc_new')),
+                    'amazon_new': round(_v(calc, 'amazon_new')),
+                    'dtc_repeat': round(_v(inputs, 'dtc_repeat')),
+                    'amazon_repeat': round(_v(calc, 'amazon_repeat')),
+                }
             except Exception:
-                pass
+                logger.exception('_revenue_model_goals failed')
             return None
 
         # ---- NC projection (without Streamlit cache) ----
@@ -1248,27 +1299,40 @@ def run_pacing_precompute(triggered_by='scheduler'):
         _goal_nc_rev = 0
         _goal_repeat_rev = 0
         _goal_amz_rev = 0
+        _goal_amz_nc_rev = 0
+        _goal_amz_repeat_rev = 0
+        _goal_blended_nc_rev = 0
+        _goal_blended_nc_roas = 0
         _has_goals = False
-        if _mkt_summary is not None and not _mkt_summary.empty:
+
+        # Try revenue model first (matches pacing.py logic)
+        try:
+            _rm_goals = _revenue_model_goals(_cur_month)
+        except Exception:
+            _rm_goals = None
+
+        if _rm_goals and _rm_goals.get('nc_rev', 0) > 0:
+            _goal_nc_rev = _rm_goals['dtc_new']
+            _goal_repeat_rev = _rm_goals['dtc_repeat']
+            _goal_amz_nc_rev = _rm_goals['amazon_new']
+            _goal_amz_repeat_rev = _rm_goals['amazon_repeat']
+            _goal_amz_rev = _goal_amz_nc_rev + _goal_amz_repeat_rev
+            _goal_blended_nc_rev = _rm_goals['nc_rev']
+            _goal_blended_nc_roas = _rm_goals['nc_roas']
+            _has_goals = True
+        elif _mkt_summary is not None and not _mkt_summary.empty:
             _plan_row = _mkt_summary[_mkt_summary['month'] == _cur_month]
             if not _plan_row.empty:
                 _goal_nc_rev = float(_plan_row.iloc[0].get('shopify_new_rev', 0))
                 _goal_repeat_rev = float(_plan_row.iloc[0].get('shopify_repeat_rev', 0))
                 _goal_amz_rev = float(_plan_row.iloc[0].get('amazon_rev', 0))
+                _goal_amz_nc_rev = float(_plan_row.iloc[0].get('amazon_new_rev', 0))
+                _goal_amz_repeat_rev = float(_plan_row.iloc[0].get('amazon_repeat_rev', 0))
+                _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
                 _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
-        _goal_blended_nc_rev = _goal_nc_rev
-        _goal_blended_nc_roas = 0
-        try:
-            _rm_goals = _revenue_model_goals(_cur_month)
-            if _rm_goals:
-                _goal_blended_nc_rev = _rm_goals['nc_rev'] if _rm_goals['nc_rev'] else _goal_nc_rev
-                _goal_blended_nc_roas = _rm_goals['nc_roas']
-        except Exception:
-            pass
-
         _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
-        _goal_total_repeat_rev = max(_goal_total_rev - _goal_blended_nc_rev, 0)
+        _goal_total_repeat_rev = _goal_repeat_rev + _goal_amz_repeat_rev
         _total_actual_rev = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
         _remaining_days = max(_days_in_month - _day_of_month, 1)
 
@@ -1418,6 +1482,8 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'goal_repeat_rev': _goal_repeat_rev,
             'goal_total_repeat_rev': _goal_total_repeat_rev,
             'goal_amz_rev': _goal_amz_rev,
+            'goal_amz_nc_rev': _goal_amz_nc_rev,
+            'goal_amz_repeat_rev': _goal_amz_repeat_rev,
             'goal_total_rev': _goal_total_rev,
             'goal_dtc_rev': _goal_dtc_rev,
             'goal_spend': _goal_spend,
