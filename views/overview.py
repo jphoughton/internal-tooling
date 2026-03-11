@@ -13,7 +13,7 @@ from ui.components import render_freshness_badge, render_html_table
 from ui.perf_tables import render_perf_table_colored, render_perf_table_transposed, build_overview_trend_rows
 from views.pacing import compute_pacing_data, render_hero_bars, render_pacing_detail_table
 from utils.date_helpers import business_yesterday
-from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
+from views.marketing import _load_shopify_daily_metrics, _load_gs_spend, _load_amazon_daily as _load_amazon_daily_mkt
 
 log = logging.getLogger(__name__)
 
@@ -64,9 +64,9 @@ def _get_yesterday_rollup():
     except Exception as e:
         log.warning('_get_yesterday_rollup DTC failed: %s', e)
 
-    # Amazon from _load_amazon_daily (same source as Marketing page)
+    # Amazon from marketing's _load_amazon_daily (has proper L7D gap-fill for spend)
     try:
-        amz = _load_amazon_daily()
+        amz = _load_amazon_daily_mkt()
         if not amz.empty:
             amz_yd = amz[amz['sale_date'] == yd_str]
             if not amz_yd.empty:
