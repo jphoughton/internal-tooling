@@ -200,8 +200,10 @@ def get_amazon_spend_projected(conn, start_date, end_date):
 
 
 def project_daily_spend_gaps(spend_df, date_col='sale_date', spend_col='_amz_spend'):
-    """Fill in missing recent days in a daily spend DataFrame using L7D average.
+    """Fill in missing/zero spend days in a daily spend DataFrame using L7D average.
 
+    Handles both interior gaps (zero-spend days between days with data) and
+    trailing gaps (missing days after the last date with data).
     Mutates nothing — returns a new DataFrame with projected rows appended.
     Projected rows have '_projected' = True.
 
@@ -211,7 +213,7 @@ def project_daily_spend_gaps(spend_df, date_col='sale_date', spend_col='_amz_spe
         spend_col: Name of the spend column.
 
     Returns:
-        DataFrame with gap rows appended (if any).
+        DataFrame with gap rows appended and interior gaps filled (if any).
     """
     import pandas as pd
     from utils.date_helpers import business_yesterday
@@ -223,30 +225,33 @@ def project_daily_spend_gaps(spend_df, date_col='sale_date', spend_col='_amz_spe
     df = spend_df.copy()
     df['_projected'] = False
 
-    # Find max date with actual spend
+    # Find rows with actual spend
     _has_spend = df[df[spend_col].fillna(0) > 0]
     if _has_spend.empty:
-        return df
-
-    max_date = pd.to_datetime(_has_spend[date_col]).max().date()
-    yesterday = business_yesterday()
-
-    if max_date >= yesterday:
         return df
 
     # L7D average from last 7 days with data
     _recent = _has_spend.nlargest(7, date_col)
     l7d_avg = _recent[spend_col].mean()
 
-    # Generate gap rows
-    gap_rows = []
-    current = max_date + timedelta(days=1)
-    while current <= yesterday:
-        gap_rows.append({date_col: str(current), spend_col: l7d_avg, '_projected': True})
-        current += timedelta(days=1)
+    # 1. Backfill interior gaps — zero/NaN spend on past days
+    yesterday = business_yesterday()
+    zero_mask = (df[spend_col].fillna(0) == 0) & (df[date_col] <= str(yesterday))
+    if zero_mask.any():
+        df.loc[zero_mask, spend_col] = round(l7d_avg, 2)
+        df.loc[zero_mask, '_projected'] = True
 
-    if gap_rows:
-        df = pd.concat([df, pd.DataFrame(gap_rows)], ignore_index=True)
+    # 2. Append trailing gap rows (missing dates after last row through yesterday)
+    max_date = pd.to_datetime(_has_spend[date_col]).max().date()
+    if max_date < yesterday:
+        gap_rows = []
+        current = max_date + timedelta(days=1)
+        while current <= yesterday:
+            gap_rows.append({date_col: str(current), spend_col: round(l7d_avg, 2),
+                             '_projected': True})
+            current += timedelta(days=1)
+        if gap_rows:
+            df = pd.concat([df, pd.DataFrame(gap_rows)], ignore_index=True)
 
     return df
 
