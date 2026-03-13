@@ -132,6 +132,19 @@ def run_daily_sync(full_refresh=False, on_status=None):
         results["google_sheet"] = f"ERROR: {e}"
         logger.error("Google Sheet sync failed: %s", e)
 
+    # --- Amazon Roll Up Date (spend data from separate Google Sheet) ---
+    _report(step_idx, "Syncing Amazon Roll Up Date...")
+    try:
+        from etl.google_sheets import sync_amazon_rollup
+        with get_db() as conn:
+            amz_rollup_count = sync_amazon_rollup(conn)
+            results["amazon_rollup"] = amz_rollup_count
+            if amz_rollup_count > 0:
+                logger.info("Amazon Roll Up Date: synced %d rows", amz_rollup_count)
+    except Exception as e:
+        results["amazon_rollup"] = f"ERROR: {e}"
+        logger.error("Amazon Roll Up Date sync failed: %s", e)
+
     # --- Rebuild aggregates ---
     _report(step_idx, "Rebuilding sales aggregates...")
     logger.info("Rebuilding daily sales aggregates...")
