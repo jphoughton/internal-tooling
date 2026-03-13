@@ -22,8 +22,8 @@ _AMAZON_2025 = {
 
 
 @st.cache_data(ttl=300)
-def _load_shopify_monthly_gross():
-    """Monthly gross sales from Shopify orders (total_amount)."""
+def _load_shopify_orders():
+    """All Shopify orders with date and total_amount."""
     with get_db() as conn:
         return read_sql(
             "SELECT order_date, total_amount FROM orders WHERE source = %s",
@@ -32,13 +32,32 @@ def _load_shopify_monthly_gross():
 
 
 @st.cache_data(ttl=300)
-def _load_amazon_monthly_revenue():
-    """Monthly Amazon revenue from daily_sku_sales."""
+def _load_amazon_daily():
+    """All Amazon daily_sku_sales rows."""
     with get_db() as conn:
         return read_sql(
             "SELECT sale_date, revenue FROM daily_sku_sales WHERE source = %s",
             conn, params=('amazon',),
         )
+
+
+def _filter_ytd(df, date_col, cutoff_month, cutoff_day):
+    """Filter rows to only include dates up to month/day within each year.
+
+    For completed months (month < cutoff_month), keep all rows.
+    For the cutoff month, only keep rows where day <= cutoff_day.
+    For months after cutoff, drop them.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df['_month'] = df[date_col].dt.month
+    df['_day'] = df[date_col].dt.day
+    mask = (df['_month'] < cutoff_month) | (
+        (df['_month'] == cutoff_month) & (df['_day'] <= cutoff_day)
+    )
+    return df[mask].drop(columns=['_month', '_day'])
 
 
 def _aggregate_monthly(df, date_col, value_col):
@@ -75,16 +94,17 @@ def _pct_change(current, prior):
 def render(ctx):
     """Render the Yearly Scorecard page."""
     st.title('Yearly Scorecard')
-    st.caption('YTD gross sales — current year vs prior year')
-
     today = date.today()
     current_year = today.year
     prior_year = current_year - 1
     current_month = today.month
+    current_day = today.day
 
-    # ── Load data ──
-    shopify_raw = _load_shopify_monthly_gross()
-    amazon_raw = _load_amazon_monthly_revenue()
+    st.caption(f'Through {today.strftime("%B %d, %Y")} — prior year uses same date range')
+
+    # ── Load data & filter to YTD (up to today's month/day in each year) ──
+    shopify_raw = _filter_ytd(_load_shopify_orders(), 'order_date', current_month, current_day)
+    amazon_raw = _filter_ytd(_load_amazon_daily(), 'sale_date', current_month, current_day)
 
     shopify_monthly = _aggregate_monthly(shopify_raw, 'order_date', 'total_amount')
     # Convert Shopify net to gross sales
