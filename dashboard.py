@@ -435,7 +435,7 @@ _NAV_ICONS = {
     'DTC Overview': '\U0001F4CA', 'DTC Marketing': '\U0001F4C8', 'DTC Retention': '\U0001F504', 'DTC Ops': '\U0001F4E6',
     'Amazon Overview': '\U0001F4CA', 'Amazon Marketing': '\U0001F4C8', 'Amazon Retention': '\U0001F504', 'Amazon Ops': '\U0001F4E6',
     'Rollup Overview': '\U0001F4CA', 'Rollup Marketing': '\U0001F4C8', 'Rollup Retention': '\U0001F504', 'Rollup Ops': '\U0001F4E6',
-    'Cash Flow': '\U0001F4B0',
+    'Cash Flow': '\U0001F4B0', 'Yearly Scorecard': '\U0001F4CA',
     'Financials': '\U0001F4B0', 'Settings': '\u2699\uFE0F', 'Variables': '\U0001F4DD',
 }
 
@@ -443,10 +443,10 @@ _NAV_GROUPS = [
     ('Rollup', ['Rollup Overview', 'Rollup Marketing', 'Rollup Retention', 'Rollup Ops']),
     ('DTC', ['DTC Overview', 'DTC Marketing', 'DTC Retention', 'DTC Ops']),
     ('Amazon', ['Amazon Overview', 'Amazon Marketing', 'Amazon Retention', 'Amazon Ops']),
-    ('Finance & Config', ['Cash Flow', 'Financials', 'Settings', 'Variables']),
+    ('Finance & Config', ['Cash Flow', 'Yearly Scorecard', 'Financials', 'Settings', 'Variables']),
 ]
 
-_STANDALONE_PAGES = {'Cash Flow', 'Financials', 'Settings', 'Variables'}
+_STANDALONE_PAGES = {'Cash Flow', 'Yearly Scorecard', 'Financials', 'Settings', 'Variables'}
 
 # Legacy URL redirect map (old page names → new)
 _LEGACY_PAGE_MAP = {
@@ -878,6 +878,7 @@ _page_modules = {
     'Retention': 'views.retention',
     'Ops': 'views.ops',
     'Cash Flow': 'views.cashflow',
+    'Yearly Scorecard': 'views.scorecard',
     'Financials': 'views.financials',
     'Settings': 'views.settings',
     'Variables': 'views.variables',
