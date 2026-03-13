@@ -45,7 +45,7 @@ def _merge_shopify_daily(rev_df, cust_df):
     return df
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=300)
 def _load_shopify_daily_metrics():
     """Load daily DTC metrics from Shopify DB (revenue, orders, new/repeat customers).
 
@@ -288,11 +288,16 @@ def _load_amazon_daily():
                 }
                 threshold = 0.4
 
-                # 1. Backfill existing rows with incomplete data
+                # 1. Backfill existing rows with incomplete NC data
+                # Only project NC-related metrics — spend comes from Google Sheets
+                # and should not be overwritten by NC-based projection.
+                nc_keys = ["_amz_new_cust", "_amz_repeat_cust",
+                           "_amz_new_rev", "_amz_repeat_rev", "_amz_revenue"]
                 for idx in sorted_df.index[-3:]:
                     row_nc = sorted_df.at[idx, "_amz_new_cust"]
                     if avg["_amz_new_cust"] > 0 and row_nc < avg["_amz_new_cust"] * threshold:
-                        for k, v in avg.items():
+                        for k in nc_keys:
+                            v = avg[k]
                             df.at[idx, k] = round(v) if 'cust' in k else round(v, 2)
 
                 # 2. Create projected rows for missing recent days
