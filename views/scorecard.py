@@ -6,8 +6,12 @@ import streamlit as st
 import pandas as pd
 
 from db import get_db, read_sql
+from analytics.revenue_model import DEFAULTS as _RM_DEFAULTS
 
 log = logging.getLogger(__name__)
+
+# DTC net-to-gross multiplier (Shopify DB stores net; gross ≈ net × 1.386)
+_NET_TO_GROSS = _RM_DEFAULTS.get('dtc_net_to_gross', [1.386])[0]
 
 # 2025 Amazon monthly revenue (not tracked in DB for that year)
 _AMAZON_2025 = {
@@ -83,6 +87,8 @@ def render(ctx):
     amazon_raw = _load_amazon_monthly_revenue()
 
     shopify_monthly = _aggregate_monthly(shopify_raw, 'order_date', 'total_amount')
+    # Convert Shopify net to gross sales
+    shopify_monthly['total'] = shopify_monthly['total'] * _NET_TO_GROSS
     amazon_monthly = _aggregate_monthly(amazon_raw, 'sale_date', 'revenue')
 
     # ── Build month-by-month comparison ──
