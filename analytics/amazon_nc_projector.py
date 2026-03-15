@@ -39,21 +39,18 @@ def _load_daily_nc_history(conn, lookback_days=120, as_of_date=None):
     df = read_sql(
         "SELECT DATE(o.order_date) AS sale_date, "
         "  COUNT(DISTINCT o.customer_id) AS total_customers, "
-        "  COUNT(DISTINCT CASE WHEN fc.first_date = DATE(o.order_date) "
+        "  COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
         "    THEN o.customer_id END) AS new_customers, "
         "  SUM(oi.total_price) AS total_rev, "
-        "  SUM(CASE WHEN fc.first_date = DATE(o.order_date) "
+        "  SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
         "    THEN oi.total_price ELSE 0 END) AS nc_rev "
         "FROM orders o "
-        "JOIN (SELECT customer_id, DATE(MIN(order_date)) AS first_date "
-        "      FROM orders WHERE source = %s "
-        "      GROUP BY customer_id) fc "
-        "ON o.customer_id = fc.customer_id "
+        "JOIN customers c ON o.customer_id = c.customer_id "
         "JOIN order_items oi ON o.order_id = oi.order_id "
         "WHERE o.source = %s AND o.order_date >= %s AND o.order_date <= %s "
         "GROUP BY DATE(o.order_date) "
         "ORDER BY sale_date",
-        conn, params=('amazon', 'amazon', str(start), str(end)),
+        conn, params=('amazon', str(start), str(end)),
     )
     if not df.empty:
         df['sale_date'] = pd.to_datetime(df['sale_date']).dt.date
@@ -121,13 +118,13 @@ def _load_dtc_daily_nc(conn, lookback_days=120, as_of_date=None):
         "    THEN o.customer_id END) AS dtc_nc "
         "FROM orders o "
         "JOIN (SELECT customer_id, DATE(MIN(order_date)) AS first_date "
-        "      FROM orders WHERE source = %s "
+        "      FROM orders WHERE source = 'shopify' "
         "      GROUP BY customer_id) fc "
         "ON o.customer_id = fc.customer_id "
-        "WHERE o.source = %s AND o.order_date >= %s AND o.order_date <= %s "
+        "WHERE o.source = 'shopify' AND o.order_date >= %s AND o.order_date <= %s "
         "GROUP BY DATE(o.order_date) "
         "ORDER BY sale_date",
-        conn, params=('shopify', 'shopify', str(start), str(end)),
+        conn, params=(str(start), str(end)),
     )
     if not df.empty:
         df['sale_date'] = pd.to_datetime(df['sale_date']).dt.date

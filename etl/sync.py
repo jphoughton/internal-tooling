@@ -260,7 +260,7 @@ def _sync_amazon_retention(full_refresh):
     from etl.amazon import fetch_fulfillment_data
 
     with get_db() as conn:
-        since = _get_since_date(conn, "amazon_retention", full_refresh, max_days=30)
+        since = _get_since_date(conn, "amazon_retention", full_refresh, max_days=365)
         today = datetime.utcnow().strftime("%Y-%m-%d")
 
         logger.info("Amazon retention sync: %s to %s", since, today)
