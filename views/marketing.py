@@ -220,18 +220,21 @@ def _load_amazon_daily():
             cust_daily = read_sql(
                 "SELECT DATE(o.order_date) AS sale_date, "
                 "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                "COUNT(DISTINCT CASE WHEN fc.first_date = DATE(o.order_date) "
                 "THEN o.customer_id END) AS new_customers, "
                 "SUM(oi.total_price) AS oi_total_rev, "
-                "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+                "SUM(CASE WHEN fc.first_date = DATE(o.order_date) "
                 "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
                 "FROM orders o "
-                "JOIN customers c ON o.customer_id = c.customer_id "
+                "JOIN (SELECT customer_id, DATE(MIN(order_date)) AS first_date "
+                "      FROM orders WHERE source = %s "
+                "      GROUP BY customer_id) fc "
+                "ON o.customer_id = fc.customer_id "
                 "JOIN order_items oi ON o.order_id = oi.order_id "
                 "WHERE o.source = %s "
                 "GROUP BY DATE(o.order_date)",
                 conn,
-                params=('amazon',),
+                params=('amazon', 'amazon'),
             )
         if rev_daily.empty:
             return pd.DataFrame()
