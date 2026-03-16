@@ -331,17 +331,32 @@ def _project_amazon_gaps(df):
     }
     threshold = 0.4
 
+    # Revenue-based ratios from complete days for proportional gap-fill
+    avg_rev = avg['_amz_revenue']
+    nc_per_dollar = avg['_amz_new_cust'] / avg_rev if avg_rev > 0 else 0
+    repeat_per_dollar = avg['_amz_repeat_cust'] / avg_rev if avg_rev > 0 else 0
+    nc_rev_frac = avg['_amz_new_rev'] / avg_rev if avg_rev > 0 else 0.5
+
     # 1. Back-fill existing rows with incomplete NC data
-    #    Check all days in the tail (up to 14) — data lag can exceed 3 days
-    nc_keys = ['_amz_new_cust', '_amz_repeat_cust',
-               '_amz_new_rev', '_amz_repeat_rev']
+    #    Scale NC proportionally to each day's actual revenue instead of
+    #    using a flat average — gives day-specific estimates.
     tail_len = min(14, len(sorted_df))
     for idx in sorted_df.index[-tail_len:]:
         row_nc = sorted_df.at[idx, '_amz_new_cust']
         if avg['_amz_new_cust'] > 0 and row_nc < avg['_amz_new_cust'] * threshold:
-            for k in nc_keys:
-                v = avg[k]
-                df.at[idx, k] = round(v) if 'cust' in k else round(v, 2)
+            day_rev = df.at[idx, '_amz_revenue']
+            if day_rev > 0 and nc_per_dollar > 0:
+                # Scale NC to this day's actual revenue
+                df.at[idx, '_amz_new_cust'] = round(day_rev * nc_per_dollar)
+                df.at[idx, '_amz_repeat_cust'] = round(day_rev * repeat_per_dollar)
+                df.at[idx, '_amz_new_rev'] = round(day_rev * nc_rev_frac, 2)
+                df.at[idx, '_amz_repeat_rev'] = round(day_rev * (1 - nc_rev_frac), 2)
+            else:
+                # No revenue data — fall back to flat average
+                df.at[idx, '_amz_new_cust'] = round(avg['_amz_new_cust'])
+                df.at[idx, '_amz_repeat_cust'] = round(avg['_amz_repeat_cust'])
+                df.at[idx, '_amz_new_rev'] = round(avg['_amz_new_rev'], 2)
+                df.at[idx, '_amz_repeat_rev'] = round(avg['_amz_repeat_rev'], 2)
             df.at[idx, '_amz_projected'] = True
 
     # 2. Append projected rows for missing recent days
