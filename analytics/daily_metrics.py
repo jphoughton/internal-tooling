@@ -21,9 +21,8 @@ log = logging.getLogger(__name__)
 def first_order_cte(source):
     """Return NC classification SQL components for a given source.
 
-    Both channels use MIN(order_date) from orders as the NC definition.
-    Shopify: excludes refunded/voided orders.
-    Amazon:  uses all orders (365-day retention sync window).
+    Shopify: MIN(order_date) from orders, excludes refunded/voided.
+    Amazon:  customers.first_order_date (accumulated via LEAST across syncs).
 
     Returns:
         tuple: (cte_sql, join_sql, first_date_expr, params)
@@ -33,11 +32,13 @@ def first_order_cte(source):
             params         — tuple of bind params for the CTE
     """
     if source == 'amazon':
+        # Amazon: use customers.first_order_date (accumulated via LEAST
+        # across syncs) — more accurate than MIN(order_date) which only
+        # sees orders currently in the table (limited by sync window).
         return (
             ("cust_first AS ("
-             "SELECT customer_id, MIN(order_date) AS first_order_date "
-             "FROM orders WHERE source = 'amazon' "
-             "GROUP BY customer_id)"),
+             "SELECT customer_id, DATE(first_order_date) AS first_order_date "
+             "FROM customers WHERE source = 'amazon')"),
             'JOIN cust_first cf ON o.customer_id = cf.customer_id',
             'cf.first_order_date',
             (),
@@ -45,7 +46,7 @@ def first_order_cte(source):
     # Shopify / DTC — use MIN(order_date) excluding refunded/voided
     return (
         ("cust_first AS ("
-         "SELECT customer_id, MIN(order_date) AS first_order_date "
+         "SELECT customer_id, DATE(MIN(order_date)) AS first_order_date "
          "FROM orders WHERE source = %s "
          "AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
          "GROUP BY customer_id)"),
@@ -186,9 +187,8 @@ def load_shopify_daily():
 
 _AMAZON_CUST_SQL = (
     "WITH cust_first AS ("
-    "  SELECT customer_id, MIN(order_date) AS first_order_date "
-    "  FROM orders WHERE source = 'amazon' "
-    "  GROUP BY customer_id"
+    "  SELECT customer_id, DATE(first_order_date) AS first_order_date "
+    "  FROM customers WHERE source = 'amazon'"
     ") "
     "SELECT DATE(o.order_date) AS sale_date, "
     "COUNT(DISTINCT o.customer_id) AS total_customers, "
@@ -286,12 +286,38 @@ def load_amazon_daily():
 
 
 def _project_amazon_gaps(df):
-    """Back-fill incomplete rows and append projected gap rows."""
+    """Back-fill incomplete rows and append projected gap rows.
+
+    Amazon's Fulfilled Shipments report can lag 7+ days behind S&T revenue
+    data. Detect incomplete days by total_customers dropping well below the
+    norm, then gap-fill NC metrics from a window of complete days.
+    """
     if len(df) < 10 or '_amz_new_cust' not in df.columns:
         return df
 
-    sorted_df = df.sort_values('_date')
-    stable = sorted_df.iloc[-10:-3]
+    sorted_df = df.sort_values('_date').copy()
+
+    # --- Find a reliable "stable" window of complete days ---------------
+    # Use total_customers to detect completeness: incomplete days have a
+    # fraction of the normal customer count because fulfillment data hasn't
+    # arrived yet.  Look at days 21-10 ago as a baseline (well past any lag).
+    tc_col = 'total_customers'
+    if tc_col in sorted_df.columns and len(sorted_df) >= 21:
+        baseline = sorted_df.iloc[-21:-10]
+        tc_baseline = baseline[tc_col].median() if not baseline.empty else 0
+    else:
+        tc_baseline = 0
+
+    if tc_baseline > 0:
+        # A day is "complete" if total_customers >= 40% of the baseline
+        completeness_floor = tc_baseline * 0.4
+        complete_mask = sorted_df[tc_col] >= completeness_floor
+        complete_days = sorted_df[complete_mask]
+        # Use the most recent 7 complete days as the stable reference
+        stable = complete_days.tail(7) if len(complete_days) >= 7 else sorted_df.iloc[-10:-3]
+    else:
+        stable = sorted_df.iloc[-10:-3]
+
     if stable.empty:
         return df
 
@@ -306,14 +332,17 @@ def _project_amazon_gaps(df):
     threshold = 0.4
 
     # 1. Back-fill existing rows with incomplete NC data
+    #    Check all days in the tail (up to 14) — data lag can exceed 3 days
     nc_keys = ['_amz_new_cust', '_amz_repeat_cust',
-               '_amz_new_rev', '_amz_repeat_rev', '_amz_revenue']
-    for idx in sorted_df.index[-3:]:
+               '_amz_new_rev', '_amz_repeat_rev']
+    tail_len = min(14, len(sorted_df))
+    for idx in sorted_df.index[-tail_len:]:
         row_nc = sorted_df.at[idx, '_amz_new_cust']
         if avg['_amz_new_cust'] > 0 and row_nc < avg['_amz_new_cust'] * threshold:
             for k in nc_keys:
                 v = avg[k]
                 df.at[idx, k] = round(v) if 'cust' in k else round(v, 2)
+            df.at[idx, '_amz_projected'] = True
 
     # 2. Append projected rows for missing recent days
     yesterday = date.today() - timedelta(days=1)

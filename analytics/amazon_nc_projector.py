@@ -39,6 +39,7 @@ def _load_daily_nc_history(conn, lookback_days=120, as_of_date=None):
 
     _cte, _join, _fdate, _p = first_order_cte('amazon')
     df = read_sql(
+        f"WITH {_cte} "
         f"SELECT DATE(o.order_date) AS sale_date, "
         f"  COUNT(DISTINCT o.customer_id) AS total_customers, "
         f"  COUNT(DISTINCT CASE WHEN {_fdate} = DATE(o.order_date) "
