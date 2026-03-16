@@ -462,6 +462,7 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_orders_source_customer ON orders(source, customer_id)",
     "CREATE INDEX IF NOT EXISTS idx_orders_source_date ON orders(source, order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_source_total_customer ON orders(source, total_amount, customer_id, order_date)",
+    "CREATE INDEX IF NOT EXISTS idx_customers_source ON customers(source)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
