@@ -182,15 +182,19 @@ def _build_feature_df(nc_hist, rev_hist, spend_hist, dtc_spend_hist, dtc_nc_hist
     df['is_weekend'] = (df['dow'] >= 5).astype(int)
     df['is_month_end'] = (df['dom'] >= 28).astype(int)
 
-    # Rolling features (trailing — no data leakage)
+    # Compute shifted series once (trailing — no data leakage)
+    nc_lag = df['new_customers'].shift(1)
+    rev_lag = df['total_rev'].shift(1)
+
+    # Rolling features
     for window in [7, 14, 28]:
-        df[f'nc_ma{window}'] = df['new_customers'].shift(1).rolling(window, min_periods=3).mean()
-        df[f'nc_std{window}'] = df['new_customers'].shift(1).rolling(window, min_periods=3).std()
-        df[f'rev_ma{window}'] = df['total_rev'].shift(1).rolling(window, min_periods=3).mean()
+        df[f'nc_ma{window}'] = nc_lag.rolling(window, min_periods=3).mean()
+        df[f'nc_std{window}'] = nc_lag.rolling(window, min_periods=3).std()
+        df[f'rev_ma{window}'] = rev_lag.rolling(window, min_periods=3).mean()
 
     # EWMA (exponential weighted — reacts faster to recent changes)
-    df['nc_ewma7'] = df['new_customers'].shift(1).ewm(span=7, min_periods=3).mean()
-    df['nc_ewma14'] = df['new_customers'].shift(1).ewm(span=14, min_periods=3).mean()
+    df['nc_ewma7'] = nc_lag.ewm(span=7, min_periods=3).mean()
+    df['nc_ewma14'] = nc_lag.ewm(span=14, min_periods=3).mean()
 
     # Same-DOW trailing average (last 4 same weekdays)
     df['nc_same_dow'] = np.nan
@@ -200,11 +204,11 @@ def _build_feature_df(nc_hist, rev_hist, spend_hist, dtc_spend_hist, dtc_nc_hist
         df.loc[mask, 'nc_same_dow'] = dow_vals.rolling(4, min_periods=1).mean()
 
     # NC fraction of total revenue (trailing)
-    nc_frac = (df['nc_rev'].shift(1) / df['total_rev'].shift(1)).replace([np.inf, -np.inf], np.nan)
+    nc_frac = (df['nc_rev'].shift(1) / rev_lag).replace([np.inf, -np.inf], np.nan)
     df['nc_frac_l7'] = nc_frac.rolling(7, min_periods=3).mean()
 
     # NC-to-DTC-NC ratio (trailing)
-    ratio = (df['new_customers'].shift(1) / df['dtc_nc'].shift(1)).replace([np.inf, -np.inf], np.nan)
+    ratio = (nc_lag / df['dtc_nc'].shift(1)).replace([np.inf, -np.inf], np.nan)
     df['amz_dtc_nc_ratio'] = ratio.rolling(14, min_periods=5).mean()
 
     # Trend: L7D / L14D ratio
@@ -586,49 +590,17 @@ def _append_target_row(feature_df, target_date, rev_hist, dtc_spend_hist,
 
     new_row = pd.DataFrame([row])
     combined = pd.concat([feature_df, new_row], ignore_index=True)
-    return _build_feature_df_incremental(combined, feature_df)
+    # Split into nc_hist (base) + signal frames matching _build_feature_df inputs
+    nc_cols = ['sale_date', 'total_customers', 'new_customers', 'total_rev', 'nc_rev']
+    nc_hist = combined[nc_cols].sort_values('sale_date').reset_index(drop=True)
 
+    def _sig(col):
+        if col in combined.columns:
+            return combined[['sale_date', col]].dropna(subset=[col])
+        return pd.DataFrame(columns=['sale_date', col])
 
-def _build_feature_df_incremental(combined, original_df):
-    """Rebuild features for a combined DataFrame (original + new target row)."""
-    # Simpler approach: just rebuild from scratch
-    # (This is called once per projection, not in a hot loop)
-    df = combined.sort_values('sale_date').reset_index(drop=True)
-
-    dates = pd.to_datetime(df['sale_date'])
-    df['dow'] = dates.dt.dayofweek
-    df['month'] = dates.dt.month
-    df['dom'] = dates.dt.day
-    df['is_weekend'] = (df['dow'] >= 5).astype(int)
-    df['is_month_end'] = (df['dom'] >= 28).astype(int)
-
-    for window in [7, 14, 28]:
-        df[f'nc_ma{window}'] = df['new_customers'].shift(1).rolling(window, min_periods=3).mean()
-        df[f'nc_std{window}'] = df['new_customers'].shift(1).rolling(window, min_periods=3).std()
-        df[f'rev_ma{window}'] = df['total_rev'].shift(1).rolling(window, min_periods=3).mean()
-
-    df['nc_ewma7'] = df['new_customers'].shift(1).ewm(span=7, min_periods=3).mean()
-    df['nc_ewma14'] = df['new_customers'].shift(1).ewm(span=14, min_periods=3).mean()
-
-    df['nc_same_dow'] = np.nan
-    for dow in range(7):
-        mask = df['dow'] == dow
-        dow_vals = df.loc[mask, 'new_customers'].shift(1)
-        df.loc[mask, 'nc_same_dow'] = dow_vals.rolling(4, min_periods=1).mean()
-
-    nc_frac = (df['nc_rev'].shift(1) / df['total_rev'].shift(1)).replace([np.inf, -np.inf], np.nan)
-    df['nc_frac_l7'] = nc_frac.rolling(7, min_periods=3).mean()
-
-    if 'dtc_nc' in df.columns:
-        ratio = (df['new_customers'].shift(1) / df['dtc_nc'].shift(1)).replace([np.inf, -np.inf], np.nan)
-        df['amz_dtc_nc_ratio'] = ratio.rolling(14, min_periods=5).mean()
-
-    df['trend_7_14'] = df['nc_ma7'] / df['nc_ma14']
-
-    from utils.constants import DEFAULT_SEASONAL_INDICES
-    df['seasonal_idx'] = df['month'].map(DEFAULT_SEASONAL_INDICES)
-
-    return df
+    return _build_feature_df(nc_hist, _sig('amz_revenue'), _sig('amz_spend'),
+                              _sig('dtc_spend'), _sig('dtc_nc'))
 
 
 def _empty_result(target_date, actual_nc=None, actual_rev=None):

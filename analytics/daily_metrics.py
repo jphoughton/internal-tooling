@@ -185,24 +185,23 @@ def load_shopify_daily():
 # Amazon daily
 # ------------------------------------------------------------------
 
-_AMAZON_CUST_SQL = (
-    "WITH cust_first AS ("
-    "  SELECT customer_id, DATE(first_order_date) AS first_order_date "
-    "  FROM customers WHERE source = 'amazon'"
-    ") "
-    "SELECT DATE(o.order_date) AS sale_date, "
-    "COUNT(DISTINCT o.customer_id) AS total_customers, "
-    "COUNT(DISTINCT CASE WHEN DATE(cf.first_order_date) = DATE(o.order_date) "
-    "THEN o.customer_id END) AS new_customers, "
-    "SUM(oi.total_price) AS oi_total_rev, "
-    "SUM(CASE WHEN DATE(cf.first_order_date) = DATE(o.order_date) "
-    "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-    "FROM orders o "
-    "JOIN cust_first cf ON o.customer_id = cf.customer_id "
-    "JOIN order_items oi ON o.order_id = oi.order_id "
-    "WHERE o.source = %s "
-    "GROUP BY DATE(o.order_date)"
-)
+def _build_amazon_cust_sql():
+    """Build Amazon customer SQL from first_order_cte() — single source of truth."""
+    _cte, _join, _fdate, _ = first_order_cte('amazon')
+    return (
+        f"WITH {_cte} "
+        f"SELECT DATE(o.order_date) AS sale_date, "
+        f"COUNT(DISTINCT o.customer_id) AS total_customers, "
+        f"COUNT(DISTINCT CASE WHEN {_fdate} = DATE(o.order_date) "
+        f"THEN o.customer_id END) AS new_customers, "
+        f"SUM(oi.total_price) AS oi_total_rev, "
+        f"SUM(CASE WHEN {_fdate} = DATE(o.order_date) "
+        f"THEN oi.total_price ELSE 0 END) AS oi_new_rev "
+        f"FROM orders o {_join} "
+        f"JOIN order_items oi ON o.order_id = oi.order_id "
+        f"WHERE o.source = %s "
+        f"GROUP BY DATE(o.order_date)"
+    )
 
 
 def load_amazon_daily():
@@ -225,7 +224,7 @@ def load_amazon_daily():
                 "FROM amazon_daily_rollup ORDER BY date",
                 conn,
             )
-            cust_daily = read_sql(_AMAZON_CUST_SQL, conn, params=('amazon',))
+            cust_daily = read_sql(_build_amazon_cust_sql(), conn, params=('amazon',))
 
         if rev_daily.empty:
             return pd.DataFrame()
@@ -295,7 +294,7 @@ def _project_amazon_gaps(df):
     if len(df) < 10 or '_amz_new_cust' not in df.columns:
         return df
 
-    sorted_df = df.sort_values('_date').copy()
+    sorted_df = df.sort_values('_date')
 
     # --- Find a reliable "stable" window of complete days ---------------
     # Use total_customers to detect completeness: incomplete days have a
