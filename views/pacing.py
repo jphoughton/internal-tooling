@@ -17,7 +17,7 @@ from analytics.amazon_nc_projector import project_amazon_nc
 from ui.pacing_helpers import build_pace_row, style_pace_df, render_white_table
 from utils.constants import FORECAST_SKUS
 from utils.date_helpers import business_today, business_yesterday
-from views.marketing import _load_shopify_daily_metrics, _load_gs_spend
+from analytics.daily_metrics import load_shopify_daily, load_gs_spend
 
 log = logging.getLogger(__name__)
 
@@ -191,14 +191,14 @@ def compute_pacing_data(ctx):
     _load_sku_seasonal_json = ctx['load_sku_seasonal_json']
 
     # Load Shopify DB metrics (revenue, orders, new/repeat customers)
-    _shopify_daily = _load_shopify_daily_metrics()
+    _shopify_daily = load_shopify_daily()
     if _shopify_daily.empty:
         return None
 
     # Merge: Shopify DB for revenue/customers, Google Sheet for spend only
     mkt_df = _shopify_daily.copy()
     mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
-    _gs_spend = _load_gs_spend()
+    _gs_spend = load_gs_spend()
     if not _gs_spend.empty:
         _gs = _gs_spend[['_date', '_ad_spend']].copy()
         _gs['_date'] = pd.to_datetime(_gs['_date'])

@@ -589,7 +589,7 @@ def run_page_stats(triggered_by='scheduler'):
         from analytics.waterfall import build_waterfall, build_sku_forecast_table
         from db import (
             get_media_spend, get_seasonal_indices, get_sku_seasonal_indices,
-            get_setting, get_amazon_revenue_forecast, read_sql,
+            get_setting, get_amazon_revenue_forecast,
         )
         from utils.constants import FORECAST_SKUS
 
@@ -622,44 +622,9 @@ def run_page_stats(triggered_by='scheduler'):
         # --- Shopify daily metrics (marketing/pacing) ---
         t0 = time.time()
         try:
+            from analytics.daily_metrics import query_shopify_daily_raw
             with get_db() as conn:
-                # Use orders.total_amount for revenue (matches Shopify total_price
-                # incl. shipping + tax), exclude refunded/voided orders
-                rev_df = read_sql(
-                    "SELECT o.order_date AS sale_date, "
-                    "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
-                    "SUM(oi_agg.units) AS units "
-                    "FROM orders o "
-                    "LEFT JOIN ("
-                    "  SELECT order_id, SUM(quantity) AS units "
-                    "  FROM order_items GROUP BY order_id"
-                    ") oi_agg ON o.order_id = oi_agg.order_id "
-                    "WHERE o.source = %s "
-                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY o.order_date ORDER BY sale_date",
-                    conn, params=('shopify',),
-                )
-                cust_df = read_sql(
-                    "SELECT o.order_date AS sale_date, "
-                    "COUNT(DISTINCT o.order_id) AS total_orders, "
-                    "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                    "COUNT(DISTINCT CASE WHEN fc.first_date = o.order_date "
-                    "  THEN o.customer_id END) AS new_customers, "
-                    "SUM(oi.total_price) AS oi_total_rev, "
-                    "SUM(CASE WHEN fc.first_date = o.order_date "
-                    "  THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                    "FROM orders o "
-                    "JOIN (SELECT customer_id, MIN(order_date) AS first_date "
-                    "      FROM orders WHERE source = %s "
-                    "        AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "      GROUP BY customer_id) fc "
-                    "ON o.customer_id = fc.customer_id "
-                    "JOIN order_items oi ON o.order_id = oi.order_id "
-                    "WHERE o.source = %s "
-                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY o.order_date ORDER BY sale_date",
-                    conn, params=('shopify', 'shopify'),
-                )
+                rev_df, cust_df = query_shopify_daily_raw(conn)
             if not rev_df.empty:
                 _save_result(
                     'shopify_daily_revenue',
@@ -914,13 +879,11 @@ def run_pacing_precompute(triggered_by='scheduler'):
             get_channel_revenue, get_amazon_spend, get_amazon_spend_projected,
             get_nc_stats, nc_revenue_fraction, get_total_customers,
             compute_mer, compute_nc_roas, compute_nc_cpa, compute_aov,
-            project_daily_spend_gaps,
         )
         from analytics.amazon_nc_projector import project_amazon_nc
         from db import (
             get_media_spend, get_seasonal_indices, get_sku_seasonal_indices,
             get_setting, get_amazon_revenue_forecast, get_precomputed,
-            read_sql,
         )
         from utils.constants import FORECAST_SKUS
         from utils.date_helpers import business_today, business_yesterday
@@ -972,117 +935,8 @@ def run_pacing_precompute(triggered_by='scheduler'):
                 return None
             return json.dumps(indices, sort_keys=True)
 
-        # ---- Load Shopify daily metrics (without Streamlit cache) ----
-        def _load_shopify_daily_no_cache():
-            """Replicate _load_shopify_daily_metrics without st.cache_data."""
-            try:
-                with get_db() as conn:
-                    rev_cached = get_precomputed(conn, 'shopify_daily_revenue', max_age_hours=25)
-                    cust_cached = get_precomputed(conn, 'shopify_daily_customers', max_age_hours=25)
-                if rev_cached and cust_cached:
-                    rev_df = pd.DataFrame(json.loads(rev_cached))
-                    cust_df = pd.DataFrame(json.loads(cust_cached))
-                    if not rev_df.empty and not cust_df.empty:
-                        return _merge_dfs(rev_df, cust_df)
-            except Exception:
-                pass
-
-            with get_db() as conn:
-                rev_df = read_sql(
-                    "SELECT o.order_date AS sale_date, "
-                    "SUM(o.total_amount - COALESCE(o.total_tax, 0)) AS revenue, "
-                    "SUM(oi_agg.units) AS units "
-                    "FROM orders o "
-                    "LEFT JOIN ("
-                    "  SELECT order_id, SUM(quantity) AS units "
-                    "  FROM order_items GROUP BY order_id"
-                    ") oi_agg ON o.order_id = oi_agg.order_id "
-                    "WHERE o.source = %s "
-                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY o.order_date ORDER BY sale_date",
-                    conn, params=('shopify',),
-                )
-                cust_df = read_sql(
-                    "SELECT o.order_date AS sale_date, "
-                    "COUNT(DISTINCT o.order_id) AS total_orders, "
-                    "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                    "COUNT(DISTINCT CASE WHEN cf.actual_first = o.order_date "
-                    "THEN o.customer_id END) AS new_customers, "
-                    "SUM(oi.total_price) AS oi_total_rev, "
-                    "SUM(CASE WHEN cf.actual_first = o.order_date "
-                    "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                    "FROM orders o "
-                    "JOIN (SELECT customer_id, MIN(order_date) AS actual_first "
-                    "      FROM orders WHERE source = %s "
-                    "        AND COALESCE(financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "      GROUP BY customer_id) cf "
-                    "  ON o.customer_id = cf.customer_id "
-                    "JOIN order_items oi ON o.order_id = oi.order_id "
-                    "WHERE o.source = %s "
-                    "  AND COALESCE(o.financial_status, 'paid') NOT IN ('refunded', 'voided') "
-                    "GROUP BY o.order_date",
-                    conn, params=('shopify', 'shopify'),
-                )
-            if rev_df.empty:
-                return pd.DataFrame()
-            return _merge_dfs(rev_df, cust_df)
-
-        def _merge_dfs(rev_df, cust_df):
-            """Merge revenue and customer DFs — mirrors marketing._merge_shopify_daily."""
-            rev_df['sale_date'] = pd.to_datetime(rev_df['sale_date'])
-            cust_df['sale_date'] = pd.to_datetime(cust_df['sale_date'])
-            df = rev_df.merge(cust_df, on='sale_date', how='left')
-            df['total_orders'] = df['total_orders'].fillna(0).astype(int)
-            df['new_customers'] = df['new_customers'].fillna(0).astype(int)
-            df['total_customers'] = df['total_customers'].fillna(0).astype(int)
-            oi_total = df['oi_total_rev'].fillna(0)
-            oi_new = df['oi_new_rev'].fillna(0)
-            frac_new = (oi_new / oi_total).fillna(0).clip(0, 1)
-            df['_revenue'] = df['revenue']
-            df['_units'] = df['units']
-            df['_orders'] = df['total_orders']
-            df['_nc_orders'] = df['new_customers']
-            df['_ret_orders'] = df['_orders'] - df['_nc_orders']
-            df['_nc_revenue'] = df['_revenue'] * frac_new
-            df['_ret_revenue'] = df['_revenue'] * (1 - frac_new)
-            df['_date'] = df['sale_date']
-            return df
-
-        def _load_gs_spend_no_cache():
-            """Replicate _load_gs_spend without st.cache_data."""
-            with get_db() as conn:
-                try:
-                    cols = [d['column_name'] for d in conn.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = 'google_sheet_data'"
-                    ).fetchall()]
-                    if 'date' not in cols:
-                        return pd.DataFrame()
-                except Exception:
-                    return pd.DataFrame()
-                df = read_sql("SELECT * FROM google_sheet_data ORDER BY id", conn)
-            if df.empty:
-                return df
-
-            def _clean_num(val):
-                if pd.isna(val):
-                    return 0.0
-                s = str(val).replace('$', '').replace(',', '').replace('%', '').strip()
-                try:
-                    return float(s)
-                except (ValueError, TypeError):
-                    return 0.0
-
-            df['_date'] = pd.to_datetime(df['date'], format='mixed', dayfirst=False)
-            df['_ad_spend'] = df['blended_ad_spend'].apply(_clean_num)
-            sub_cols = []
-            for sub_col in ['subscriptions', 'subscription_revenue', 'active_subscriptions',
-                            'total_active_subscriptions', 'total_new_subscriptions',
-                            'total_cancelled_subscriptions', 'total_subscription_order_revenue']:
-                if sub_col in df.columns:
-                    df[f'_{sub_col}'] = df[sub_col].apply(_clean_num)
-                    sub_cols.append(f'_{sub_col}')
-            return df[['_date', '_ad_spend'] + sub_cols].copy()
+        # ---- Load Shopify daily metrics and GS spend via centralized loaders ----
+        from analytics.daily_metrics import load_shopify_daily, load_gs_spend
 
         # ---- Amazon pacing stats (without Streamlit cache) ----
         def _amazon_pacing_stats(cur_month, yesterday_str, l7d_start_str):
@@ -1201,14 +1055,14 @@ def run_pacing_precompute(triggered_by='scheduler'):
         # ============================================================
         # Now replicate compute_pacing_data logic
         # ============================================================
-        _shopify_daily = _load_shopify_daily_no_cache()
+        _shopify_daily = load_shopify_daily()
         if _shopify_daily.empty:
             logger.warning('[orchestrator] Pacing precompute: no Shopify daily data')
             return
 
         mkt_df = _shopify_daily.copy()
         mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
-        _gs_spend = _load_gs_spend_no_cache()
+        _gs_spend = load_gs_spend()
         if not _gs_spend.empty:
             _gs = _gs_spend[['_date', '_ad_spend']].copy()
             _gs['_date'] = pd.to_datetime(_gs['_date'])
@@ -1532,7 +1386,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
 
         # Also save the cleaned GS spend data
         try:
-            _gs = _load_gs_spend_no_cache()
+            _gs = load_gs_spend()
             if not _gs.empty:
                 _save_result('gs_spend_cleaned', json.loads(_gs.to_json()),
                              MODEL_PACING)
@@ -1554,82 +1408,23 @@ def run_overview_data_precompute(triggered_by='scheduler'):
         import pandas as pd
         from datetime import date, timedelta
         from analytics.sku_flavors import get_flavor
-        from analytics.metrics import project_daily_spend_gaps
+        from analytics.daily_metrics import load_amazon_daily
         from analytics.amazon_nc_projector import project_amazon_nc
         from db import read_sql
 
         # ---- 1. Amazon daily merged ----
         t0 = time.time()
         try:
-            with get_db() as conn:
-                rev = read_sql(
-                    "SELECT sale_date, SUM(revenue) as _amz_revenue "
-                    "FROM daily_sku_sales WHERE source = 'amazon' "
-                    "GROUP BY sale_date ORDER BY sale_date", conn,
-                )
-            if not rev.empty:
-                df = rev
-
-                # Spend
-                try:
-                    with get_db() as conn:
-                        spend = read_sql(
-                            "SELECT date as sale_date, spend as _amz_spend "
-                            "FROM amazon_daily_rollup ORDER BY date", conn,
-                        )
-                    if not spend.empty:
-                        spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
-                        df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
-                except Exception as e:
-                    logger.warning('[orchestrator] amazon_daily_merged spend failed: %s', e)
-                if '_amz_spend' not in df.columns:
-                    df['_amz_spend'] = 0
-                df['_amz_spend'] = df['_amz_spend'].fillna(0)
-
-                # Customer data
-                try:
-                    with get_db() as conn:
-                        cust = read_sql(
-                            "SELECT DATE(o.order_date) AS sale_date, "
-                            "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                            "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                            "THEN o.customer_id END) AS new_customers, "
-                            "SUM(oi.total_price) AS oi_total_rev, "
-                            "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                            "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                            "FROM orders o "
-                            "JOIN customers c ON o.customer_id = c.customer_id "
-                            "JOIN order_items oi ON o.order_id = oi.order_id "
-                            "WHERE o.source = %s "
-                            "GROUP BY DATE(o.order_date)", conn, params=('amazon',),
-                        )
-                    if not cust.empty:
-                        cust['sale_date'] = cust['sale_date'].astype(str)
-                        df = df.merge(
-                            cust[['sale_date', 'total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']],
-                            on='sale_date', how='left',
-                        )
-                except Exception as e:
-                    logger.warning('[orchestrator] amazon_daily_merged customer failed: %s', e)
-
-                for col in ['total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']:
-                    if col not in df.columns:
-                        df[col] = 0
-                    df[col] = df[col].fillna(0)
-
-                df['_amz_new_cust'] = df['new_customers'].astype(int)
-                df['_amz_repeat_cust'] = (df['total_customers'] - df['new_customers']).clip(lower=0).astype(int)
-                _oi_total = df['oi_total_rev']
-                _new_frac = (df['oi_new_rev'] / _oi_total).where(_oi_total > 0, 0)
-                df['_amz_new_rev'] = df['_amz_revenue'] * _new_frac
-                df['_amz_repeat_rev'] = df['_amz_revenue'] * (1 - _new_frac)
-                df['_projected'] = False
-                df['_date'] = pd.to_datetime(df['sale_date'])
+            df = load_amazon_daily()
+            if not df.empty:
+                # Rename _amz_projected to _projected for overview compatibility
+                if '_amz_projected' in df.columns:
+                    df['_projected'] = df['_amz_projected']
 
                 # Inject NC projection for yesterday
                 yesterday_str = (date.today() - timedelta(days=1)).isoformat()
                 yd_rows = df[df['sale_date'] == yesterday_str]
-                yd_nc = int(yd_rows['new_customers'].sum()) if not yd_rows.empty else 0
+                yd_nc = int(yd_rows['_amz_new_cust'].sum()) if not yd_rows.empty else 0
                 if yd_nc == 0:
                     try:
                         proj = project_amazon_nc()
@@ -1639,7 +1434,6 @@ def run_overview_data_precompute(triggered_by='scheduler'):
                             if not yd_rows.empty:
                                 idx = yd_rows.index[0]
                                 yd_revenue = df.loc[idx, '_amz_revenue']
-                                df.loc[idx, 'new_customers'] = proj_nc
                                 df.loc[idx, '_amz_new_cust'] = int(round(proj_nc))
                                 df.loc[idx, '_amz_new_rev'] = proj_rev
                                 df.loc[idx, '_amz_repeat_rev'] = max(yd_revenue - proj_rev, 0)

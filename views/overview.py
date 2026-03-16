@@ -13,7 +13,7 @@ from ui.components import render_freshness_badge, render_html_table
 from ui.perf_tables import render_perf_table_colored, render_perf_table_transposed, build_overview_trend_rows
 from views.pacing import compute_pacing_data, render_hero_bars, render_pacing_detail_table
 from utils.date_helpers import business_yesterday
-from views.marketing import _load_shopify_daily_metrics, _load_gs_spend, _load_amazon_daily as _load_amazon_daily_mkt
+from analytics.daily_metrics import load_shopify_daily, load_amazon_daily as load_amazon_daily_raw, load_gs_spend
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _get_yesterday_rollup():
 
     # DTC from Shopify daily metrics
     try:
-        dtc = _load_shopify_daily_metrics()
+        dtc = _cached_shopify_daily()
         if not dtc.empty:
             dtc['_date'] = pd.to_datetime(dtc['_date']).dt.normalize()
             yd_dtc = dtc[dtc['_date'].dt.date == yesterday]
@@ -52,7 +52,7 @@ def _get_yesterday_rollup():
                 result['dtc_nc_rev'] = float(yd_dtc['_nc_revenue'].sum())
 
         # DTC spend from Google Sheets
-        gs = _load_gs_spend()
+        gs = _cached_gs_spend()
         if not gs.empty:
             gs['_date'] = pd.to_datetime(gs['_date']).dt.normalize()
             yd_gs = gs[gs['_date'].dt.date == yesterday]
@@ -66,7 +66,7 @@ def _get_yesterday_rollup():
 
     # Amazon from marketing's _load_amazon_daily (has proper L7D gap-fill for spend)
     try:
-        amz = _load_amazon_daily_mkt()
+        amz = _cached_amazon_daily()
         if not amz.empty:
             amz_yd = amz[amz['sale_date'] == yd_str]
             if not amz_yd.empty:
@@ -95,110 +95,17 @@ def _get_yesterday_rollup():
     return result
 
 
-@st.cache_data(ttl=86400)
-def _load_amazon_daily():
-    """Load Amazon daily data for trend tables (revenue, spend, new/repeat)."""
-    # Try precomputed data first
-    try:
-        import json as _json_pre
-        from db import get_precomputed
-        with get_db() as conn:
-            cached = get_precomputed(conn, 'amazon_daily_merged', max_age_hours=25)
-        if cached:
-            return pd.DataFrame(_json_pre.loads(cached))
-    except Exception:
-        pass
+@st.cache_data(ttl=300)
+def _cached_shopify_daily():
+    return load_shopify_daily()
 
-    try:
-        with get_db() as conn:
-            rev = read_sql(
-                "SELECT sale_date, SUM(revenue) as _amz_revenue "
-                "FROM daily_sku_sales WHERE source = 'amazon' "
-                "GROUP BY sale_date ORDER BY sale_date", conn,
-            )
-        if rev.empty:
-            log.warning('_load_amazon_daily: no Amazon revenue in daily_sku_sales')
-            return pd.DataFrame()
-        df = rev
+@st.cache_data(ttl=600)
+def _cached_amazon_daily():
+    return load_amazon_daily_raw()
 
-        # Spend — query separately so a missing table doesn't kill everything
-        try:
-            with get_db() as conn:
-                spend = read_sql(
-                    "SELECT date as sale_date, spend as _amz_spend "
-                    "FROM amazon_daily_rollup ORDER BY date", conn,
-                )
-            if not spend.empty:
-                spend = project_daily_spend_gaps(spend, date_col='sale_date', spend_col='_amz_spend')
-                df = df.merge(spend[['sale_date', '_amz_spend']], on='sale_date', how='left')
-        except Exception as e:
-            log.warning('_load_amazon_daily: spend query failed: %s', e)
-        if '_amz_spend' not in df.columns:
-            df['_amz_spend'] = 0
-        df['_amz_spend'] = df['_amz_spend'].fillna(0)
-
-        # Customer data — query separately
-        try:
-            with get_db() as conn:
-                cust = read_sql(
-                    "SELECT DATE(o.order_date) AS sale_date, "
-                    "COUNT(DISTINCT o.customer_id) AS total_customers, "
-                    "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                    "THEN o.customer_id END) AS new_customers, "
-                    "SUM(oi.total_price) AS oi_total_rev, "
-                    "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-                    "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
-                    "FROM orders o "
-                    "JOIN customers c ON o.customer_id = c.customer_id "
-                    "JOIN order_items oi ON o.order_id = oi.order_id "
-                    "WHERE o.source = %s "
-                    "GROUP BY DATE(o.order_date)", conn, params=('amazon',),
-                )
-            if not cust.empty:
-                cust['sale_date'] = cust['sale_date'].astype(str)
-                df = df.merge(
-                    cust[['sale_date', 'total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']],
-                    on='sale_date', how='left',
-                )
-        except Exception as e:
-            log.warning('_load_amazon_daily: customer query failed: %s', e)
-
-        for col in ['total_customers', 'new_customers', 'oi_total_rev', 'oi_new_rev']:
-            if col not in df.columns:
-                df[col] = 0
-            df[col] = df[col].fillna(0)
-
-        df['_amz_new_cust'] = df['new_customers'].astype(int)
-        df['_amz_repeat_cust'] = (df['total_customers'] - df['new_customers']).clip(lower=0).astype(int)
-        _oi_total = df['oi_total_rev']
-        _new_frac = (df['oi_new_rev'] / _oi_total).where(_oi_total > 0, 0)
-        df['_amz_new_rev'] = df['_amz_revenue'] * _new_frac
-        df['_amz_repeat_rev'] = df['_amz_revenue'] * (1 - _new_frac)
-        df['_projected'] = False
-        df['_date'] = pd.to_datetime(df['sale_date'])
-
-        # Inject NC projection for yesterday if actual NC data is missing
-        yesterday_str = (date.today() - timedelta(days=1)).isoformat()
-        yd_rows = df[df['sale_date'] == yesterday_str]
-        yd_nc = int(yd_rows['new_customers'].sum()) if not yd_rows.empty else 0
-        if yd_nc == 0:
-            proj = _get_nc_projection()
-            if proj and proj.get('actual_nc_customers') is None and proj.get('projected_nc_customers', 0) > 0:
-                proj_nc = proj['projected_nc_customers']
-                proj_rev = proj['projected_nc_revenue']
-                if not yd_rows.empty:
-                    idx = yd_rows.index[0]
-                    yd_revenue = df.loc[idx, '_amz_revenue']
-                    df.loc[idx, 'new_customers'] = proj_nc
-                    df.loc[idx, '_amz_new_cust'] = int(round(proj_nc))
-                    df.loc[idx, '_amz_new_rev'] = proj_rev
-                    df.loc[idx, '_amz_repeat_rev'] = max(yd_revenue - proj_rev, 0)
-                    df.loc[idx, '_projected'] = True
-
-        return df
-    except Exception as e:
-        log.warning('_load_amazon_daily failed: %s', e)
-        return pd.DataFrame()
+@st.cache_data(ttl=600)
+def _cached_gs_spend():
+    return load_gs_spend()
 
 
 @st.cache_data(ttl=86400)
@@ -680,9 +587,9 @@ def render(ctx):
     # ================================================================
     # Section 4: Performance Trends (expander with DoD/WoW tabs)
     # ================================================================
-    _shopify_daily = _load_shopify_daily_metrics()
-    _gs_spend = _load_gs_spend()
-    _amz_daily = _load_amazon_daily()
+    _shopify_daily = _cached_shopify_daily()
+    _gs_spend = _cached_gs_spend()
+    _amz_daily = _cached_amazon_daily()
 
     # Determine which channels to show based on source filter
     if _source_filter == 'shopify':
