@@ -21,8 +21,9 @@ log = logging.getLogger(__name__)
 def first_order_cte(source):
     """Return NC classification SQL components for a given source.
 
-    Shopify: MIN(order_date) from orders, excluding refunded/voided.
-    Amazon:  customers.first_order_date via JOIN (accumulated by ETL).
+    Both channels use MIN(order_date) from orders as the NC definition.
+    Shopify: excludes refunded/voided orders.
+    Amazon:  uses all orders (365-day retention sync window).
 
     Returns:
         tuple: (cte_sql, join_sql, first_date_expr, params)
@@ -33,9 +34,12 @@ def first_order_cte(source):
     """
     if source == 'amazon':
         return (
-            '',
-            'JOIN customers c ON o.customer_id = c.customer_id',
-            'DATE(c.first_order_date)',
+            ("cust_first AS ("
+             "SELECT customer_id, MIN(order_date) AS first_order_date "
+             "FROM orders WHERE source = 'amazon' "
+             "GROUP BY customer_id)"),
+            'JOIN cust_first cf ON o.customer_id = cf.customer_id',
+            'cf.first_order_date',
             (),
         )
     # Shopify / DTC — use MIN(order_date) excluding refunded/voided
@@ -181,15 +185,20 @@ def load_shopify_daily():
 # ------------------------------------------------------------------
 
 _AMAZON_CUST_SQL = (
+    "WITH cust_first AS ("
+    "  SELECT customer_id, MIN(order_date) AS first_order_date "
+    "  FROM orders WHERE source = 'amazon' "
+    "  GROUP BY customer_id"
+    ") "
     "SELECT DATE(o.order_date) AS sale_date, "
     "COUNT(DISTINCT o.customer_id) AS total_customers, "
-    "COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+    "COUNT(DISTINCT CASE WHEN DATE(cf.first_order_date) = DATE(o.order_date) "
     "THEN o.customer_id END) AS new_customers, "
     "SUM(oi.total_price) AS oi_total_rev, "
-    "SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
+    "SUM(CASE WHEN DATE(cf.first_order_date) = DATE(o.order_date) "
     "THEN oi.total_price ELSE 0 END) AS oi_new_rev "
     "FROM orders o "
-    "JOIN customers c ON o.customer_id = c.customer_id "
+    "JOIN cust_first cf ON o.customer_id = cf.customer_id "
     "JOIN order_items oi ON o.order_id = oi.order_id "
     "WHERE o.source = %s "
     "GROUP BY DATE(o.order_date)"
