@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from db import get_db, read_sql
+from analytics.daily_metrics import first_order_cte
 
 
 def get_customer_cohort_data(sku_filter=None, source_filter=None):
@@ -559,33 +560,30 @@ def get_repeat_rate_summary(source_filter=None):
                        repeat_rate, first_order_revenue, repeat_revenue.
     """
     first_source = source_filter or 'shopify'
+    cte_sql, join_sql, first_date_expr, cte_params = first_order_cte(first_source)
     with get_db() as conn:
         # --- customer-level order counts ---
-        cust_query = """
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
-                GROUP BY customer_id
-            )
+        cust_query = f"""
+            WITH {cte_sql}
             SELECT
                 sub.cohort,
                 COUNT(*)                                          AS total_customers,
                 SUM(CASE WHEN sub.order_count >= 2 THEN 1 ELSE 0 END) AS repeat_customers
             FROM (
                 SELECT
-                    cf.customer_id,
-                    strftime('%Y-%m', cf.first_order_date) AS cohort,
+                    o.customer_id,
+                    strftime('%Y-%m', {first_date_expr}) AS cohort,
                     COUNT(DISTINCT o.order_id)            AS order_count
-                FROM cust_first cf
-                JOIN orders o ON cf.customer_id = o.customer_id
+                FROM orders o
+                {join_sql}
                 WHERE 1=1
         """
-        params = [first_source]
+        params = list(cte_params)
         if source_filter:
             cust_query += " AND o.source = ?"
             params.append(source_filter)
         cust_query += """
-                GROUP BY cf.customer_id, cohort
+                GROUP BY o.customer_id, cohort
             ) sub
             GROUP BY sub.cohort
             ORDER BY sub.cohort
@@ -593,26 +591,22 @@ def get_repeat_rate_summary(source_filter=None):
         cust_df = read_sql(cust_query, conn, params=params)
 
         # --- revenue split: first-order vs repeat ---
-        rev_query = """
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
-                GROUP BY customer_id
-            )
+        rev_query = f"""
+            WITH {cte_sql}
             SELECT
-                strftime('%Y-%m', cf.first_order_date) AS cohort,
+                strftime('%Y-%m', {first_date_expr}) AS cohort,
                 SUM(CASE WHEN strftime('%Y-%m', o.order_date)
-                              = strftime('%Y-%m', cf.first_order_date)
+                              = strftime('%Y-%m', {first_date_expr})
                          THEN oi.total_price ELSE 0 END) AS first_order_revenue,
                 SUM(CASE WHEN strftime('%Y-%m', o.order_date)
-                              != strftime('%Y-%m', cf.first_order_date)
+                              != strftime('%Y-%m', {first_date_expr})
                          THEN oi.total_price ELSE 0 END) AS repeat_revenue
             FROM orders o
-            JOIN cust_first cf  ON o.customer_id = cf.customer_id
+            {join_sql}
             JOIN order_items oi ON o.order_id    = oi.order_id
             WHERE 1=1
         """
-        rev_params = [first_source]
+        rev_params = list(cte_params)
         if source_filter:
             rev_query += " AND o.source = ?"
             rev_params.append(source_filter)
@@ -754,8 +748,8 @@ def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
     Returns DataFrame with columns: order_date, new_revenue, repeat_revenue
     """
     first_source = source_filter or 'shopify'
+    cte_sql, join_sql, first_date_expr, cte_params = first_order_cte(first_source)
     source_clause = ""
-    first_source_params = [first_source]
     params = [start_date, end_date, start_date, start_date, end_date]
 
     if source_filter:
@@ -764,25 +758,21 @@ def get_new_repeat_daily_revenue(start_date, end_date, source_filter=None):
 
     with get_db() as conn:
         df = read_sql(f"""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
-                GROUP BY customer_id
-            )
+            WITH {cte_sql}
             SELECT
                 o.order_date,
-                SUM(CASE WHEN cf.first_order_date >= ? AND cf.first_order_date <= ?
+                SUM(CASE WHEN {first_date_expr} >= ? AND {first_date_expr} <= ?
                          THEN oi.total_price ELSE 0 END) AS new_revenue,
-                SUM(CASE WHEN cf.first_order_date < ?
+                SUM(CASE WHEN {first_date_expr} < ?
                          THEN oi.total_price ELSE 0 END) AS repeat_revenue
             FROM orders o
-            JOIN cust_first cf  ON o.customer_id = cf.customer_id
+            {join_sql}
             JOIN order_items oi ON o.order_id    = oi.order_id
             WHERE o.order_date BETWEEN ? AND ?
             {source_clause}
             GROUP BY o.order_date
             ORDER BY o.order_date
-        """, conn, params=first_source_params + params)
+        """, conn, params=list(cte_params) + params)
 
     return df
 

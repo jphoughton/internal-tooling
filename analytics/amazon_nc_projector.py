@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from db import get_db, read_sql
+from analytics.daily_metrics import first_order_cte
 
 log = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -36,21 +37,22 @@ def _load_daily_nc_history(conn, lookback_days=120, as_of_date=None):
     end = as_of_date or date.today()
     start = end - timedelta(days=lookback_days)
 
+    _cte, _join, _fdate, _p = first_order_cte('amazon')
     df = read_sql(
-        "SELECT DATE(o.order_date) AS sale_date, "
-        "  COUNT(DISTINCT o.customer_id) AS total_customers, "
-        "  COUNT(DISTINCT CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-        "    THEN o.customer_id END) AS new_customers, "
-        "  SUM(oi.total_price) AS total_rev, "
-        "  SUM(CASE WHEN DATE(c.first_order_date) = DATE(o.order_date) "
-        "    THEN oi.total_price ELSE 0 END) AS nc_rev "
-        "FROM orders o "
-        "JOIN customers c ON o.customer_id = c.customer_id "
-        "JOIN order_items oi ON o.order_id = oi.order_id "
-        "WHERE o.source = %s AND o.order_date >= %s AND o.order_date <= %s "
-        "GROUP BY DATE(o.order_date) "
-        "ORDER BY sale_date",
-        conn, params=('amazon', str(start), str(end)),
+        f"SELECT DATE(o.order_date) AS sale_date, "
+        f"  COUNT(DISTINCT o.customer_id) AS total_customers, "
+        f"  COUNT(DISTINCT CASE WHEN {_fdate} = DATE(o.order_date) "
+        f"    THEN o.customer_id END) AS new_customers, "
+        f"  SUM(oi.total_price) AS total_rev, "
+        f"  SUM(CASE WHEN {_fdate} = DATE(o.order_date) "
+        f"    THEN oi.total_price ELSE 0 END) AS nc_rev "
+        f"FROM orders o "
+        f"{_join} "
+        f"JOIN order_items oi ON o.order_id = oi.order_id "
+        f"WHERE o.source = %s AND o.order_date >= %s AND o.order_date <= %s "
+        f"GROUP BY DATE(o.order_date) "
+        f"ORDER BY sale_date",
+        conn, params=_p + ('amazon', str(start), str(end)),
     )
     if not df.empty:
         df['sale_date'] = pd.to_datetime(df['sale_date']).dt.date
@@ -112,19 +114,18 @@ def _load_dtc_daily_nc(conn, lookback_days=120, as_of_date=None):
     end = as_of_date or date.today()
     start = end - timedelta(days=lookback_days)
 
+    _cte, _join, _fdate, _p = first_order_cte('shopify')
     df = read_sql(
-        "SELECT DATE(o.order_date) AS sale_date, "
-        "  COUNT(DISTINCT CASE WHEN fc.first_date = DATE(o.order_date) "
-        "    THEN o.customer_id END) AS dtc_nc "
-        "FROM orders o "
-        "JOIN (SELECT customer_id, DATE(MIN(order_date)) AS first_date "
-        "      FROM orders WHERE source = 'shopify' "
-        "      GROUP BY customer_id) fc "
-        "ON o.customer_id = fc.customer_id "
-        "WHERE o.source = 'shopify' AND o.order_date >= %s AND o.order_date <= %s "
-        "GROUP BY DATE(o.order_date) "
-        "ORDER BY sale_date",
-        conn, params=(str(start), str(end)),
+        f"WITH {_cte} "
+        f"SELECT DATE(o.order_date) AS sale_date, "
+        f"  COUNT(DISTINCT CASE WHEN {_fdate} = DATE(o.order_date) "
+        f"    THEN o.customer_id END) AS dtc_nc "
+        f"FROM orders o "
+        f"{_join} "
+        f"WHERE o.source = 'shopify' AND o.order_date >= %s AND o.order_date <= %s "
+        f"GROUP BY DATE(o.order_date) "
+        f"ORDER BY sale_date",
+        conn, params=_p + (str(start), str(end)),
     )
     if not df.empty:
         df['sale_date'] = pd.to_datetime(df['sale_date']).dt.date

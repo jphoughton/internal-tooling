@@ -16,6 +16,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 from db import get_db, get_sku_seasonal_indices, get_seasonal_indices, get_setting
+from analytics.daily_metrics import first_order_cte
 from analytics.sku_flavors import get_flavor
 from utils.date_helpers import month_str as _month_str, add_months as _add_months, month_diff as _month_diff, business_today, business_yesterday
 
@@ -379,40 +380,33 @@ def _get_new_customer_sku_mix(forecast_skus=None, lookback_months=3):
         dict {sku: pct} — unit mix summing to 1.0 across forecast SKUs
         float — forecast-SKU-only units per new customer (12mo basis)
     """
+    _cte, _join, _fdate, _cte_p = first_order_cte('shopify')
     with get_db() as conn:
         # Mix from recent data
         rows = conn.execute(f"""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = 'shopify'
-                GROUP BY customer_id
-            )
+            WITH {_cte}
             SELECT oi.sku, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN cust_first cf ON o.customer_id = cf.customer_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', cf.first_order_date)
+            {_join}
+            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', {_fdate})
               AND o.order_date >= date('now', '-{lookback_months} months')
             GROUP BY oi.sku
             ORDER BY qty DESC
-        """).fetchall()
+        """, list(_cte_p)).fetchall()
 
         # UPC from 12-month window (matches waterfall metrics timeframe)
-        upc_data = conn.execute("""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = 'shopify'
-                GROUP BY customer_id
-            )
+        upc_data = conn.execute(f"""
+            WITH {_cte}
             SELECT SUM(oi.quantity) as total_units,
                    COUNT(DISTINCT o.customer_id) as customers
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN cust_first cf ON o.customer_id = cf.customer_id
-            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', cf.first_order_date)
+            {_join}
+            WHERE strftime('%Y-%m', o.order_date) = strftime('%Y-%m', {_fdate})
               AND o.order_date >= date('now', '-12 months')
-              AND oi.sku IN ({})
-        """.format(','.join('?' * len(forecast_skus))), list(forecast_skus)).fetchone() if forecast_skus else None
+              AND oi.sku IN ({','.join('?' * len(forecast_skus))})
+        """, list(_cte_p) + list(forecast_skus)).fetchone() if forecast_skus else None
 
     if not rows:
         return {}, 0.0
@@ -504,43 +498,36 @@ def _get_repeat_customer_sku_mix(forecast_skus=None, lookback_months=3):
         dict {sku: pct} — unit mix summing to 1.0 across forecast SKUs
         float — forecast-SKU-only units per repeat customer per return month (12mo)
     """
+    _cte, _join, _fdate, _cte_p = first_order_cte('shopify')
     with get_db() as conn:
         # Mix from recent data
         rows = conn.execute(f"""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = 'shopify'
-                GROUP BY customer_id
-            )
+            WITH {_cte}
             SELECT oi.sku, SUM(oi.quantity) as qty
             FROM order_items oi
             JOIN orders o ON oi.order_id = o.order_id
-            JOIN cust_first cf ON o.customer_id = cf.customer_id
-            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
+            {_join}
+            WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', {_fdate})
               AND o.order_date >= date('now', '-{lookback_months} months')
             GROUP BY oi.sku
             ORDER BY qty DESC
-        """).fetchall()
+        """, list(_cte_p)).fetchall()
 
         # UPC from 12-month window, forecast SKUs only (matches waterfall)
-        upc_row = conn.execute("""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = 'shopify'
-                GROUP BY customer_id
-            )
+        upc_row = conn.execute(f"""
+            WITH {_cte}
             SELECT AVG(monthly_upc) as upc FROM (
                 SELECT strftime('%Y-%m', o.order_date) as month,
                        CAST(SUM(oi.quantity) AS REAL) / COUNT(DISTINCT o.customer_id) as monthly_upc
                 FROM orders o
                 JOIN order_items oi ON o.order_id = oi.order_id
-                JOIN cust_first cf ON o.customer_id = cf.customer_id
-                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', cf.first_order_date)
+                {_join}
+                WHERE strftime('%Y-%m', o.order_date) != strftime('%Y-%m', {_fdate})
                   AND o.order_date >= date('now', '-12 months')
-                  AND oi.sku IN ({})
+                  AND oi.sku IN ({','.join('?' * len(forecast_skus))})
                 GROUP BY strftime('%Y-%m', o.order_date)
             )
-        """.format(','.join('?' * len(forecast_skus))), list(forecast_skus)).fetchone() if forecast_skus else None
+        """, list(_cte_p) + list(forecast_skus)).fetchone() if forecast_skus else None
 
     if not rows:
         return {}, 0.0

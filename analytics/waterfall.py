@@ -13,6 +13,7 @@ import pandas as pd
 import time
 from datetime import datetime
 from db import get_db
+from analytics.daily_metrics import first_order_cte
 from analytics.retention import get_revenue_retention_data, get_customer_cohort_data
 from utils.date_helpers import month_str as _month_str, parse_month as _parse_month, add_months as _add_months, month_diff as _month_diff
 
@@ -283,14 +284,9 @@ def get_aov_and_units(source_filter=None):
         """, params).fetchone()
 
         # CTE: true first order date from orders table
-        first_cte = """
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
-                GROUP BY customer_id
-            )
-        """
-        cte_params = [_src]
+        _cte, _join, _fdate, _cte_p = first_order_cte(_src)
+        first_cte = f"WITH {_cte}" if _cte else ""
+        cte_params = list(_cte_p)
 
         # New customer metrics (last 12 months)
         new_metrics = conn.execute(f"""
@@ -376,20 +372,17 @@ def get_monthly_new_customers(source_filter=None):
         dict: {month_str: count} e.g. {"2025-03": 45, "2025-04": 38}
     """
     _src = source_filter or 'shopify'
+    _cte, _join, _fdate, _cte_p = first_order_cte(_src)
     with get_db() as conn:
-        rows = conn.execute("""
-            WITH cust_first AS (
-                SELECT customer_id, MIN(order_date) AS first_order_date
-                FROM orders WHERE source = ?
-                GROUP BY customer_id
-            )
+        rows = conn.execute(f"""
+            WITH {_cte}
             SELECT
                 strftime('%Y-%m', first_order_date) as month,
                 COUNT(*) as new_customers
             FROM cust_first
             GROUP BY strftime('%Y-%m', first_order_date)
             ORDER BY month
-        """, [_src]).fetchall()
+        """, list(_cte_p)).fetchall()
 
     return {r["month"]: r["new_customers"] for r in rows}
 
