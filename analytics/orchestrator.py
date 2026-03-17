@@ -1397,20 +1397,16 @@ def run_pacing_precompute(triggered_by='scheduler'):
 
 
 def run_overview_data_precompute(triggered_by='scheduler'):
-    """Pre-compute overview page data: Amazon daily merged, daily trends, top SKUs.
+    """Pre-compute overview page data: Amazon daily merged.
 
     Saves:
       - amazon_daily_merged
-      - overview_daily_trend_{rollup,shopify,amazon}
-      - top_skus_{rollup,shopify,amazon}
     """
     def _compute():
         import pandas as pd
         from datetime import date, timedelta
-        from analytics.sku_flavors import get_flavor
         from analytics.daily_metrics import load_amazon_daily
         from analytics.amazon_nc_projector import project_amazon_nc
-        from db import read_sql
 
         # ---- 1. Amazon daily merged ----
         t0 = time.time()
@@ -1445,61 +1441,6 @@ def run_overview_data_precompute(triggered_by='scheduler'):
                              MODEL_OVERVIEW_DATA, time.time() - t0)
         except Exception as exc:
             logger.warning('[orchestrator] amazon_daily_merged failed: %s', exc)
-
-        # ---- 2. Overview daily trends (90-day) ----
-        for src_filter, key_suffix in [(None, 'rollup'), ('shopify', 'shopify'), ('amazon', 'amazon')]:
-            t0 = time.time()
-            try:
-                with get_db() as conn:
-                    if src_filter:
-                        trend_df = read_sql(
-                            "SELECT sale_date, source, SUM(units_sold) as units, SUM(revenue) as revenue "
-                            "FROM daily_sku_sales "
-                            "WHERE sale_date >= date('now', '-90 days') AND source = %s "
-                            "GROUP BY sale_date, source ORDER BY sale_date", conn, params=(src_filter,),
-                        )
-                    else:
-                        trend_df = read_sql(
-                            "SELECT sale_date, source, SUM(units_sold) as units, SUM(revenue) as revenue "
-                            "FROM daily_sku_sales "
-                            "WHERE sale_date >= date('now', '-90 days') "
-                            "GROUP BY sale_date, source ORDER BY sale_date", conn,
-                        )
-                if not trend_df.empty:
-                    _save_result(f'overview_daily_trend_{key_suffix}',
-                                 json.loads(trend_df.to_json()),
-                                 MODEL_OVERVIEW_DATA, time.time() - t0)
-            except Exception as exc:
-                logger.warning('[orchestrator] overview_daily_trend_%s failed: %s', key_suffix, exc)
-
-        # ---- 3. Top SKUs ----
-        for src_filter, key_suffix in [(None, 'rollup'), ('shopify', 'shopify'), ('amazon', 'amazon')]:
-            t0 = time.time()
-            try:
-                with get_db() as conn:
-                    if src_filter:
-                        sku_df = read_sql(
-                            "SELECT sku, SUM(units_sold) as total_units "
-                            "FROM daily_sku_sales WHERE source = %s "
-                            "GROUP BY sku ORDER BY total_units DESC",
-                            conn, params=(src_filter,),
-                        )
-                    else:
-                        sku_df = read_sql(
-                            "SELECT sku, SUM(units_sold) as total_units "
-                            "FROM daily_sku_sales "
-                            "GROUP BY sku ORDER BY total_units DESC",
-                            conn,
-                        )
-                if not sku_df.empty:
-                    sku_df['flavor'] = sku_df['sku'].apply(lambda s: get_flavor(s) or s)
-                    grouped = sku_df.groupby('flavor', as_index=False)['total_units'].sum()
-                    grouped = grouped.sort_values('total_units', ascending=False).head(10)
-                    _save_result(f'top_skus_{key_suffix}',
-                                 json.loads(grouped.to_json()),
-                                 MODEL_OVERVIEW_DATA, time.time() - t0)
-            except Exception as exc:
-                logger.warning('[orchestrator] top_skus_%s failed: %s', key_suffix, exc)
 
     return _run_model(MODEL_OVERVIEW_DATA, _compute, triggered_by)
 
