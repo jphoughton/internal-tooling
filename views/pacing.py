@@ -342,6 +342,8 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
+    # Derive repeat goals from total - new (consistent identity)
+    _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
     _goal_total_repeat_rev = _goal_repeat_rev + _goal_amz_repeat_rev
 
@@ -417,11 +419,15 @@ def compute_pacing_data(ctx):
     _yd_total_nc = _yd_nc + _yd_amz_nc
     _yd_total_nc_rev = _yd_nc_rev + _yd_amz_nc_rev
 
-    _cm_amz_repeat_rev = max(_cm_amz_rev - _cm_amz_nc_rev, 0)
+    # Amazon repeat = total - new (cap new at total so repeat is never negative)
+    _cm_amz_nc_rev_capped = min(_cm_amz_nc_rev, _cm_amz_rev)
+    _cm_amz_repeat_rev = _cm_amz_rev - _cm_amz_nc_rev_capped
     _cm_total_repeat_rev = _cm_ret_rev + _cm_amz_repeat_rev
-    _l7d_amz_repeat_rev = max(_l7d_amz_rev - _l7d_amz_nc_rev, 0)
+    _l7d_amz_nc_rev_capped = min(_l7d_amz_nc_rev, _l7d_amz_rev)
+    _l7d_amz_repeat_rev = _l7d_amz_rev - _l7d_amz_nc_rev_capped
     _l7d_total_repeat_rev = _l7d_ret_rev + _l7d_amz_repeat_rev
-    _yd_amz_repeat_rev = max(_yd_amz_rev - _yd_amz_nc_rev, 0)
+    _yd_amz_nc_rev_capped = min(_yd_amz_nc_rev, _yd_amz_rev)
+    _yd_amz_repeat_rev = _yd_amz_rev - _yd_amz_nc_rev_capped
     _yd_total_repeat_rev = _yd_ret_rev + _yd_amz_repeat_rev
 
     _cm_total_repeat_cust = _cm_dtc_repeat_cust + _cm_amz_repeat_cust
@@ -649,14 +655,15 @@ def render_pacing_detail_table(data, source_filter=None):
                                    d['l7d_dtc_rev'], d['yd_dtc_rev'],
                                    d['pct_month'], d['days_in_month'], d['remaining_days'],
                                    section='revenue'))
-        # DTC New / Repeat sub-rows
-        if d.get('goal_dtc_nc_rev', 0) > 0:
+        # DTC New / Repeat sub-rows (show whenever DTC has a goal)
+        if d.get('goal_dtc_rev', 0) > 0:
             _sub_indent = _sub if not source_filter else '\u00a0\u00a0\u00a0\u00a0'
-            rows.append(build_pace_row(f"{_sub_indent}New Rev", d['cm_nc_rev'], d['goal_dtc_nc_rev'],
+            _dtc_repeat_goal = max(d.get('goal_dtc_rev', 0) - d.get('goal_dtc_nc_rev', 0), 0)
+            rows.append(build_pace_row(f"{_sub_indent}New Rev", d['cm_nc_rev'], d.get('goal_dtc_nc_rev', 0),
                                        d['l7d_nc_rev'], d['yd_nc_rev'],
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
-            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d['cm_ret_rev'], d['goal_dtc_repeat_rev'],
+            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d['cm_ret_rev'], _dtc_repeat_goal,
                                        d['l7d_ret_rev'], d['yd_ret_rev'],
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
@@ -667,14 +674,15 @@ def render_pacing_detail_table(data, source_filter=None):
                                    d['l7d_amz_rev'], d['yd_amz_rev'],
                                    d['pct_month'], d['days_in_month'], d['remaining_days'],
                                    section='revenue'))
-        # Amazon New / Repeat sub-rows
-        if d.get('goal_amz_nc_rev', 0) > 0:
+        # Amazon New / Repeat sub-rows (show whenever Amazon has a goal)
+        if d.get('goal_amz_rev', 0) > 0:
             _sub_indent = _sub if not source_filter else '\u00a0\u00a0\u00a0\u00a0'
-            rows.append(build_pace_row(f"{_sub_indent}New Rev", d['cm_amz_nc_rev'], d['goal_amz_nc_rev'],
-                                       d['l7d_amz_nc_rev'], d['yd_amz_nc_rev'],
+            _amz_repeat_goal = max(d.get('goal_amz_rev', 0) - d.get('goal_amz_nc_rev', 0), 0)
+            rows.append(build_pace_row(f"{_sub_indent}New Rev", d.get('cm_amz_nc_rev', 0), d.get('goal_amz_nc_rev', 0),
+                                       d.get('l7d_amz_nc_rev', 0), d.get('yd_amz_nc_rev', 0),
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
-            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d.get('cm_amz_repeat_rev', 0), d['goal_amz_repeat_rev'],
+            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d.get('cm_amz_repeat_rev', 0), _amz_repeat_goal,
                                        d.get('l7d_amz_repeat_rev', 0), d.get('yd_amz_repeat_rev', 0),
                                        d['pct_month'], d['days_in_month'], d['remaining_days'],
                                        section='revenue'))
