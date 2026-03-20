@@ -305,6 +305,33 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
+    # If we have goals but DTC new/repeat split is missing, derive from revenue model
+    if _has_goals and _goal_nc_rev == 0 and (_goal_repeat_rev > 0 or _goal_amz_rev > 0):
+        try:
+            from db import get_revenue_model, get_amazon_revenue_forecast
+            with get_db() as _rm_conn:
+                _rm_raw = get_revenue_model(_rm_conn)
+                _amz_fc = get_amazon_revenue_forecast(_rm_conn)
+            if _rm_raw:
+                _rm_inputs = rm.merge_with_defaults(_rm_raw, [_cur_month])
+                _rm_calc = rm.compute(_rm_inputs, [_cur_month])
+                _rm_v = lambda d, k: d.get(k, {}).get(_cur_month, 0)
+                _goal_nc_rev = round(_rm_v(_rm_calc, 'dtc_new'))
+                _goal_repeat_rev = round(_rm_v(_rm_inputs, 'dtc_repeat'))
+                _goal_amz_nc_rev = round(_rm_v(_rm_calc, 'amazon_new'))
+                # Use stored Amazon total from DB, derive repeat
+                if _amz_fc:
+                    _amz_dict = {r['month']: r['revenue'] for r in _amz_fc if r.get('revenue', 0) > 0}
+                    _stored_amz = round(_amz_dict.get(_cur_month, 0))
+                    if _stored_amz > 0:
+                        _goal_amz_rev = _stored_amz
+                _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
+                _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
+                _goal_blended_nc_roas = _goal_blended_nc_rev / (_goal_spend + _goal_amz_spend) if (_goal_spend + _goal_amz_spend) > 0 else 0
+                log.info("Pacing goals: derived DTC new=%s repeat=%s from revenue model", _goal_nc_rev, _goal_repeat_rev)
+        except Exception as e:
+            log.warning("Failed to derive DTC new/repeat from revenue model: %s", e)
+
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
