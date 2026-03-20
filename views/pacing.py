@@ -36,91 +36,52 @@ def _get_nc_projection():
 def _cached_revenue_model_goals(cur_month):
     """Cache revenue model goals for the current month.
 
-    Returns NC/repeat splits for both DTC and Amazon.  Amazon repeat is
-    computed from the Amazon retention curve waterfall fed with projected
-    Amazon new customer revenue (nc_multiplier × DTC new).
+    Reads revenue model inputs + stored amazon_revenue_forecast from DB,
+    computes DTC new/repeat and derives Amazon new/repeat from the stored
+    Amazon total goal. This avoids re-running the full waterfall (which
+    the Variables tab already did when saving).
     """
-    try:
-        from db import get_revenue_model, get_media_spend, get_seasonal_indices
-        from analytics.waterfall import build_waterfall
-        from datetime import datetime
-        from dateutil.relativedelta import relativedelta
-        import json as _json_rm
+    from db import get_revenue_model, get_amazon_revenue_forecast
 
-        with get_db() as conn:
-            rm_data = get_revenue_model(conn)
-        if not rm_data:
-            return None
+    with get_db() as conn:
+        rm_data = get_revenue_model(conn)
+        amz_forecast = get_amazon_revenue_forecast(conn)
+    if not rm_data:
+        return None
 
-        # Load ALL months so waterfall includes repeat from prior months'
-        # new customers (matches Variables tab behavior).
-        _now = datetime.utcnow()
-        all_months = [(_now + relativedelta(months=i)).strftime("%Y-%m") for i in range(12)]
-        inputs = rm.merge_with_defaults(rm_data, all_months)
+    # Only need current month for the compute
+    inputs = rm.merge_with_defaults(rm_data, [cur_month])
+    calc = rm.compute(inputs, [cur_month])
 
-        # Inject waterfall-computed repeat revenue (same logic as Variables tab)
-        with get_db() as conn:
-            media_spend = get_media_spend(conn, source='All Sources')
-            seasonal = get_seasonal_indices(conn)
+    def _v(d, k):
+        return d.get(k, {}).get(cur_month, 0)
 
-        # DTC repeat from Shopify waterfall
-        if media_spend:
-            spend_json = _json_rm.dumps(media_spend, sort_keys=True)
-            try:
-                wf_dtc = build_waterfall(
-                    media_plan=media_spend,
-                    source_filter='shopify',
-                    horizon_months=12,
-                    seasonal_indices=seasonal,
-                )
-                if wf_dtc is not None and not wf_dtc.empty:
-                    for _, row in wf_dtc.iterrows():
-                        m = str(row.get('month', ''))
-                        if m in all_months:
-                            inputs['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
-            except Exception as e:
-                log.exception("DTC waterfall failed in revenue model goals: %s", e)
+    dtc_new = round(_v(calc, 'dtc_new'))
+    dtc_repeat = round(_v(inputs, 'dtc_repeat'))
+    amazon_new = round(_v(calc, 'amazon_new'))
 
-        # Amazon repeat from Amazon waterfall fed with nc_mult × DTC new rev
-        # Build media plan for ALL months so prior months' new customers
-        # contribute repeat revenue in the current month.
-        amz_media = []
-        for m in all_months:
-            dtc_spend = inputs.get('dtc_spend', {}).get(m, 0)
-            dtc_roas = inputs.get('dtc_nc_roas', {}).get(m, 0)
-            nc_mult = inputs.get('nc_multiplier', {}).get(m, 0)
-            amz_new_rev = nc_mult * dtc_roas * dtc_spend
-            if amz_new_rev > 0:
-                amz_media.append({'month': m, 'spend': amz_new_rev, 'roas': 1.0})
-        if amz_media:
-            try:
-                wf_amz = build_waterfall(
-                    media_plan=amz_media,
-                    source_filter='amazon',
-                    horizon_months=12,
-                    seasonal_indices=seasonal,
-                )
-                if wf_amz is not None and not wf_amz.empty:
-                    for _, row in wf_amz.iterrows():
-                        m = str(row.get('month', ''))
-                        if m in all_months:
-                            inputs['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
-            except Exception as e:
-                log.exception("Amazon waterfall failed in revenue model goals: %s", e)
+    # Use the stored amazon_revenue_forecast (saved by Variables tab)
+    # for the total Amazon goal, then derive repeat = total - new.
+    amz_total = 0
+    if amz_forecast:
+        amz_dict = {r['month']: r['revenue'] for r in amz_forecast if r.get('revenue', 0) > 0}
+        amz_total = round(amz_dict.get(cur_month, 0))
+    if amz_total == 0:
+        amz_total = amazon_new + round(_v(inputs, 'amazon_repeat'))
+    amazon_repeat = max(amz_total - amazon_new, 0)
 
-        calc = rm.compute(inputs, all_months)
-        _v = lambda d, k: d.get(k, {}).get(cur_month, 0)
-        return {
-            'nc_rev': round(_v(calc, 'total_new')),
-            'nc_roas': _v(calc, 'blended_nc_roas'),
-            'dtc_new': round(_v(calc, 'dtc_new')),
-            'amazon_new': round(_v(calc, 'amazon_new')),
-            'dtc_repeat': round(_v(inputs, 'dtc_repeat')),
-            'amazon_repeat': round(_v(calc, 'amazon_repeat')),
-        }
-    except Exception as e:
-        log.exception("_cached_revenue_model_goals failed: %s", e)
-        raise  # Don't return None — let the exception propagate so @st.cache_data doesn't cache failure
+    total_new = dtc_new + amazon_new
+    total_media = _v(inputs, 'dtc_spend') + _v(inputs, 'amazon_spend')
+    nc_roas = total_new / total_media if total_media > 0 else 0
+
+    return {
+        'nc_rev': total_new,
+        'nc_roas': nc_roas,
+        'dtc_new': dtc_new,
+        'amazon_new': amazon_new,
+        'dtc_repeat': dtc_repeat,
+        'amazon_repeat': amazon_repeat,
+    }
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
