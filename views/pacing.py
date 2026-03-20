@@ -342,11 +342,10 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
-    # DEBUG: log which goals path was used and the values
-    log.info("PACING GOALS: rm_goals=%s, _goal_nc_rev=%s, _goal_repeat_rev=%s, "
-             "_goal_amz_nc_rev=%s, _goal_amz_repeat_rev=%s, _goal_amz_rev=%s, _has_goals=%s",
-             _rm_goals, _goal_nc_rev, _goal_repeat_rev,
-             _goal_amz_nc_rev, _goal_amz_repeat_rev, _goal_amz_rev, _has_goals)
+    # DEBUG: stash goals source info for pacing detail display
+    _goals_debug = (f"rm={_rm_goals is not None} dtc_new={_goal_nc_rev:,.0f} "
+                    f"dtc_rep={_goal_repeat_rev:,.0f} amz_nc={_goal_amz_nc_rev:,.0f} "
+                    f"amz_rep={_goal_amz_repeat_rev:,.0f}")
 
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
@@ -572,6 +571,7 @@ def compute_pacing_data(ctx):
         'yd_amz_nc': _yd_amz_nc,
         'yd_amz_nc_rev': _yd_amz_nc_rev,
         'yd_amz_repeat_rev': _yd_amz_repeat_rev,
+        '_goals_debug': _goals_debug,
         # Efficiency metrics
         'business_mer': _business_mer,
         'total_nc_roas': _total_nc_roas,

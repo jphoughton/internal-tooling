@@ -510,6 +510,8 @@ def render(ctx):
                        'Revenue from daily_sku_sales, spend from Google Sheets + Amazon daily rollup, '
                        'goals from forecast model.*')
             render_pacing_detail_table(pacing_data, source_filter=_source_filter)
+            if pacing_data.get('_goals_debug'):
+                st.caption(f"DEBUG: {pacing_data['_goals_debug']}")
 
     # ================================================================
     # Section 4: Performance Trends (expander with DoD/WoW tabs)
