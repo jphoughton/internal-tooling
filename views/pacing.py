@@ -265,9 +265,7 @@ def compute_pacing_data(ctx):
     _amz_spend_gap_days = _amz['amz_spend_gap_days']
     _amz_nc_projected = False
 
-    # Revenue GOALS — primary source is the revenue model (Variables tab)
-    # which has NC multiplier × DTC new rev for Amazon NC, and direct
-    # amazon_repeat / dtc_repeat inputs.  Falls back to waterfall summary.
+    # Revenue GOALS — read directly from revenue model + amazon_revenue_forecast
     _goal_nc_rev = 0
     _goal_repeat_rev = 0
     _goal_amz_rev = 0
@@ -277,24 +275,34 @@ def compute_pacing_data(ctx):
     _goal_blended_nc_roas = 0
     _has_goals = False
 
-    # Try revenue model first (Variables tab)
     try:
-        _rm_goals = _cached_revenue_model_goals(_cur_month)
+        from db import get_revenue_model as _get_rm
+        with get_db() as _rm_conn:
+            _rm_raw = _get_rm(_rm_conn)
+            _amz_fc = get_amazon_revenue_forecast(_rm_conn)
+        if _rm_raw:
+            _rm_inputs = rm.merge_with_defaults(_rm_raw, [_cur_month])
+            _rm_calc = rm.compute(_rm_inputs, [_cur_month])
+            _rm_v = lambda d, k: d.get(k, {}).get(_cur_month, 0)
+            _goal_nc_rev = round(_rm_v(_rm_calc, 'dtc_new'))
+            _goal_repeat_rev = round(_rm_v(_rm_inputs, 'dtc_repeat'))
+            _goal_amz_nc_rev = round(_rm_v(_rm_calc, 'amazon_new'))
+            # Amazon total from stored forecast (Variables tab saves this)
+            if _amz_fc:
+                _amz_dict = {r['month']: r['revenue'] for r in _amz_fc if r.get('revenue', 0) > 0}
+                _goal_amz_rev = round(_amz_dict.get(_cur_month, 0))
+            if _goal_amz_rev == 0:
+                _goal_amz_rev = _goal_amz_nc_rev + round(_rm_v(_rm_inputs, 'amazon_repeat'))
+            _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
+            _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
+            _total_spend_goal = _goal_spend + _goal_amz_spend if (_goal_spend + _goal_amz_spend) > 0 else 1
+            _goal_blended_nc_roas = _goal_blended_nc_rev / _total_spend_goal
+            _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
     except Exception as e:
-        log.warning("Failed to load revenue model goals: %s", e)
-        _rm_goals = None
+        log.warning("Revenue model goals failed, trying waterfall fallback: %s", e)
 
-    if _rm_goals and _rm_goals.get('nc_rev', 0) > 0:
-        _goal_nc_rev = _rm_goals['dtc_new']
-        _goal_repeat_rev = _rm_goals['dtc_repeat']
-        _goal_amz_nc_rev = _rm_goals['amazon_new']
-        _goal_amz_repeat_rev = _rm_goals['amazon_repeat']
-        _goal_amz_rev = _goal_amz_nc_rev + _goal_amz_repeat_rev
-        _goal_blended_nc_rev = _rm_goals['nc_rev']
-        _goal_blended_nc_roas = _rm_goals['nc_roas']
-        _has_goals = True
-    elif _mkt_summary is not None and not _mkt_summary.empty:
-        # Fallback to waterfall summary
+    # Fallback to waterfall summary if revenue model unavailable
+    if not _has_goals and _mkt_summary is not None and not _mkt_summary.empty:
         _plan_row = _mkt_summary[_mkt_summary["month"] == _cur_month]
         if not _plan_row.empty:
             _goal_nc_rev = float(_plan_row.iloc[0].get("shopify_new_rev", 0))
@@ -304,37 +312,6 @@ def compute_pacing_data(ctx):
             _goal_amz_repeat_rev = float(_plan_row.iloc[0].get("amazon_repeat_rev", 0))
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
-
-    # If we have goals but DTC new/repeat split is missing, derive from revenue model
-    _fallback_debug = f"has={_has_goals} nc={_goal_nc_rev} rep={_goal_repeat_rev} amz={_goal_amz_rev}"
-    if _has_goals and _goal_nc_rev == 0 and (_goal_repeat_rev > 0 or _goal_amz_rev > 0):
-        try:
-            from db import get_revenue_model as _get_rm
-            with get_db() as _rm_conn:
-                _rm_raw = _get_rm(_rm_conn)
-                _amz_fc = get_amazon_revenue_forecast(_rm_conn)
-            _fallback_debug += f" rm_keys={len(_rm_raw) if _rm_raw else 0}"
-            if _rm_raw:
-                _rm_inputs = rm.merge_with_defaults(_rm_raw, [_cur_month])
-                _rm_calc = rm.compute(_rm_inputs, [_cur_month])
-                _rm_v = lambda d, k: d.get(k, {}).get(_cur_month, 0)
-                _goal_nc_rev = round(_rm_v(_rm_calc, 'dtc_new'))
-                _goal_repeat_rev = round(_rm_v(_rm_inputs, 'dtc_repeat'))
-                _goal_amz_nc_rev = round(_rm_v(_rm_calc, 'amazon_new'))
-                # Use stored Amazon total from DB, derive repeat
-                if _amz_fc:
-                    _amz_dict = {r['month']: r['revenue'] for r in _amz_fc if r.get('revenue', 0) > 0}
-                    _stored_amz = round(_amz_dict.get(_cur_month, 0))
-                    if _stored_amz > 0:
-                        _goal_amz_rev = _stored_amz
-                _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
-                _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
-                _goal_blended_nc_roas = _goal_blended_nc_rev / (_goal_spend + _goal_amz_spend) if (_goal_spend + _goal_amz_spend) > 0 else 0
-                _fallback_debug += f" dtc_new={_goal_nc_rev} dtc_rep={_goal_repeat_rev}"
-        except Exception as e:
-            _fallback_debug += f" ERR={e}"
-    else:
-        _fallback_debug += " SKIP"
 
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
@@ -560,7 +537,6 @@ def compute_pacing_data(ctx):
         'yd_amz_nc': _yd_amz_nc,
         'yd_amz_nc_rev': _yd_amz_nc_rev,
         'yd_amz_repeat_rev': _yd_amz_repeat_rev,
-        '_dbg': _fallback_debug,
         # Efficiency metrics
         'business_mer': _business_mer,
         'total_nc_roas': _total_nc_roas,
