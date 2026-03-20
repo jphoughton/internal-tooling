@@ -508,7 +508,7 @@ def render(ctx):
         with st.expander('Pacing Detail', expanded=True):
             st.caption('*MTD actuals vs pro-rated monthly goals (goal \u00d7 days elapsed / days in month). '
                        'Revenue from daily_sku_sales, spend from Google Sheets + Amazon daily rollup, '
-                       'goals from forecast model.*')
+                       'goals from revenue model.*')
             render_pacing_detail_table(pacing_data, source_filter=_source_filter)
 
     # ================================================================
