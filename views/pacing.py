@@ -43,7 +43,8 @@ def _cached_revenue_model_goals(cur_month):
     try:
         from db import get_revenue_model, get_media_spend, get_seasonal_indices
         from analytics.waterfall import build_waterfall
-        from ui.business_vars import _month_list
+        from datetime import datetime
+        from dateutil.relativedelta import relativedelta
         import json as _json_rm
 
         with get_db() as conn:
@@ -53,7 +54,8 @@ def _cached_revenue_model_goals(cur_month):
 
         # Load ALL months so waterfall includes repeat from prior months'
         # new customers (matches Variables tab behavior).
-        all_months = _month_list(12)
+        _now = datetime.utcnow()
+        all_months = [(_now + relativedelta(months=i)).strftime("%Y-%m") for i in range(12)]
         inputs = rm.merge_with_defaults(rm_data, all_months)
 
         # Inject waterfall-computed repeat revenue (same logic as Variables tab)
@@ -342,11 +344,6 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
-    # DEBUG: stash goals source info for pacing detail display
-    _goals_debug = (f"rm={_rm_goals is not None} dtc_new={_goal_nc_rev:,.0f} "
-                    f"dtc_rep={_goal_repeat_rev:,.0f} amz_nc={_goal_amz_nc_rev:,.0f} "
-                    f"amz_rep={_goal_amz_repeat_rev:,.0f}")
-
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
@@ -571,7 +568,6 @@ def compute_pacing_data(ctx):
         'yd_amz_nc': _yd_amz_nc,
         'yd_amz_nc_rev': _yd_amz_nc_rev,
         'yd_amz_repeat_rev': _yd_amz_repeat_rev,
-        '_goals_debug': _goals_debug,
         # Efficiency metrics
         'business_mer': _business_mer,
         'total_nc_roas': _total_nc_roas,
