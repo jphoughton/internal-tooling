@@ -32,7 +32,7 @@ def _get_nc_projection():
         return None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _cached_revenue_model_goals(cur_month):
     """Cache revenue model goals for the current month.
 
@@ -120,7 +120,7 @@ def _cached_revenue_model_goals(cur_month):
         }
     except Exception as e:
         log.exception("_cached_revenue_model_goals failed: %s", e)
-    return None
+        raise  # Don't return None — let the exception propagate so @st.cache_data doesn't cache failure
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
