@@ -298,7 +298,10 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
     except Exception as e:
-        log.warning("Revenue model goals failed, trying waterfall fallback: %s", e)
+        log.exception("Revenue model goals failed: %s", e)
+        # Show error on page for debugging
+        import traceback
+        st.error(f"Goals error: {e}\n{traceback.format_exc()}")
 
     # Fallback to waterfall summary if revenue model unavailable
     if not _has_goals and _mkt_summary is not None and not _mkt_summary.empty:
