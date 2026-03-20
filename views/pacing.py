@@ -306,12 +306,14 @@ def compute_pacing_data(ctx):
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
     # If we have goals but DTC new/repeat split is missing, derive from revenue model
+    _fallback_debug = f"has={_has_goals} nc={_goal_nc_rev} rep={_goal_repeat_rev} amz={_goal_amz_rev}"
     if _has_goals and _goal_nc_rev == 0 and (_goal_repeat_rev > 0 or _goal_amz_rev > 0):
         try:
-            from db import get_revenue_model, get_amazon_revenue_forecast
+            from db import get_revenue_model as _get_rm
             with get_db() as _rm_conn:
-                _rm_raw = get_revenue_model(_rm_conn)
+                _rm_raw = _get_rm(_rm_conn)
                 _amz_fc = get_amazon_revenue_forecast(_rm_conn)
+            _fallback_debug += f" rm_keys={len(_rm_raw) if _rm_raw else 0}"
             if _rm_raw:
                 _rm_inputs = rm.merge_with_defaults(_rm_raw, [_cur_month])
                 _rm_calc = rm.compute(_rm_inputs, [_cur_month])
@@ -328,9 +330,11 @@ def compute_pacing_data(ctx):
                 _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
                 _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
                 _goal_blended_nc_roas = _goal_blended_nc_rev / (_goal_spend + _goal_amz_spend) if (_goal_spend + _goal_amz_spend) > 0 else 0
-                log.info("Pacing goals: derived DTC new=%s repeat=%s from revenue model", _goal_nc_rev, _goal_repeat_rev)
+                _fallback_debug += f" dtc_new={_goal_nc_rev} dtc_rep={_goal_repeat_rev}"
         except Exception as e:
-            log.warning("Failed to derive DTC new/repeat from revenue model: %s", e)
+            _fallback_debug += f" ERR={e}"
+    else:
+        _fallback_debug += " SKIP"
 
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
@@ -556,6 +560,7 @@ def compute_pacing_data(ctx):
         'yd_amz_nc': _yd_amz_nc,
         'yd_amz_nc_rev': _yd_amz_nc_rev,
         'yd_amz_repeat_rev': _yd_amz_repeat_rev,
+        '_dbg': _fallback_debug,
         # Efficiency metrics
         'business_mer': _business_mer,
         'total_nc_roas': _total_nc_roas,
