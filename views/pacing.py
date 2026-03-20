@@ -43,6 +43,7 @@ def _cached_revenue_model_goals(cur_month):
     try:
         from db import get_revenue_model, get_media_spend, get_seasonal_indices
         from analytics.waterfall import build_waterfall
+        from ui.business_vars import _month_list
         import json as _json_rm
 
         with get_db() as conn:
@@ -50,8 +51,10 @@ def _cached_revenue_model_goals(cur_month):
         if not rm_data:
             return None
 
-        months = [cur_month]
-        inputs = rm.merge_with_defaults(rm_data, months)
+        # Load ALL months so waterfall includes repeat from prior months'
+        # new customers (matches Variables tab behavior).
+        all_months = _month_list(12)
+        inputs = rm.merge_with_defaults(rm_data, all_months)
 
         # Inject waterfall-computed repeat revenue (same logic as Variables tab)
         with get_db() as conn:
@@ -71,19 +74,24 @@ def _cached_revenue_model_goals(cur_month):
                 if wf_dtc is not None and not wf_dtc.empty:
                     for _, row in wf_dtc.iterrows():
                         m = str(row.get('month', ''))
-                        if m in months:
+                        if m in all_months:
                             inputs['dtc_repeat'][m] = float(row.get('repeat_revenue', 0))
             except Exception as e:
                 log.exception("DTC waterfall failed in revenue model goals: %s", e)
 
         # Amazon repeat from Amazon waterfall fed with nc_mult × DTC new rev
-        dtc_spend = inputs.get('dtc_spend', {}).get(cur_month, 0)
-        dtc_roas = inputs.get('dtc_nc_roas', {}).get(cur_month, 0)
-        nc_mult = inputs.get('nc_multiplier', {}).get(cur_month, 0)
-        amz_new_rev = nc_mult * dtc_roas * dtc_spend
-        if amz_new_rev > 0:
+        # Build media plan for ALL months so prior months' new customers
+        # contribute repeat revenue in the current month.
+        amz_media = []
+        for m in all_months:
+            dtc_spend = inputs.get('dtc_spend', {}).get(m, 0)
+            dtc_roas = inputs.get('dtc_nc_roas', {}).get(m, 0)
+            nc_mult = inputs.get('nc_multiplier', {}).get(m, 0)
+            amz_new_rev = nc_mult * dtc_roas * dtc_spend
+            if amz_new_rev > 0:
+                amz_media.append({'month': m, 'spend': amz_new_rev, 'roas': 1.0})
+        if amz_media:
             try:
-                amz_media = [{'month': cur_month, 'spend': amz_new_rev, 'roas': 1.0}]
                 wf_amz = build_waterfall(
                     media_plan=amz_media,
                     source_filter='amazon',
@@ -93,12 +101,12 @@ def _cached_revenue_model_goals(cur_month):
                 if wf_amz is not None and not wf_amz.empty:
                     for _, row in wf_amz.iterrows():
                         m = str(row.get('month', ''))
-                        if m in months:
+                        if m in all_months:
                             inputs['amazon_repeat'][m] = float(row.get('repeat_revenue', 0))
             except Exception as e:
                 log.exception("Amazon waterfall failed in revenue model goals: %s", e)
 
-        calc = rm.compute(inputs, months)
+        calc = rm.compute(inputs, all_months)
         _v = lambda d, k: d.get(k, {}).get(cur_month, 0)
         return {
             'nc_rev': round(_v(calc, 'total_new')),
@@ -484,6 +492,7 @@ def compute_pacing_data(ctx):
         'cm_amz_spend': _cm_amz_spend,
         'cm_amz_nc': _cm_amz_nc,
         'cm_amz_nc_rev': _cm_amz_nc_rev,
+        'cm_amz_repeat_rev': _cm_amz_repeat_rev,
         'amz_spend_projected': _amz_spend_projected,
         'amz_spend_gap_days': _amz_spend_gap_days,
         'amz_nc_projected': _amz_nc_projected,
@@ -492,6 +501,10 @@ def compute_pacing_data(ctx):
         'goal_repeat_rev': _goal_repeat_rev,
         'goal_total_repeat_rev': _goal_total_repeat_rev,
         'goal_amz_rev': _goal_amz_rev,
+        'goal_amz_nc_rev': _goal_amz_nc_rev,
+        'goal_amz_repeat_rev': _goal_amz_repeat_rev,
+        'goal_dtc_nc_rev': _goal_nc_rev,
+        'goal_dtc_repeat_rev': _goal_repeat_rev,
         'goal_total_rev': _goal_total_rev,
         'goal_dtc_rev': _goal_dtc_rev,
         'goal_spend': _goal_spend,
@@ -531,6 +544,7 @@ def compute_pacing_data(ctx):
         'l7d_amz_spend': _l7d_amz_spend,
         'l7d_amz_nc': _l7d_amz_nc,
         'l7d_amz_nc_rev': _l7d_amz_nc_rev,
+        'l7d_amz_repeat_rev': _l7d_amz_repeat_rev,
         # Yesterday
         'yd_total_rev': _yd_total_rev,
         'yd_total_spend': _yd_total_spend,
@@ -545,6 +559,7 @@ def compute_pacing_data(ctx):
         'yd_amz_spend': _yd_amz_spend,
         'yd_amz_nc': _yd_amz_nc,
         'yd_amz_nc_rev': _yd_amz_nc_rev,
+        'yd_amz_repeat_rev': _yd_amz_repeat_rev,
         # Efficiency metrics
         'business_mer': _business_mer,
         'total_nc_roas': _total_nc_roas,
@@ -626,18 +641,44 @@ def render_pacing_detail_table(data, source_filter=None):
                                    d['l7d_total_rev'], d['yd_total_rev'],
                                    d['pct_month'], d['days_in_month'], d['remaining_days'],
                                    section='revenue'))
+    _sub = '\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0'  # double indent for sub-rows
+
     if source_filter in (None, 'shopify'):
         _indent = '\u00a0\u00a0\u00a0\u00a0' if not source_filter else ''
         rows.append(build_pace_row(f"{_indent}DTC Revenue", d['cm_dtc_rev'], d['goal_dtc_rev'],
                                    d['l7d_dtc_rev'], d['yd_dtc_rev'],
                                    d['pct_month'], d['days_in_month'], d['remaining_days'],
                                    section='revenue'))
+        # DTC New / Repeat sub-rows
+        if d.get('goal_dtc_nc_rev', 0) > 0:
+            _sub_indent = _sub if not source_filter else '\u00a0\u00a0\u00a0\u00a0'
+            rows.append(build_pace_row(f"{_sub_indent}New Rev", d['cm_nc_rev'], d['goal_dtc_nc_rev'],
+                                       d['l7d_nc_rev'], d['yd_nc_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days'],
+                                       section='revenue'))
+            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d['cm_ret_rev'], d['goal_dtc_repeat_rev'],
+                                       d['l7d_ret_rev'], d['yd_ret_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days'],
+                                       section='revenue'))
+
     if source_filter in (None, 'amazon'):
         _indent = '\u00a0\u00a0\u00a0\u00a0' if not source_filter else ''
         rows.append(build_pace_row(f"{_indent}Amazon Revenue", d['cm_amz_rev'], d['goal_amz_rev'],
                                    d['l7d_amz_rev'], d['yd_amz_rev'],
                                    d['pct_month'], d['days_in_month'], d['remaining_days'],
                                    section='revenue'))
+        # Amazon New / Repeat sub-rows
+        if d.get('goal_amz_nc_rev', 0) > 0:
+            _sub_indent = _sub if not source_filter else '\u00a0\u00a0\u00a0\u00a0'
+            rows.append(build_pace_row(f"{_sub_indent}New Rev", d['cm_amz_nc_rev'], d['goal_amz_nc_rev'],
+                                       d['l7d_amz_nc_rev'], d['yd_amz_nc_rev'],
+                                       d['pct_month'], d['days_in_month'], d['remaining_days'],
+                                       section='revenue'))
+            rows.append(build_pace_row(f"{_sub_indent}Repeat Rev", d.get('cm_amz_repeat_rev', 0), d['goal_amz_repeat_rev'],
+                                       d.get('l7d_amz_repeat_rev', 0), d.get('yd_amz_repeat_rev', 0),
+                                       d['pct_month'], d['days_in_month'], d['remaining_days'],
+                                       section='revenue'))
+
     if not source_filter:
         if d.get('goal_nc_rev', 0) > 0:
             rows.append(build_pace_row("\u00a0\u00a0\u00a0\u00a0New Customer Rev", d['cm_total_nc_rev'], d['goal_nc_rev'],
