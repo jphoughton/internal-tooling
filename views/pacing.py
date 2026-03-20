@@ -296,8 +296,6 @@ def compute_pacing_data(ctx):
                 _goal_amz_rev = _goal_amz_nc_rev + round(_rm_v(_rm_inputs, 'amazon_repeat'))
             _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
-            _total_spend_goal = _goal_spend + _goal_amz_spend if (_goal_spend + _goal_amz_spend) > 0 else 1
-            _goal_blended_nc_roas = _goal_blended_nc_rev / _total_spend_goal
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
     except Exception as e:
         log.warning("Revenue model goals failed, trying waterfall fallback: %s", e)
@@ -443,6 +441,8 @@ def compute_pacing_data(ctx):
         if not _sum_nc_row.empty and 'shopify_new_customers' in _sum_nc_row.columns:
             _goal_nc_count = float(_sum_nc_row.iloc[0].get('shopify_new_customers', 0))
 
+    if _goal_blended_nc_roas == 0 and _goal_blended_nc_rev > 0 and _goal_total_spend > 0:
+        _goal_blended_nc_roas = _goal_blended_nc_rev / _goal_total_spend
     _goal_mer = _goal_total_rev / _goal_total_spend if _goal_total_spend > 0 else 0
     _goal_nc_roas_ratio = _goal_blended_nc_roas if _goal_blended_nc_roas > 0 else (_goal_nc_rev / _goal_spend if _goal_spend > 0 else 0)
     _goal_nc_cpa_target = _goal_spend / _goal_nc_count if _goal_nc_count > 0 else 0
