@@ -5,6 +5,7 @@ import pandas as pd
 from db import (
     get_db,
     get_media_spend, get_amazon_revenue_forecast,
+    get_revenue_model,
 )
 from analytics.dtc_demand import build_master_dtc_forecast
 import analytics.revenue_model as rm
@@ -276,12 +277,12 @@ def compute_pacing_data(ctx):
     _has_goals = False
 
     try:
-        from db import get_revenue_model as _get_rm
         with get_db() as _rm_conn:
-            _rm_raw = _get_rm(_rm_conn)
+            _rm_raw = get_revenue_model(_rm_conn)
             _amz_fc = get_amazon_revenue_forecast(_rm_conn)
-        if _rm_raw:
-            _rm_inputs = rm.merge_with_defaults(_rm_raw, [_cur_month])
+        # merge_with_defaults fills in defaults even if DB is empty
+        if True:
+            _rm_inputs = rm.merge_with_defaults(_rm_raw or {}, [_cur_month])
             _rm_calc = rm.compute(_rm_inputs, [_cur_month])
             _rm_v = lambda d, k: d.get(k, {}).get(_cur_month, 0)
             _goal_nc_rev = round(_rm_v(_rm_calc, 'dtc_new'))
