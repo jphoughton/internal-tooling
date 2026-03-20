@@ -342,6 +342,12 @@ def compute_pacing_data(ctx):
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
 
+    # DEBUG: log which goals path was used and the values
+    log.info("PACING GOALS: rm_goals=%s, _goal_nc_rev=%s, _goal_repeat_rev=%s, "
+             "_goal_amz_nc_rev=%s, _goal_amz_repeat_rev=%s, _goal_amz_rev=%s, _has_goals=%s",
+             _rm_goals, _goal_nc_rev, _goal_repeat_rev,
+             _goal_amz_nc_rev, _goal_amz_repeat_rev, _goal_amz_rev, _has_goals)
+
     # Derive repeat goals from total - new (consistent identity)
     _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
     _goal_total_rev = _goal_nc_rev + _goal_repeat_rev + _goal_amz_rev
