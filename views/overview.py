@@ -321,28 +321,20 @@ def render(ctx):
         _fulfill_pct = _dtc_w * _dtc_total_fee + _amz_w * _amz_fulfill_pct
         _net_to_gross = _dtc_w * _dtc_ntg + _amz_w * _amz_ntg
 
-        # Repeat multiplier: actual repeat rev vs pro-rated goal
-        # >1 means repeat is outperforming the model → faster payback
-        _repeat_mult = 1.0
+        # Actual repeat revenue for CAC payback — use real numbers
         if _source_filter == 'shopify':
             _actual_repeat = d.get('cm_ret_rev', 0)
-            _goal_repeat = d.get('goal_repeat_rev', 0)
         elif _source_filter == 'amazon':
             _actual_repeat = d.get('cm_amz_repeat_rev', 0)
-            _goal_repeat = d.get('goal_amz_repeat_rev', 0)
         else:
             _actual_repeat = d.get('cm_total_repeat_rev', 0)
-            _goal_repeat = d.get('goal_total_repeat_rev', 0)
-        _prorated_goal_repeat = _goal_repeat * _pct
-        if _prorated_goal_repeat > 0 and _actual_repeat > 0:
-            _repeat_mult = _actual_repeat / _prorated_goal_repeat
 
         _cac_payback = compute_cac_payback(
             _hero_spend, _hero_nc, _hero_nc_rev,
             cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
             net_to_gross=_net_to_gross,
+            repeat_rev=_actual_repeat, pct_month=_pct,
             retention_curve=_use_ret,
-            repeat_multiplier=_repeat_mult,
         )
         _goal_cac_payback = None
         if d.get('goal_nc_count', 0) > 0 and _hero_goal_spend > 0 and not _source_filter:
@@ -401,8 +393,8 @@ def render(ctx):
             _yd_hero_spend, _yd_hero_nc, _yd_hero_nc_rev,
             cogs_pct=_cogs_pct, fulfillment_pct=_fulfill_pct,
             net_to_gross=_net_to_gross,
+            repeat_rev=_actual_repeat, pct_month=_pct,
             retention_curve=_use_ret,
-            repeat_multiplier=_repeat_mult,
         ) if _yd_hero_nc > 0 and _yd_hero_spend > 0 else 0
 
         _yd_est_suffix = ' (est)' if _yd_est else ''

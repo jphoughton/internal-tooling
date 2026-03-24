@@ -38,15 +38,12 @@ def compute_aov(revenue, order_count):
 def compute_cac_payback(spend, new_customers, nc_revenue,
                         cogs_pct=0.17, fulfillment_pct=0.18,
                         net_to_gross=1.0,
-                        retention_curve=None, repeat_multiplier=1.0,
-                        max_months=24):
+                        repeat_rev=0, pct_month=0,
+                        retention_curve=None, max_months=24):
     """CAC Payback in months using contribution-margin model.
 
-    CFO formula: each month a customer generates revenue with costs deducted
-    (COGS + fulfillment). Payback = month when cumulative contribution covers CAC.
-
-    COGS is applied as a % of gross sales (net revenue × net_to_gross).
-    Fulfillment is applied as a % of net revenue.
+    Uses actual repeat revenue when available. Falls back to the
+    historical retention curve only when repeat data is missing.
 
     Args:
         spend: Total media spend in period.
@@ -55,12 +52,11 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         cogs_pct: Cost of goods as fraction of gross sales (default 0.17 = 17%).
         fulfillment_pct: Fulfillment cost as fraction of net revenue (e.g. 0.18).
         net_to_gross: Multiplier to convert net revenue to gross sales (e.g. 1.386).
-        retention_curve: Dict {month_offset: revenue_fraction} from retention
-            model. If None, falls back to simple CAC / monthly_contribution.
-        repeat_multiplier: Scale factor applied to the retention curve to
-            reflect actual vs modeled repeat performance. Computed as
-            actual_repeat_rev / (goal_repeat_rev * pct_month_elapsed).
-            >1 means repeat is outperforming model → faster payback.
+        repeat_rev: Actual repeat revenue in the same period as spend/nc_revenue.
+        pct_month: Fraction of month elapsed (0-1), used to annualise
+            repeat_rev to a full monthly rate.
+        retention_curve: Fallback dict {month_offset: revenue_fraction}.
+            Only used when repeat_rev is not provided.
         max_months: Cap on payback search (default 24).
 
     Returns:
@@ -78,33 +74,39 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         fulfill = rev * fulfillment_pct
         return rev - cogs - fulfill
 
-    test_contrib = _contribution(aov)
-    if test_contrib <= 0:
+    m0_contrib = _contribution(aov)
+    if m0_contrib <= 0:
         return 0
 
     # Month 0: first purchase contribution
-    cumulative = test_contrib
+    cumulative = m0_contrib
 
     if cumulative >= cac:
-        # Pays back within first purchase — return fraction of month
         return cac / cumulative if cumulative > 0 else 0
 
+    # --- Actual repeat revenue path ---
+    if repeat_rev > 0 and pct_month > 0:
+        # Annualise partial-month repeat to full monthly rate, per NC
+        monthly_repeat_per_nc = (repeat_rev / pct_month) / new_customers
+        monthly_contrib = _contribution(monthly_repeat_per_nc)
+        if monthly_contrib <= 0:
+            return 0
+        remaining = cac - cumulative
+        return 1 + (remaining / monthly_contrib)
+
+    # --- Retention curve fallback ---
     if not retention_curve:
-        # Fallback: simple monthly contribution = annualised NC rev / 12
         monthly_contrib = _contribution(aov)
         return cac / monthly_contrib if monthly_contrib > 0 else 0
 
-    # Walk the retention curve month-by-month, scaled by repeat_multiplier
-    _mult = max(repeat_multiplier, 0)
     for month in range(1, max_months + 1):
         repeat_frac = retention_curve.get(month, 0)
         if repeat_frac <= 0:
             continue
-        month_rev = aov * repeat_frac * _mult
+        month_rev = aov * repeat_frac
         month_contrib = _contribution(month_rev)
         cumulative += month_contrib
         if cumulative >= cac:
-            # Interpolate within this month
             overshoot = cumulative - cac
             frac_of_month = 1 - (overshoot / month_contrib) if month_contrib > 0 else 0
             return month - 1 + frac_of_month
