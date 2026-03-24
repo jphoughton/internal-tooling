@@ -1062,7 +1062,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
 
         mkt_df = _shopify_daily.copy()
         mkt_df['_date'] = pd.to_datetime(mkt_df['_date'])
-        _gs_spend = load_gs_spend()
+        _gs_spend = load_gs_spend(skip_cache=True)
         if not _gs_spend.empty:
             _gs = _gs_spend[['_date', '_ad_spend']].copy()
             _gs['_date'] = pd.to_datetime(_gs['_date'])
@@ -1071,6 +1071,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             )
         else:
             mkt_df['_ad_spend'] = 0
+        mkt_df['_ad_spend'] = mkt_df['_ad_spend'].fillna(0)
         mkt_df = mkt_df.sort_values('_date')
 
         # Load revenue goals from precomputed master forecast
@@ -1329,6 +1330,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'cm_orders': _cm_orders, 'cm_nc': _cm_nc,
             'cm_amz_rev': _cm_amz_rev, 'cm_amz_spend': _cm_amz_spend,
             'cm_amz_nc': _cm_amz_nc, 'cm_amz_nc_rev': _cm_amz_nc_rev,
+            'cm_amz_repeat_rev': _cm_amz_repeat_rev,
             'amz_spend_projected': _amz_spend_projected,
             'amz_spend_gap_days': _amz_spend_gap_days,
             'amz_nc_projected': _amz_nc_projected,
@@ -1340,6 +1342,8 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'goal_amz_repeat_rev': _goal_amz_repeat_rev,
             'goal_total_rev': _goal_total_rev,
             'goal_dtc_rev': _goal_dtc_rev,
+            'goal_dtc_nc_rev': _goal_nc_rev,
+            'goal_dtc_repeat_rev': _goal_repeat_rev,
             'goal_spend': _goal_spend,
             'goal_amz_spend': _goal_amz_spend,
             'goal_total_spend': _goal_total_spend,
@@ -1363,6 +1367,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'l7d_nc': _l7d_nc, 'l7d_spend': _l7d_spend,
             'l7d_amz_rev': _l7d_amz_rev, 'l7d_amz_spend': _l7d_amz_spend,
             'l7d_amz_nc': _l7d_amz_nc, 'l7d_amz_nc_rev': _l7d_amz_nc_rev,
+            'l7d_amz_repeat_rev': _l7d_amz_repeat_rev,
             'yd_total_rev': _yd_total_rev, 'yd_total_spend': _yd_total_spend,
             'yd_total_nc': _yd_total_nc, 'yd_total_nc_rev': _yd_total_nc_rev,
             'yd_total_repeat_rev': _yd_total_repeat_rev,
@@ -1370,6 +1375,7 @@ def run_pacing_precompute(triggered_by='scheduler'):
             'yd_nc': _yd_nc, 'yd_spend': _yd_spend,
             'yd_amz_rev': _yd_amz_rev, 'yd_amz_spend': _yd_amz_spend,
             'yd_amz_nc': _yd_amz_nc, 'yd_amz_nc_rev': _yd_amz_nc_rev,
+            'yd_amz_repeat_rev': _yd_amz_repeat_rev,
             'yd_amz_projected': _yd_amz_projected,
             'business_mer': _business_mer,
             'total_nc_roas': _total_nc_roas, 'total_nc_cpa': _total_nc_cpa,
@@ -1384,9 +1390,9 @@ def run_pacing_precompute(triggered_by='scheduler'):
         }
         _save_result('pacing_data', pacing_result, MODEL_PACING, time.time() - t0)
 
-        # Also save the cleaned GS spend data
+        # Also save the cleaned GS spend data (skip_cache to avoid circular dependency)
         try:
-            _gs = load_gs_spend()
+            _gs = load_gs_spend(skip_cache=True)
             if not _gs.empty:
                 _save_result('gs_spend_cleaned', json.loads(_gs.to_json()),
                              MODEL_PACING)

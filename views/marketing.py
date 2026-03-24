@@ -299,7 +299,10 @@ def render(ctx):
                 _cm_total_spend = _cm_dtc_spend + _cm_amz_spend
                 _l7d_total_spend = _l7d_dtc_spend + _l7d_amz_spend
                 _yd_total_spend = _yd_dtc_spend + _yd_amz_spend
-                _cm_total_repeat_rev = _cm_ret_rev  # Amazon repeat not tracked in this source
+                _cm_amz_repeat_rev = max(_cm_amz_rev - min(_cm_amz_nc_rev, _cm_amz_rev), 0)
+                _l7d_amz_repeat_rev = max(_l7d_amz_rev - min(_l7d_amz_nc_rev, _l7d_amz_rev), 0)
+                _yd_amz_repeat_rev = max(_yd_amz_rev - min(_yd_amz_nc_rev, _yd_amz_rev), 0)
+                _cm_total_repeat_rev = _cm_ret_rev + _cm_amz_repeat_rev
 
                 # Efficiency metrics (centralized formulas)
                 _business_mer = compute_mer(_total_actual_rev, _cm_total_spend)
@@ -355,7 +358,7 @@ def render(ctx):
                                        _l7d_rev + _l7d_amz_rev, _yd_rev + _yd_amz_rev,
                                        _pct_month, _days_in_month, _remaining_days),
                         build_pace_row("Repeat Revenue", _cm_total_repeat_rev, _goal_repeat_rev,
-                                       _l7d_ret_rev, _yd_ret_rev,
+                                       _l7d_ret_rev + _l7d_amz_repeat_rev, _yd_ret_rev + _yd_amz_repeat_rev,
                                        _pct_month, _days_in_month, _remaining_days),
                     ])
                     _rollup_df = pd.DataFrame(_rollup_rows)
@@ -422,6 +425,14 @@ def render(ctx):
                         build_pace_row("Revenue", _cm_amz_rev, _goal_amz_rev, _l7d_amz_rev, _yd_amz_rev,
                                        _pct_month, _days_in_month, _remaining_days),
                     )
+                    _amz_rows.append(
+                        build_pace_row("New Customer Rev", _cm_amz_nc_rev, 0, _l7d_amz_nc_rev, _yd_amz_nc_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
+                    )
+                    _amz_rows.append(
+                        build_pace_row("Repeat Rev", _cm_amz_repeat_rev, 0, _l7d_amz_repeat_rev, _yd_amz_repeat_rev,
+                                       _pct_month, _days_in_month, _remaining_days),
+                    )
                     _amz_df = pd.DataFrame(_amz_rows)
                     render_white_table(style_pace_df(_amz_df))
 
@@ -446,301 +457,6 @@ def render(ctx):
                     ts3.metric("Amazon Revenue (MTD)", f"${_cm_amz_rev:,.0f}")
                     _total_mtd = _cm_nc_rev + _cm_ret_rev + _cm_amz_rev
                     ts4.metric("Total Revenue (MTD)", f"${_total_mtd:,.0f}")
-
-            st.divider()
-
-            # ============================================================
-            # DoD / WoW / MoM PERFORMANCE TABS
-            # ============================================================
-            st.header("Performance")
-            _perf_tab_dod, _perf_tab_wow, _perf_tab_mom = st.tabs(
-                ["Daily", "Weekly", "Monthly"]
-            )
-
-            # --- Helper: build a performance summary table from aggregated data ---
-            def _build_perf_table(agg_df, period_col, amz_agg=None):
-                """Build DTC / Roll Up / Amazon summary tables from aggregated Google Sheet data.
-
-                agg_df: DataFrame grouped by period with summed metrics.
-                period_col: column name for the period label.
-                amz_agg: optional DataFrame of Amazon revenue/spend grouped by the same period.
-                Returns (dtc_df, rollup_df, amz_df) formatted for display.
-                """
-                rows_dtc = []
-                rows_rollup = []
-                rows_amz = []
-
-                for _, r in agg_df.iterrows():
-                    period_label = r[period_col]
-                    spend = r.get("_ad_spend", 0)
-                    total_rev = r.get("_revenue", 0)
-                    nc_orders = r.get("_nc_orders", 0)
-                    nc_rev = r.get("_nc_revenue", 0)
-                    orders = r.get("_orders", 0)
-                    nc_aov = nc_rev / nc_orders if nc_orders > 0 else 0
-                    nc_cpa = spend / nc_orders if nc_orders > 0 else 0
-                    nc_roas = nc_rev / spend if spend > 0 else 0
-                    cost_per_nc = spend / nc_orders if nc_orders > 0 else 0
-
-                    # DTC row
-                    rows_dtc.append({
-                        period_col: period_label,
-                        "Spend": f"${spend:,.0f}",
-                        "Total Rev": f"${total_rev:,.0f}",
-                        "New Users": int(nc_orders),
-                        "Cost/New User": f"${cost_per_nc:,.0f}",
-                        "NC Rev": f"${nc_rev:,.0f}",
-                        "NC Orders": int(nc_orders),
-                        "NC AOV": f"${nc_aov:,.0f}",
-                        "NC ROAS": f"{nc_roas:.2f}x",
-                        "NC CPA": f"${nc_cpa:,.0f}",
-                    })
-
-                    # Roll Up: combine with Amazon if available
-                    amz_rev_val = 0
-                    amz_spend_val = 0
-                    amz_new_cust = 0
-                    amz_repeat_cust = 0
-                    amz_new_rev_val = 0
-                    amz_repeat_rev_val = 0
-                    if amz_agg is not None and period_col in amz_agg.columns:
-                        amz_match = amz_agg[amz_agg[period_col] == period_label]
-                        if not amz_match.empty:
-                            amz_rev_val = float(amz_match.iloc[0].get("_amz_revenue", 0))
-                            amz_spend_val = float(amz_match.iloc[0].get("_amz_spend", 0))
-                            amz_new_cust = int(amz_match.iloc[0].get("_amz_new_cust", 0))
-                            amz_repeat_cust = int(amz_match.iloc[0].get("_amz_repeat_cust", 0))
-                            amz_new_rev_val = float(amz_match.iloc[0].get("_amz_new_rev", 0))
-                            amz_repeat_rev_val = float(amz_match.iloc[0].get("_amz_repeat_rev", 0))
-
-                    dtc_total_cust = int(r.get("total_customers", nc_orders))
-                    dtc_repeat_cust = max(0, dtc_total_cust - int(nc_orders))
-
-                    combined_rev = total_rev + amz_rev_val
-                    combined_spend = spend + amz_spend_val
-                    combined_new_cust = int(nc_orders) + amz_new_cust
-                    combined_repeat_cust = dtc_repeat_cust + amz_repeat_cust
-                    combined_new_rev = nc_rev + amz_new_rev_val
-                    combined_total_cust = combined_new_cust + combined_repeat_cust
-                    nc_mer = combined_new_rev / combined_spend if combined_spend > 0 else 0
-                    mer = combined_rev / combined_spend if combined_spend > 0 else 0
-                    combined_nc_cpa = combined_spend / combined_new_cust if combined_new_cust > 0 else 0
-
-                    rows_rollup.append({
-                        period_col: period_label,
-                        "Spend": f"${combined_spend:,.0f}",
-                        "Revenue": f"${combined_rev:,.0f}",
-                        "New Cust": combined_new_cust,
-                        "Repeat Cust": combined_repeat_cust,
-                        "Total Cust": combined_total_cust,
-                        "New Rev": f"${combined_new_rev:,.0f}",
-                        "NC MER": f"{nc_mer:.2f}x",
-                        "NC CPA": f"${combined_nc_cpa:,.0f}",
-                        "MER": f"{mer:.2f}x",
-                    })
-
-                    # Amazon row
-                    rows_amz.append({
-                        period_col: period_label,
-                        "Spend": f"${amz_spend_val:,.0f}",
-                        "Total Revenue": f"${amz_rev_val:,.0f}",
-                        "New Cust": amz_new_cust,
-                        "Repeat Cust": amz_repeat_cust,
-                        "New Rev": f"${amz_new_rev_val:,.0f}",
-                        "Repeat Rev": f"${amz_repeat_rev_val:,.0f}",
-                    })
-
-                return (
-                    pd.DataFrame(rows_dtc),
-                    pd.DataFrame(rows_rollup),
-                    pd.DataFrame(rows_amz),
-                )
-
-            from ui.perf_tables import render_perf_table_colored as _render_perf_table_colored
-
-            # --- Aggregate helpers ---
-            # We use the full (unfiltered by date range) dataset for these tabs
-            # Shopify DB for revenue/customers, Google Sheet for spend/sessions
-            _perf_df = _shopify_daily.copy()
-            _perf_df['_date'] = pd.to_datetime(_perf_df['_date']).dt.normalize()
-            if not _gs_spend.empty:
-                _gs_perf = _gs_spend.copy()
-                _gs_perf['_date'] = pd.to_datetime(_gs_perf['_date']).dt.normalize()
-                _perf_df = _perf_df.merge(
-                    _gs_perf, on='_date', how='left', suffixes=('', '_gs')
-                )
-            else:
-                _perf_df['_ad_spend'] = 0
-            _perf_df = _perf_df.sort_values('_date')
-            _perf_df['_ad_spend'] = _perf_df['_ad_spend'].fillna(0)
-
-            # Gap-fill DTC spend: Google Sheet often lags a few days — estimate
-            # missing days using L7D average so the daily table isn't $0.
-            _has_dtc_spend = _perf_df[_perf_df['_ad_spend'] > 0]
-            if not _has_dtc_spend.empty:
-                _dtc_l7d_spend = _has_dtc_spend.tail(7)['_ad_spend'].mean()
-                _dtc_last_spend_date = _has_dtc_spend['_date'].max()
-                _gap_mask = (_perf_df['_ad_spend'] == 0) & (_perf_df['_date'] > _dtc_last_spend_date)
-                if _gap_mask.any():
-                    _perf_df.loc[_gap_mask, '_ad_spend'] = round(_dtc_l7d_spend, 2)
-
-            # Ensure total_customers column exists for repeat-cust rollup
-            if 'total_customers' not in _perf_df.columns:
-                _perf_df['total_customers'] = _perf_df.get('_nc_orders', 0)
-
-            # Exclude today — always start with yesterday
-            _perf_df = _perf_df[_perf_df['_date'].dt.date < date.today()]
-
-            # _amz_daily is pre-loaded by _load_amazon_daily() (shared with pacing hero tiles)
-
-            # --- DAY OVER DAY ---
-            with _perf_tab_dod:
-                _dod_df = _perf_df.copy()
-                _dod_df["Day"] = _dod_df["_date"].dt.strftime("%Y-%m-%d")
-                _dod_agg_cols = {"_ad_spend": "sum", "_revenue": "sum", "_nc_orders": "sum",
-                                 "_nc_revenue": "sum", "_ret_revenue": "sum",
-                                 "_orders": "sum", "_units": "sum",
-                                 "total_customers": "sum"}
-                _dod_agg = _dod_df.groupby("Day", sort=True).agg(_dod_agg_cols).reset_index()
-
-                # Amazon daily
-                _amz_dod = pd.DataFrame(columns=["Day", "_amz_revenue", "_amz_spend",
-                                                  "_amz_new_cust", "_amz_repeat_cust",
-                                                  "_amz_new_rev", "_amz_repeat_rev"])
-                if not _amz_daily.empty:
-                    _amz_dod = _amz_daily.copy()
-                    _amz_dod["Day"] = _amz_dod["_date"].dt.strftime("%Y-%m-%d")
-                    _amz_dod_agg = {
-                        "_amz_revenue": ("_amz_revenue", "sum"),
-                        "_amz_spend": ("_amz_spend", "sum"),
-                    }
-                    if "_amz_new_cust" in _amz_dod.columns:
-                        _amz_dod_agg.update({
-                            "_amz_new_cust": ("_amz_new_cust", "sum"),
-                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
-                            "_amz_new_rev": ("_amz_new_rev", "sum"),
-                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
-                        })
-                    _amz_dod = _amz_dod.groupby("Day", sort=True).agg(**_amz_dod_agg).reset_index()
-
-                _dtc_dod, _rollup_dod, _amz_tbl_dod = _build_perf_table(_dod_agg, "Day", _amz_dod)
-
-                st.caption('Day-over-day performance comparison from Shopify orders + Google Sheets daily data.')
-                if _nav_channel == 'DTC':
-                    _render_perf_table_colored(_dtc_dod, "Day", max_height=420)
-                elif _nav_channel == 'Amazon':
-                    _render_perf_table_colored(_amz_tbl_dod, "Day", max_height=420)
-                else:
-                    st.subheader("Roll Up")
-                    _render_perf_table_colored(_rollup_dod, "Day", max_height=420)
-                    st.subheader("DTC (Shopify)")
-                    _render_perf_table_colored(_dtc_dod, "Day", max_height=420)
-                    st.subheader("Amazon")
-                    _render_perf_table_colored(_amz_tbl_dod, "Day", max_height=420)
-
-            # --- WEEK OVER WEEK ---
-            with _perf_tab_wow:
-                _wow_df = _perf_df.copy()
-                _wow_df["_week_start"] = _wow_df["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
-                _wow_df["Week"] = _wow_df["_week_start"].dt.strftime("%Y-%m-%d")
-                _wow_df["Wk #"] = _wow_df["_date"].dt.isocalendar().week.astype(int)
-                _wow_agg = _wow_df.groupby("Week", sort=True).agg(
-                    _ad_spend=("_ad_spend", "sum"), _revenue=("_revenue", "sum"),
-                    _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
-                    _ret_revenue=("_ret_revenue", "sum"),
-                    _orders=("_orders", "sum"), _units=("_units", "sum"),
-                    total_customers=("total_customers", "sum"),
-                    **{"Wk #": ("Wk #", "first")},
-                ).reset_index()
-
-                # Amazon weekly
-                _amz_wow = pd.DataFrame(columns=["Week", "_amz_revenue", "_amz_spend",
-                                                  "_amz_new_cust", "_amz_repeat_cust",
-                                                  "_amz_new_rev", "_amz_repeat_rev"])
-                if not _amz_daily.empty:
-                    _amz_wow_tmp = _amz_daily.copy()
-                    _amz_wow_tmp["_week_start"] = _amz_wow_tmp["_date"].dt.to_period("W-SAT").apply(lambda x: x.start_time)
-                    _amz_wow_tmp["Week"] = _amz_wow_tmp["_week_start"].dt.strftime("%Y-%m-%d")
-                    _amz_wow_agg = {
-                        "_amz_revenue": ("_amz_revenue", "sum"),
-                        "_amz_spend": ("_amz_spend", "sum"),
-                    }
-                    if "_amz_new_cust" in _amz_wow_tmp.columns:
-                        _amz_wow_agg.update({
-                            "_amz_new_cust": ("_amz_new_cust", "sum"),
-                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
-                            "_amz_new_rev": ("_amz_new_rev", "sum"),
-                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
-                        })
-                    _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(**_amz_wow_agg).reset_index()
-
-                _dtc_wow, _rollup_wow, _amz_tbl_wow = _build_perf_table(_wow_agg, "Week", _amz_wow)
-                st.caption('Week-over-week performance comparison from Shopify orders + Google Sheets data.')
-
-                # Insert week number after the Week column
-                _wk_map = _wow_agg.set_index("Week")["Wk #"]
-                for _tbl in [_dtc_wow, _rollup_wow, _amz_tbl_wow]:
-                    if not _tbl.empty and "Week" in _tbl.columns:
-                        _tbl.insert(1, "Wk #", _tbl["Week"].map(_wk_map).fillna(0).astype(int))
-
-                if _nav_channel == 'DTC':
-                    _render_perf_table_colored(_dtc_wow, "Week", max_height=420)
-                elif _nav_channel == 'Amazon':
-                    _render_perf_table_colored(_amz_tbl_wow, "Week", max_height=420)
-                else:
-                    st.subheader("Roll Up")
-                    _render_perf_table_colored(_rollup_wow, "Week", max_height=420)
-                    st.subheader("DTC (Shopify)")
-                    _render_perf_table_colored(_dtc_wow, "Week", max_height=420)
-                    st.subheader("Amazon")
-                    _render_perf_table_colored(_amz_tbl_wow, "Week", max_height=420)
-
-            # --- MONTH OVER MONTH ---
-            with _perf_tab_mom:
-                _mom_df = _perf_df.copy()
-                _mom_df["Month"] = _mom_df["_date"].dt.to_period("M").astype(str)
-                _mom_agg = _mom_df.groupby("Month", sort=True).agg(
-                    _ad_spend=("_ad_spend", "sum"), _revenue=("_revenue", "sum"),
-                    _nc_orders=("_nc_orders", "sum"), _nc_revenue=("_nc_revenue", "sum"),
-                    _ret_revenue=("_ret_revenue", "sum"),
-                    _orders=("_orders", "sum"), _units=("_units", "sum"),
-                    total_customers=("total_customers", "sum"),
-                ).reset_index()
-
-                # Amazon monthly
-                _amz_mom = pd.DataFrame(columns=["Month", "_amz_revenue", "_amz_spend",
-                                                  "_amz_new_cust", "_amz_repeat_cust",
-                                                  "_amz_new_rev", "_amz_repeat_rev"])
-                if not _amz_daily.empty:
-                    _amz_mom_tmp = _amz_daily.copy()
-                    _amz_mom_tmp["Month"] = _amz_mom_tmp["_date"].dt.to_period("M").astype(str)
-                    _amz_mom_agg = {
-                        "_amz_revenue": ("_amz_revenue", "sum"),
-                        "_amz_spend": ("_amz_spend", "sum"),
-                    }
-                    if "_amz_new_cust" in _amz_mom_tmp.columns:
-                        _amz_mom_agg.update({
-                            "_amz_new_cust": ("_amz_new_cust", "sum"),
-                            "_amz_repeat_cust": ("_amz_repeat_cust", "sum"),
-                            "_amz_new_rev": ("_amz_new_rev", "sum"),
-                            "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
-                        })
-                    _amz_mom = _amz_mom_tmp.groupby("Month", sort=True).agg(**_amz_mom_agg).reset_index()
-
-                _dtc_mom, _rollup_mom, _amz_tbl_mom = _build_perf_table(_mom_agg, "Month", _amz_mom)
-                st.caption('Month-over-month performance comparison from Shopify orders + Google Sheets data.')
-
-                if _nav_channel == 'DTC':
-                    _render_perf_table_colored(_dtc_mom, "Month")
-                elif _nav_channel == 'Amazon':
-                    _render_perf_table_colored(_amz_tbl_mom, "Month")
-                else:
-                    st.subheader("Roll Up")
-                    _render_perf_table_colored(_rollup_mom, "Month")
-                    st.subheader("DTC (Shopify)")
-                    _render_perf_table_colored(_dtc_mom, "Month")
-                    st.subheader("Amazon")
-                    _render_perf_table_colored(_amz_tbl_mom, "Month")
 
             st.divider()
 

@@ -298,16 +298,8 @@ def compute_pacing_data(ctx):
             _goal_amz_repeat_rev = max(_goal_amz_rev - _goal_amz_nc_rev, 0)
             _goal_blended_nc_rev = _goal_nc_rev + _goal_amz_nc_rev
             _has_goals = (_goal_nc_rev + _goal_repeat_rev + _goal_amz_rev) > 0
-            # TEMP DEBUG: show computed goals
-            _dtc_spend_val = _rm_v(_rm_inputs, 'dtc_spend')
-            _dtc_roas_val = _rm_v(_rm_inputs, 'dtc_nc_roas')
-            st.info(f"RM goals: month={_cur_month} spend={_dtc_spend_val} roas={_dtc_roas_val} "
-                    f"dtc_new={_goal_nc_rev} dtc_rep={_goal_repeat_rev} "
-                    f"amz_new={_goal_amz_nc_rev} amz_rev={_goal_amz_rev} has={_has_goals}")
     except Exception as e:
         log.exception("Revenue model goals failed: %s", e)
-        import traceback
-        st.error(f"Goals error: {e}\n{traceback.format_exc()}")
 
     # Fallback to waterfall summary if revenue model unavailable
     if not _has_goals and _mkt_summary is not None and not _mkt_summary.empty:
