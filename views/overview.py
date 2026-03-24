@@ -606,6 +606,8 @@ def render(ctx):
             amz_repeat_cust = 0
             amz_new_rev_val = 0
             amz_repeat_rev_val = 0
+            _amz_nc_est = False
+            _amz_spend_est = False
             if amz_agg is not None and period_col in amz_agg.columns:
                 amz_match = amz_agg[amz_agg[period_col] == period_label]
                 if not amz_match.empty:
@@ -615,6 +617,8 @@ def render(ctx):
                     amz_repeat_cust = int(amz_match.iloc[0].get("_amz_repeat_cust", 0))
                     amz_new_rev_val = float(amz_match.iloc[0].get("_amz_new_rev", 0))
                     amz_repeat_rev_val = float(amz_match.iloc[0].get("_amz_repeat_rev", 0))
+                    _amz_nc_est = bool(amz_match.iloc[0].get("_amz_projected", False))
+                    _amz_spend_est = bool(amz_match.iloc[0].get("_amz_spend_projected", False))
 
             dtc_total_cust = int(r.get("total_customers", nc_orders))
             dtc_repeat_cust = max(0, dtc_total_cust - int(nc_orders))
@@ -642,14 +646,16 @@ def render(ctx):
                 "MER": f"{mer:.2f}x",
             })
 
+            _s = '*' if _amz_spend_est else ''
+            _n = '*' if _amz_nc_est else ''
             rows_amz.append({
                 period_col: period_label,
-                "Spend": f"${amz_spend_val:,.0f}",
+                "Spend": f"${amz_spend_val:,.0f}{_s}",
                 "Total Revenue": f"${amz_rev_val:,.0f}",
-                "New Cust": amz_new_cust,
-                "Repeat Cust": amz_repeat_cust,
-                "New Rev": f"${amz_new_rev_val:,.0f}",
-                "Repeat Rev": f"${amz_repeat_rev_val:,.0f}",
+                "New Cust": f"{amz_new_cust}{_n}",
+                "Repeat Cust": f"{amz_repeat_cust}{_n}",
+                "New Rev": f"${amz_new_rev_val:,.0f}{_n}",
+                "Repeat Rev": f"${amz_repeat_rev_val:,.0f}{_n}",
             })
 
         return (
@@ -728,6 +734,10 @@ def render(ctx):
                     "_amz_new_rev": ("_amz_new_rev", "sum"),
                     "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
                 })
+            if "_amz_projected" in _amz_dod.columns:
+                _amz_dod_agg["_amz_projected"] = ("_amz_projected", "any")
+            if "_amz_spend_projected" in _amz_dod.columns:
+                _amz_dod_agg["_amz_spend_projected"] = ("_amz_spend_projected", "any")
             _amz_dod = _amz_dod.groupby("Day", sort=True).agg(**_amz_dod_agg).reset_index()
 
         _dtc_dod, _rollup_dod, _amz_tbl_dod = _build_perf_table(_dod_agg, "Day", _amz_dod)
@@ -767,6 +777,10 @@ def render(ctx):
                     "_amz_new_rev": ("_amz_new_rev", "sum"),
                     "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
                 })
+            if "_amz_projected" in _amz_wow_tmp.columns:
+                _amz_wow_agg["_amz_projected"] = ("_amz_projected", "any")
+            if "_amz_spend_projected" in _amz_wow_tmp.columns:
+                _amz_wow_agg["_amz_spend_projected"] = ("_amz_spend_projected", "any")
             _amz_wow = _amz_wow_tmp.groupby("Week", sort=True).agg(**_amz_wow_agg).reset_index()
 
         _dtc_wow, _rollup_wow, _amz_tbl_wow = _build_perf_table(_wow_agg, "Week", _amz_wow)
@@ -808,6 +822,10 @@ def render(ctx):
                     "_amz_new_rev": ("_amz_new_rev", "sum"),
                     "_amz_repeat_rev": ("_amz_repeat_rev", "sum"),
                 })
+            if "_amz_projected" in _amz_mom_tmp.columns:
+                _amz_mom_agg["_amz_projected"] = ("_amz_projected", "any")
+            if "_amz_spend_projected" in _amz_mom_tmp.columns:
+                _amz_mom_agg["_amz_spend_projected"] = ("_amz_spend_projected", "any")
             _amz_mom = _amz_mom_tmp.groupby("Month", sort=True).agg(**_amz_mom_agg).reset_index()
 
         _dtc_mom, _rollup_mom, _amz_tbl_mom = _build_perf_table(_mom_agg, "Month", _amz_mom)

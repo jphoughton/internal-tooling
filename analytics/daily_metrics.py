@@ -240,11 +240,17 @@ def load_amazon_daily():
                     spend_daily, date_col='sale_date', spend_col='_amz_spend')
             except Exception:
                 pass
-            df = df.merge(
-                spend_daily[['sale_date', '_amz_spend']], on='sale_date', how='left')
+            _spend_cols = ['sale_date', '_amz_spend']
+            if '_projected' in spend_daily.columns:
+                spend_daily = spend_daily.rename(columns={'_projected': '_amz_spend_projected'})
+                _spend_cols.append('_amz_spend_projected')
+            df = df.merge(spend_daily[_spend_cols], on='sale_date', how='left')
         if '_amz_spend' not in df.columns:
             df['_amz_spend'] = 0
         df['_amz_spend'] = df['_amz_spend'].fillna(0)
+        if '_amz_spend_projected' not in df.columns:
+            df['_amz_spend_projected'] = False
+        df['_amz_spend_projected'] = df['_amz_spend_projected'].fillna(False)
 
         # Merge customer data
         if not cust_daily.empty:
@@ -414,31 +420,39 @@ def _parse_spend_df(df):
     return df[['_date', '_ad_spend'] + sub_cols].copy()
 
 
-def load_gs_spend():
+def load_gs_spend(skip_cache=False):
     """Load ad spend from Google Sheet with 3-path fallback.
 
-    Path 1: precomputed cache (fastest)
+    Path 1: precomputed cache (fastest) — skipped when skip_cache=True
     Path 2: DB google_sheet_data table
     Path 3: direct Google Sheets API fetch
+
+    Args:
+        skip_cache: If True, bypass the precomputed cache and load fresh data
+                    from the DB or Google Sheets API. Used by the orchestrator
+                    to avoid circular cache dependency.
     """
     # Path 1: precomputed cache
-    try:
-        import json as _json
-        from db import get_precomputed
-        with get_db() as conn:
-            cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
-        if cached:
-            result = pd.DataFrame(_json.loads(cached))
-            if '_date' in result.columns and not result.empty:
-                result['_date'] = pd.to_datetime(result['_date'], unit='ms', errors='coerce')
-                result = result.dropna(subset=['_date'])
-            if '_ad_spend' in result.columns and not result.empty:
-                log.info('gs_spend loaded from precomputed cache (%d rows, spend sum=%.0f)',
-                         len(result), result['_ad_spend'].sum())
-                return result
-            log.warning('gs_spend precomputed cache had no usable data')
-    except Exception as exc:
-        log.warning('gs_spend precomputed cache failed: %s', exc)
+    if skip_cache:
+        log.info('gs_spend: skipping precomputed cache (skip_cache=True)')
+    else:
+        try:
+            import json as _json
+            from db import get_precomputed
+            with get_db() as conn:
+                cached = get_precomputed(conn, 'gs_spend_cleaned', max_age_hours=25)
+            if cached:
+                result = pd.DataFrame(_json.loads(cached))
+                if '_date' in result.columns and not result.empty:
+                    result['_date'] = pd.to_datetime(result['_date'], unit='ms', errors='coerce')
+                    result = result.dropna(subset=['_date'])
+                if '_ad_spend' in result.columns and not result.empty:
+                    log.info('gs_spend loaded from precomputed cache (%d rows, spend sum=%.0f)',
+                             len(result), result['_ad_spend'].sum())
+                    return result
+                log.warning('gs_spend precomputed cache had no usable data')
+        except Exception as exc:
+            log.warning('gs_spend precomputed cache failed: %s', exc)
 
     # Path 2: DB table
     try:
