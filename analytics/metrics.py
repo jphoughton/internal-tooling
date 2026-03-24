@@ -38,7 +38,8 @@ def compute_aov(revenue, order_count):
 def compute_cac_payback(spend, new_customers, nc_revenue,
                         cogs_pct=0.17, fulfillment_pct=0.18,
                         net_to_gross=1.0,
-                        retention_curve=None, max_months=24):
+                        retention_curve=None, repeat_multiplier=1.0,
+                        max_months=24):
     """CAC Payback in months using contribution-margin model.
 
     CFO formula: each month a customer generates revenue with costs deducted
@@ -56,6 +57,10 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         net_to_gross: Multiplier to convert net revenue to gross sales (e.g. 1.386).
         retention_curve: Dict {month_offset: revenue_fraction} from retention
             model. If None, falls back to simple CAC / monthly_contribution.
+        repeat_multiplier: Scale factor applied to the retention curve to
+            reflect actual vs modeled repeat performance. Computed as
+            actual_repeat_rev / (goal_repeat_rev * pct_month_elapsed).
+            >1 means repeat is outperforming model → faster payback.
         max_months: Cap on payback search (default 24).
 
     Returns:
@@ -89,12 +94,13 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         monthly_contrib = _contribution(aov)
         return cac / monthly_contrib if monthly_contrib > 0 else 0
 
-    # Walk the retention curve month-by-month
+    # Walk the retention curve month-by-month, scaled by repeat_multiplier
+    _mult = max(repeat_multiplier, 0)
     for month in range(1, max_months + 1):
         repeat_frac = retention_curve.get(month, 0)
         if repeat_frac <= 0:
             continue
-        month_rev = aov * repeat_frac
+        month_rev = aov * repeat_frac * _mult
         month_contrib = _contribution(month_rev)
         cumulative += month_contrib
         if cumulative >= cac:
