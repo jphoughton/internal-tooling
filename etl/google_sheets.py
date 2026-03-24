@@ -107,6 +107,55 @@ def sync_google_sheet(conn, sheet_id=None, gid=None):
             tuple(str(v) if pd.notna(v) else None for v in row),
         )
 
+    # Backfill missing DTC spend for recent days using L7D average.
+    # The Daily Data sheet often lags a few days — gap-fill so MTD pacing
+    # is accurate (mirrors the Amazon spend backfill logic).
+    if "blended_ad_spend" in df.columns and "date" in df.columns:
+        try:
+            from datetime import datetime, timedelta
+            _yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            # Parse spend to numeric for L7D calculation
+            _spend_vals = (
+                df["blended_ad_spend"].astype(str)
+                .str.replace("$", "", regex=False)
+                .str.replace(",", "", regex=False)
+                .str.replace("%", "", regex=False)
+                .str.strip()
+            )
+            _spend_num = pd.to_numeric(_spend_vals, errors="coerce")
+            _has_spend = _spend_num.notna() & (_spend_num > 0)
+
+            if _has_spend.any():
+                _l7d_avg = _spend_num[_has_spend].tail(7).mean()
+
+                # Parse dates for comparison
+                _dates = pd.to_datetime(df["date"], format="mixed", dayfirst=False, errors="coerce")
+                _date_strs = _dates.dt.strftime("%Y-%m-%d")
+                _max_date = _date_strs.max()
+
+                # Insert missing rows between last sheet date and yesterday
+                if _max_date and _max_date < _yesterday_str:
+                    _missing = pd.date_range(
+                        start=pd.Timestamp(_max_date) + timedelta(days=1),
+                        end=_yesterday_str, freq="D",
+                    )
+                    _n_gap = len(_missing)
+                    if _n_gap > 0:
+                        _spend_str = f"${_l7d_avg:,.2f}"
+                        for _d in _missing:
+                            _vals = {c: "" for c in df.columns}
+                            _vals["date"] = _d.strftime("%m/%d/%Y")
+                            _vals["blended_ad_spend"] = _spend_str
+                            conn.execute(
+                                f"INSERT INTO google_sheet_data ({col_names}) VALUES ({placeholders})",
+                                tuple(_vals.get(c, "") for c in df.columns),
+                            )
+                        logger.info("DTC spend backfill: added %d gap days with L7D avg $%.2f",
+                                    _n_gap, _l7d_avg)
+        except Exception as e:
+            logger.warning("DTC spend backfill failed: %s", e)
+
     logger.info(f"Synced {len(df)} rows to google_sheet_data table")
     return len(df)
 

@@ -179,6 +179,7 @@ def compute_pacing_data(ctx):
         )
     else:
         mkt_df['_ad_spend'] = 0
+    mkt_df['_ad_spend'] = mkt_df['_ad_spend'].fillna(0)
     mkt_df = mkt_df.sort_values('_date')
 
     # ============================================================
