@@ -38,12 +38,13 @@ def compute_aov(revenue, order_count):
 def compute_cac_payback(spend, new_customers, nc_revenue,
                         cogs_pct=0.17, fulfillment_pct=0.18,
                         net_to_gross=1.0,
-                        repeat_rev=0, pct_month=0,
-                        retention_curve=None, max_months=24):
+                        retention_curve=None, repeat_multiplier=1.0,
+                        max_months=24):
     """CAC Payback in months using contribution-margin model.
 
-    Uses actual repeat revenue when available. Falls back to the
-    historical retention curve only when repeat data is missing.
+    Walks the retention curve month-by-month, scaled by repeat_multiplier
+    to reflect actual vs modeled repeat performance. When repeat revenue
+    is outperforming the model (multiplier > 1), payback shortens.
 
     Args:
         spend: Total media spend in period.
@@ -52,11 +53,11 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
         cogs_pct: Cost of goods as fraction of gross sales (default 0.17 = 17%).
         fulfillment_pct: Fulfillment cost as fraction of net revenue (e.g. 0.18).
         net_to_gross: Multiplier to convert net revenue to gross sales (e.g. 1.386).
-        repeat_rev: Actual repeat revenue in the same period as spend/nc_revenue.
-        pct_month: Fraction of month elapsed (0-1), used to annualise
-            repeat_rev to a full monthly rate.
-        retention_curve: Fallback dict {month_offset: revenue_fraction}.
-            Only used when repeat_rev is not provided.
+        retention_curve: Dict {month_offset: revenue_fraction} from retention
+            model. If None, falls back to simple CAC / monthly_contribution.
+        repeat_multiplier: Scale factor applied to the retention curve.
+            Computed as actual_repeat_rev / (goal_repeat_rev * pct_month).
+            >1 means repeat is outperforming → faster payback.
         max_months: Cap on payback search (default 24).
 
     Returns:
@@ -84,26 +85,17 @@ def compute_cac_payback(spend, new_customers, nc_revenue,
     if cumulative >= cac:
         return cac / cumulative if cumulative > 0 else 0
 
-    # --- Actual repeat revenue path ---
-    if repeat_rev > 0 and pct_month > 0:
-        # Annualise partial-month repeat to full monthly rate, per NC
-        monthly_repeat_per_nc = (repeat_rev / pct_month) / new_customers
-        monthly_contrib = _contribution(monthly_repeat_per_nc)
-        if monthly_contrib <= 0:
-            return 0
-        remaining = cac - cumulative
-        return 1 + (remaining / monthly_contrib)
-
-    # --- Retention curve fallback ---
     if not retention_curve:
         monthly_contrib = _contribution(aov)
         return cac / monthly_contrib if monthly_contrib > 0 else 0
 
+    # Walk the retention curve, scaled by repeat_multiplier
+    _mult = max(repeat_multiplier, 0)
     for month in range(1, max_months + 1):
         repeat_frac = retention_curve.get(month, 0)
         if repeat_frac <= 0:
             continue
-        month_rev = aov * repeat_frac
+        month_rev = aov * repeat_frac * _mult
         month_contrib = _contribution(month_rev)
         cumulative += month_contrib
         if cumulative >= cac:
