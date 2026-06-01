@@ -53,3 +53,6 @@ node_modules/
 excel_contents.txt
 .env.local
 .env*.local
+
+# Gorgias exports (contains customer PII — never commit)
+scripts/gorgias_out/
