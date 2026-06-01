@@ -144,6 +144,7 @@ def main():
                     help="keep bounce/spam/auto-reply tickets (default: filtered out)")
     args = ap.parse_args()
 
+    load_dotenv(override=True)  # ensure .env is loaded even in --analyze-only mode
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
