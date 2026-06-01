@@ -45,16 +45,26 @@ def test_connection(domain, email, api_key):
 
 
 def _get(session, url, params):
-    """GET with retry on 429 / 5xx, honoring Retry-After."""
+    """GET with retry on 429 / 5xx and on connection/read timeouts, honoring Retry-After."""
+    last_exc = None
     for attempt in range(_MAX_RETRIES):
-        r = session.get(url, params=params, timeout=60)
+        try:
+            r = session.get(url, params=params, timeout=60)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_exc = exc
+            wait = min(2 ** attempt, 30)
+            logger.warning("Gorgias network error on %s (%s) — retry in %.1fs", url, exc, wait)
+            time.sleep(wait)
+            continue
         if r.status_code == 429 or r.status_code >= 500:
-            wait = float(r.headers.get("Retry-After", 2 ** attempt))
+            wait = float(r.headers.get("Retry-After", min(2 ** attempt, 30)))
             logger.warning("Gorgias %s on %s — backing off %.1fs", r.status_code, url, wait)
             time.sleep(wait)
             continue
         r.raise_for_status()
         return r.json()
+    if last_exc:
+        raise last_exc
     r.raise_for_status()
     return r.json()
 
@@ -118,7 +128,11 @@ def fetch_messages_for(domain, email, api_key, tickets):
     base = _base_url(domain)
     n = len(tickets)
     for i, t in enumerate(tickets, 1):
-        t["messages"] = list(_paginate(s, f"{base}/tickets/{t['id']}/messages"))
+        try:
+            t["messages"] = list(_paginate(s, f"{base}/tickets/{t['id']}/messages"))
+        except Exception as exc:  # don't let one bad ticket abort a long run
+            logger.warning("  failed messages for ticket %s: %s", t.get("id"), exc)
+            t["messages"] = []
         if i % 25 == 0 or i == n:
             logger.info("  messages: %d/%d tickets", i, n)
         time.sleep(_THROTTLE_SECONDS)
