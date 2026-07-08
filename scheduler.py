@@ -8,6 +8,7 @@ Usage:
     python scheduler.py --full       # Run full historical refresh and exit
     python scheduler.py --backfill   # Parallel backfill (Shopify 4y, Amazon 6mo)
     python scheduler.py --backfill --shopify-years 2 --amazon-months 3
+    python scheduler.py --refunds-backfill 90   # Seed refunds table (trailing 90 days)
 """
 import argparse
 import sys
@@ -15,7 +16,7 @@ import schedule
 import time
 from datetime import datetime
 from config import SYNC_HOUR, SYNC_MINUTE, SYNC_TIMEZONE
-from etl.sync import run_daily_sync, run_parallel_backfill, run_amazon_catchup
+from etl.sync import run_daily_sync, run_parallel_backfill, run_amazon_catchup, run_refunds_backfill
 
 
 def daily_job():
@@ -168,6 +169,14 @@ if __name__ == "__main__":
             shopify_workers=args.shopify_workers,
             chunk_months=args.chunk_months,
         )
+    elif "--refunds-backfill" in sys.argv:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--refunds-backfill', type=int, default=90,
+                            help='Days of Shopify refunds to backfill (default: 90)')
+        args = parser.parse_args()
+        print(f"Seeding refunds table: trailing {args.refunds_backfill} days...")
+        count = run_refunds_backfill(days=args.refunds_backfill)
+        print(f"Refunds backfill completed: {count} refunds synced")
     elif "--models-only" in sys.argv:
         print("Running analytics models only (no ETL sync)...")
         from analytics.orchestrator import run_all_daily_models

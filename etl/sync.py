@@ -35,6 +35,7 @@ def run_daily_sync(full_refresh=False, on_status=None):
         steps.extend(["amazon_sales", "amazon_retention"])
     if has_shopify:
         steps.append("shopify")
+        steps.append("shopify_refunds")
     steps.append("rebuild")
     total_steps = len(steps)
 
@@ -87,6 +88,18 @@ def run_daily_sync(full_refresh=False, on_status=None):
                 with get_db() as conn:
                     log_sync(conn, "shopify", datetime.utcnow().strftime("%Y-%m-%d"),
                              0, status="error", error_message=str(e))
+        step_idx += 1
+
+        # Refunds sync — cursors on updated_at so late refunds are captured
+        _report(step_idx, "Syncing Shopify refunds...")
+        try:
+            results["shopify_refunds"] = _sync_shopify_refunds(full_refresh)
+        except Exception as e:
+            results["shopify_refunds"] = f"ERROR: {e}"
+            logger.error("Shopify refunds sync failed: %s", e)
+            with get_db() as conn:
+                log_sync(conn, "shopify_refunds", datetime.utcnow().strftime("%Y-%m-%d"),
+                         0, status="error", error_message=str(e))
         step_idx += 1
     else:
         logger.warning("Shopify not configured — skipping.")
@@ -287,6 +300,55 @@ def _sync_shopify(full_refresh, on_status=None, step_idx=0, total_steps=1):
         log_sync(conn, "shopify", today, count)
 
     return count
+
+
+def _sync_shopify_refunds(full_refresh):
+    """Pull Shopify refunds (cursors on updated_at to catch late refunds).
+
+    Kept separate from the order sync because that one cursors on created_at
+    and misses refunds issued long after the order. Looks back at most 90 days
+    on an incremental run.
+    """
+    from etl.shopify_client import fetch_refunds
+
+    with get_db() as conn:
+        since = _get_since_date(conn, "shopify_refunds", full_refresh, max_days=90)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+
+        logger.info("Shopify refunds sync: %s to %s", since, today)
+        count = fetch_refunds(conn, since_date=since, until_date=today)
+        log_sync(conn, "shopify_refunds", today, count)
+
+    return count
+
+
+def run_refunds_backfill(days=90):
+    """Seed the refunds table by pulling the trailing N days of refunds.
+
+    Entry point for scheduler.py --refunds-backfill. Cursors on updated_at so
+    any refund touched in the window is captured, regardless of order age.
+    """
+    init_db()
+    from etl.shopify_client import fetch_refunds
+
+    since_str = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    def _progress(refunds_so_far, page_number):
+        logger.info('[Refunds backfill] %d refunds (page %d)', refunds_so_far, page_number)
+
+    logger.info("Refunds backfill: %s to %s", since_str, today)
+    try:
+        with get_db() as conn:
+            conn.execute('SET statement_timeout = 300000')  # 5 minutes
+            count = fetch_refunds(conn, since_date=since_str, until_date=today,
+                                  on_progress=_progress)
+            log_sync(conn, "shopify_refunds", today, count)
+        logger.info("Refunds backfill complete: %d refunds", count)
+        return count
+    except Exception as e:
+        logger.error("Refunds backfill failed: %s", e)
+        raise
 
 
 def _sync_klaviyo(api_key):

@@ -448,6 +448,16 @@ _SCHEMA_SQL = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
     )""",
 
+    """CREATE TABLE IF NOT EXISTS refunds (
+        refund_id TEXT PRIMARY KEY,
+        order_id TEXT,
+        refund_created_at TIMESTAMPTZ,
+        amount NUMERIC DEFAULT 0,
+        units INTEGER DEFAULT 0,
+        source TEXT DEFAULT 'shopify',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""",
+
     # Indexes
     "CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id)",
@@ -463,6 +473,8 @@ _SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_orders_source_date ON orders(source, order_date)",
     "CREATE INDEX IF NOT EXISTS idx_orders_source_total_customer ON orders(source, total_amount, customer_id, order_date)",
     "CREATE INDEX IF NOT EXISTS idx_customers_source ON customers(source)",
+    "CREATE INDEX IF NOT EXISTS idx_refunds_created ON refunds(refund_created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_refunds_order ON refunds(order_id)",
 
     # Klaviyo metric columns (ALTER is idempotent with IF NOT EXISTS)
     "ALTER TABLE klaviyo_campaigns ADD COLUMN IF NOT EXISTS recipients INTEGER DEFAULT 0",
@@ -644,6 +656,33 @@ def upsert_order_item(
     except Exception as exc:
         logger.error('upsert_order_item failed for order_id=%s sku=%s: %s', order_id, sku, exc)
         raise DatabaseError(f'upsert_order_item failed: {exc}') from exc
+
+
+def upsert_refund(
+    conn: ConnectionWrapper,
+    refund_id: str,
+    order_id: Optional[str],
+    refund_created_at: Optional[str],
+    amount: float,
+    units: int,
+    source: str = "shopify",
+) -> None:
+    try:
+        conn.execute("""
+            INSERT INTO refunds (refund_id, order_id, refund_created_at, amount, units, source)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(refund_id) DO UPDATE SET
+                order_id = excluded.order_id,
+                refund_created_at = excluded.refund_created_at,
+                amount = excluded.amount,
+                units = excluded.units,
+                source = excluded.source
+        """, (refund_id, order_id, refund_created_at, amount, units, source))
+    except DatabaseError:
+        raise
+    except Exception as exc:
+        logger.error('upsert_refund failed for refund_id=%s: %s', refund_id, exc)
+        raise DatabaseError(f'upsert_refund failed: {exc}') from exc
 
 
 def upsert_sku(
