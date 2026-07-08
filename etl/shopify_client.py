@@ -8,7 +8,7 @@ import time
 from etl.retry import with_retry
 from datetime import datetime, timedelta
 import config as cfg
-from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku
+from db import upsert_customer, upsert_order, upsert_order_item, upsert_sku, upsert_refund
 from etl.customer_id import generate_customer_id
 
 logger = logging.getLogger(__name__)
@@ -30,26 +30,35 @@ def _parse_shopify_date(ts_str):
     return ts_str[:10]
 
 
-def _total_refund_amount(order):
-    """Sum refund amounts for an order.
+def _refund_amount(refund):
+    """Dollar amount of a single refund.
 
     Tries transaction amounts first (most accurate — includes shipping/tax adjustments).
     Falls back to refund_line_items subtotal + tax if transactions are missing
     (Shopify may omit nested transactions when using the fields filter).
     """
+    txn_total = 0.0
+    for txn in refund.get("transactions", []):
+        if txn.get("kind") == "refund" and txn.get("status") == "success":
+            txn_total += float(txn.get("amount", 0))
+    if txn_total > 0:
+        return txn_total
+    # Fallback: sum refund line items
     total = 0.0
-    for refund in order.get("refunds", []):
-        txn_total = 0.0
-        for txn in refund.get("transactions", []):
-            if txn.get("kind") == "refund" and txn.get("status") == "success":
-                txn_total += float(txn.get("amount", 0))
-        if txn_total > 0:
-            total += txn_total
-        else:
-            # Fallback: sum refund line items
-            for item in refund.get("refund_line_items", []):
-                total += float(item.get("subtotal", 0))
-                total += float(item.get("total_tax", 0))
+    for item in refund.get("refund_line_items", []):
+        total += float(item.get("subtotal", 0))
+        total += float(item.get("total_tax", 0))
+    return total
+
+
+def _refund_units(refund):
+    """Total units refunded in a single refund (sum of refund_line_items quantity)."""
+    return sum(int(item.get("quantity", 0)) for item in refund.get("refund_line_items", []))
+
+
+def _total_refund_amount(order):
+    """Sum refund amounts across all of an order's refunds."""
+    total = sum(_refund_amount(refund) for refund in order.get("refunds", []))
     if total > 0:
         logger.info('Order %s: refund_amount=%.2f (refunds=%d)',
                      order.get("id"), total, len(order.get("refunds", [])))
@@ -373,6 +382,99 @@ def fetch_orders(conn, since_date=None, until_date=None, on_progress=None,
             pass
 
     return order_count
+
+
+def fetch_refunds(conn, since_date=None, until_date=None, on_progress=None):
+    """
+    Fetch refunds from Shopify and upsert them into the refunds table.
+
+    Cursors on ``updated_at`` (not ``created_at``) so late refunds against old
+    orders are captured — the plain order sync cursors on created_at and misses
+    refunds issued weeks after the order. Enables a weekly return-rate view keyed
+    on the refund date rather than the order date.
+
+    For each order in the window this upserts one ``refunds`` row per refund
+    (id, created_at, dollar amount, units) and refreshes ``orders.refund_amount``
+    to the order's total refunded to date.
+
+    Args:
+        conn: Database connection.
+        since_date: ISO date string (YYYY-MM-DD). Defaults to 90 days ago.
+        until_date: ISO date string. Defaults to today.
+        on_progress: Optional callback(refunds_so_far, page_number).
+
+    Returns:
+        Number of refunds upserted.
+    """
+    if not cfg.SHOPIFY_ACCESS_TOKEN:
+        raise ValueError(
+            "Shopify access token not configured. "
+            "Go to Settings and click 'Connect Shopify' to connect your store."
+        )
+
+    if since_date is None:
+        since_date = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+    if until_date is None:
+        until_date = datetime.utcnow().strftime("%Y-%m-%d")
+
+    base_url = get_base_url()
+    headers = get_headers()
+    refund_count = 0
+
+    url = f"{base_url}/orders.json"
+    params = {
+        "updated_at_min": f"{since_date}T00:00:00{_STORE_TZ_OFFSET}",
+        "updated_at_max": f"{until_date}T23:59:59{_STORE_TZ_OFFSET}",
+        "status": "any",
+        "limit": 250,
+        # No fields filter — full payload needed so refunds include transactions
+        # and refund_line_items sub-resources (fields filter can drop nested txns).
+    }
+
+    page_number = 0
+    while url:
+        response = _get_orders_page(url, headers, params)
+
+        if response.status_code == 429:
+            retry_after = float(response.headers.get("Retry-After", 2))
+            logger.warning('Shopify rate limit hit, waiting %ss', retry_after)
+            time.sleep(retry_after)
+            continue
+
+        response.raise_for_status()
+        data = response.json()
+        orders = data.get("orders", [])
+        page_number += 1
+
+        for order in orders:
+            refunds = order.get("refunds", [])
+            if not refunds:
+                continue
+
+            order_id = f"shp-{order['id']}"
+            for refund in refunds:
+                refund_id = str(refund.get("id"))
+                refund_created_at = refund.get("created_at")
+                amount = _refund_amount(refund)
+                units = _refund_units(refund)
+                upsert_refund(conn, refund_id, order_id, refund_created_at,
+                              amount, units, source="shopify")
+                refund_count += 1
+
+            # Keep orders.refund_amount in sync with the order's full refund total.
+            conn.execute(
+                "UPDATE orders SET refund_amount = %s WHERE order_id = %s",
+                (_total_refund_amount(order), order_id),
+            )
+
+        if on_progress:
+            on_progress(refund_count, page_number)
+
+        url = _get_next_page_url(response)
+        params = None  # Params are encoded in the next URL
+        time.sleep(0.5)  # Be nice to the API
+
+    return refund_count
 
 
 def _get_next_page_url(response):
